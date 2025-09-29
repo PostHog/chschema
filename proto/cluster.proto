@@ -6,16 +6,13 @@ option go_package = "github.com/posthog/chschema/gen/chschema_v1;chschema_v1";
 
 message Cluster {
   string name = 1;
-  repeated Shard shards = 2;
+  repeated Node nodes = 2;
 }
 
-message Shard {
-  uint32 number = 1;
-  repeated Replica replicas = 2;
-}
-
-message Replica {
-  string name = 1;
-  string host = 2;
-  uint32 port = 3;
+message Node {
+  string host = 1;
+  int32 port = 2;
+  uint32 shard = 3;
+  uint32 replica = 4;
+  optional string database = 5;
 }

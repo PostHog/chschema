@@ -24,7 +24,7 @@ const (
 type Cluster struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Shards        []*Shard               `protobuf:"bytes,2,rep,name=shards,proto3" json:"shards,omitempty"`
+	Nodes         []*Node                `protobuf:"bytes,2,rep,name=nodes,proto3" json:"nodes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -66,35 +66,38 @@ func (x *Cluster) GetName() string {
 	return ""
 }
 
-func (x *Cluster) GetShards() []*Shard {
+func (x *Cluster) GetNodes() []*Node {
 	if x != nil {
-		return x.Shards
+		return x.Nodes
 	}
 	return nil
 }
 
-type Shard struct {
+type Node struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Number        uint32                 `protobuf:"varint,1,opt,name=number,proto3" json:"number,omitempty"`
-	Replicas      []*Replica             `protobuf:"bytes,2,rep,name=replicas,proto3" json:"replicas,omitempty"`
+	Host          string                 `protobuf:"bytes,1,opt,name=host,proto3" json:"host,omitempty"`
+	Port          int32                  `protobuf:"varint,2,opt,name=port,proto3" json:"port,omitempty"`
+	Shard         uint32                 `protobuf:"varint,3,opt,name=shard,proto3" json:"shard,omitempty"`
+	Replica       uint32                 `protobuf:"varint,4,opt,name=replica,proto3" json:"replica,omitempty"`
+	Database      *string                `protobuf:"bytes,5,opt,name=database,proto3,oneof" json:"database,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *Shard) Reset() {
-	*x = Shard{}
+func (x *Node) Reset() {
+	*x = Node{}
 	mi := &file_proto_cluster_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *Shard) String() string {
+func (x *Node) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*Shard) ProtoMessage() {}
+func (*Node) ProtoMessage() {}
 
-func (x *Shard) ProtoReflect() protoreflect.Message {
+func (x *Node) ProtoReflect() protoreflect.Message {
 	mi := &file_proto_cluster_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -106,100 +109,61 @@ func (x *Shard) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use Shard.ProtoReflect.Descriptor instead.
-func (*Shard) Descriptor() ([]byte, []int) {
+// Deprecated: Use Node.ProtoReflect.Descriptor instead.
+func (*Node) Descriptor() ([]byte, []int) {
 	return file_proto_cluster_proto_rawDescGZIP(), []int{1}
 }
 
-func (x *Shard) GetNumber() uint32 {
-	if x != nil {
-		return x.Number
-	}
-	return 0
-}
-
-func (x *Shard) GetReplicas() []*Replica {
-	if x != nil {
-		return x.Replicas
-	}
-	return nil
-}
-
-type Replica struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Host          string                 `protobuf:"bytes,2,opt,name=host,proto3" json:"host,omitempty"`
-	Port          uint32                 `protobuf:"varint,3,opt,name=port,proto3" json:"port,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *Replica) Reset() {
-	*x = Replica{}
-	mi := &file_proto_cluster_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *Replica) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*Replica) ProtoMessage() {}
-
-func (x *Replica) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_cluster_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use Replica.ProtoReflect.Descriptor instead.
-func (*Replica) Descriptor() ([]byte, []int) {
-	return file_proto_cluster_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *Replica) GetName() string {
-	if x != nil {
-		return x.Name
-	}
-	return ""
-}
-
-func (x *Replica) GetHost() string {
+func (x *Node) GetHost() string {
 	if x != nil {
 		return x.Host
 	}
 	return ""
 }
 
-func (x *Replica) GetPort() uint32 {
+func (x *Node) GetPort() int32 {
 	if x != nil {
 		return x.Port
 	}
 	return 0
 }
 
+func (x *Node) GetShard() uint32 {
+	if x != nil {
+		return x.Shard
+	}
+	return 0
+}
+
+func (x *Node) GetReplica() uint32 {
+	if x != nil {
+		return x.Replica
+	}
+	return 0
+}
+
+func (x *Node) GetDatabase() string {
+	if x != nil && x.Database != nil {
+		return *x.Database
+	}
+	return ""
+}
+
 var File_proto_cluster_proto protoreflect.FileDescriptor
 
 const file_proto_cluster_proto_rawDesc = "" +
 	"\n" +
-	"\x13proto/cluster.proto\x12\x11clickhouse.iac.v1\"O\n" +
+	"\x13proto/cluster.proto\x12\x11clickhouse.iac.v1\"L\n" +
 	"\aCluster\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x120\n" +
-	"\x06shards\x18\x02 \x03(\v2\x18.clickhouse.iac.v1.ShardR\x06shards\"W\n" +
-	"\x05Shard\x12\x16\n" +
-	"\x06number\x18\x01 \x01(\rR\x06number\x126\n" +
-	"\breplicas\x18\x02 \x03(\v2\x1a.clickhouse.iac.v1.ReplicaR\breplicas\"E\n" +
-	"\aReplica\x12\x12\n" +
-	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
-	"\x04host\x18\x02 \x01(\tR\x04host\x12\x12\n" +
-	"\x04port\x18\x03 \x01(\rR\x04portB9Z7github.com/posthog/chschema/gen/chschema_v1;chschema_v1b\x06proto3"
+	"\x04name\x18\x01 \x01(\tR\x04name\x12-\n" +
+	"\x05nodes\x18\x02 \x03(\v2\x17.clickhouse.iac.v1.NodeR\x05nodes\"\x8c\x01\n" +
+	"\x04Node\x12\x12\n" +
+	"\x04host\x18\x01 \x01(\tR\x04host\x12\x12\n" +
+	"\x04port\x18\x02 \x01(\x05R\x04port\x12\x14\n" +
+	"\x05shard\x18\x03 \x01(\rR\x05shard\x12\x18\n" +
+	"\areplica\x18\x04 \x01(\rR\areplica\x12\x1f\n" +
+	"\bdatabase\x18\x05 \x01(\tH\x00R\bdatabase\x88\x01\x01B\v\n" +
+	"\t_databaseB9Z7github.com/posthog/chschema/gen/chschema_v1;chschema_v1b\x06proto3"
 
 var (
 	file_proto_cluster_proto_rawDescOnce sync.Once
@@ -213,20 +177,18 @@ func file_proto_cluster_proto_rawDescGZIP() []byte {
 	return file_proto_cluster_proto_rawDescData
 }
 
-var file_proto_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 3)
+var file_proto_cluster_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_proto_cluster_proto_goTypes = []any{
 	(*Cluster)(nil), // 0: clickhouse.iac.v1.Cluster
-	(*Shard)(nil),   // 1: clickhouse.iac.v1.Shard
-	(*Replica)(nil), // 2: clickhouse.iac.v1.Replica
+	(*Node)(nil),    // 1: clickhouse.iac.v1.Node
 }
 var file_proto_cluster_proto_depIdxs = []int32{
-	1, // 0: clickhouse.iac.v1.Cluster.shards:type_name -> clickhouse.iac.v1.Shard
-	2, // 1: clickhouse.iac.v1.Shard.replicas:type_name -> clickhouse.iac.v1.Replica
-	2, // [2:2] is the sub-list for method output_type
-	2, // [2:2] is the sub-list for method input_type
-	2, // [2:2] is the sub-list for extension type_name
-	2, // [2:2] is the sub-list for extension extendee
-	0, // [0:2] is the sub-list for field type_name
+	1, // 0: clickhouse.iac.v1.Cluster.nodes:type_name -> clickhouse.iac.v1.Node
+	1, // [1:1] is the sub-list for method output_type
+	1, // [1:1] is the sub-list for method input_type
+	1, // [1:1] is the sub-list for extension type_name
+	1, // [1:1] is the sub-list for extension extendee
+	0, // [0:1] is the sub-list for field type_name
 }
 
 func init() { file_proto_cluster_proto_init() }
@@ -234,13 +196,14 @@ func file_proto_cluster_proto_init() {
 	if File_proto_cluster_proto != nil {
 		return
 	}
+	file_proto_cluster_proto_msgTypes[1].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_cluster_proto_rawDesc), len(file_proto_cluster_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   3,
+			NumMessages:   2,
 			NumExtensions: 0,
 			NumServices:   0,
 		},
