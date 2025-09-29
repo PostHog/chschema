@@ -16,11 +16,7 @@ A declarative Infrastructure-as-Code (IaC) tool for managing ClickHouse schemas 
 ### Build from Source
 
 ```bash
-git clone <repository-url>
-cd chschema
-go mod tidy
-./compile-proto.sh  # Generate protobuf code
-go build -o chschema ./cmd/chschema
+go install github.com/posthog/chschema@latest
 ```
 
 ## Quick Start
