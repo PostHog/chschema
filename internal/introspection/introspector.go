@@ -34,7 +34,7 @@ func (i *Introspector) GetCurrentState(ctx context.Context) (*loader.DesiredStat
 
 func (i *Introspector) introspectTables(ctx context.Context, state *loader.DesiredState) error {
 	rows, err := i.conn.Query(ctx, `
-		SELECT database, name, engine
+		SELECT database, name, engine, sorting_key, partition_key
 		FROM system.tables
 		WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
 	`)
@@ -44,14 +44,16 @@ func (i *Introspector) introspectTables(ctx context.Context, state *loader.Desir
 	defer rows.Close()
 
 	for rows.Next() {
-		var db, name, engine string
-		if err := rows.Scan(&db, &name, &engine); err != nil {
+		var db, name, engine, sortingKey, partitionKey string
+		if err := rows.Scan(&db, &name, &engine, &sortingKey, &partitionKey); err != nil {
 			return fmt.Errorf("failed to scan table row: %w", err)
 		}
 
 		table := &chschema_v1.Table{
-			Name:     name,
-			Database: &db,
+			Name:        name,
+			Database:    &db,
+			OrderBy:     []string{sortingKey}, // Simplified
+			PartitionBy: &partitionKey,
 		}
 
 		if err := i.introspectColumns(ctx, table); err != nil {

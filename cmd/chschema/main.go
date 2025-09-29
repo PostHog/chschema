@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
@@ -18,6 +19,7 @@ var (
 	connection  string
 	autoApprove bool
 	dryRun      bool
+	outputFile  string
 )
 
 var rootCmd = &cobra.Command{
@@ -65,7 +67,10 @@ approach, inspired by Infrastructure-as-Code (IaC) principles.`,
 		}
 
 		// 5. Display the plan
-		printPlan(plan)
+		if err := printPlan(plan, outputFile); err != nil {
+			fmt.Fprintf(os.Stderr, "Error writing plan: %s\n", err)
+			os.Exit(1)
+		}
 
 		// 6. Execute the plan if approved
 		if autoApprove {
@@ -81,17 +86,35 @@ approach, inspired by Infrastructure-as-Code (IaC) principles.`,
 	},
 }
 
-func printPlan(plan *diff.Plan) {
-	fmt.Println("\n--- Execution Plan ---")
+func printPlan(plan *diff.Plan, outputFile string) error {
+	var writer io.Writer = os.Stdout
+
+	if outputFile != "" {
+		file, err := os.Create(outputFile)
+		if err != nil {
+			return fmt.Errorf("failed to create output file: %w", err)
+		}
+		defer file.Close()
+		writer = file
+		fmt.Printf("Writing execution plan to %s\n", outputFile)
+	}
+
+	fmt.Fprintln(writer, "\n--- Execution Plan ---")
 	if len(plan.Actions) == 0 {
-		fmt.Println("No changes detected. The schema is up-to-date.")
-		return
+		fmt.Fprintln(writer, "No changes detected. The schema is up-to-date.")
+		return nil
 	}
 
 	for i, action := range plan.Actions {
-		fmt.Printf("%d. [%s] %s\n", i+1, action.Type, action.Reason)
+		fmt.Fprintf(writer, "%d. [%s] %s\n", i+1, action.Type, action.Reason)
 	}
-	fmt.Println("----------------------")
+	fmt.Fprintln(writer, "----------------------")
+
+	if outputFile != "" {
+		fmt.Printf("Execution plan written to %s\n", outputFile)
+	}
+
+	return nil
 }
 
 var versionCmd = &cobra.Command{
@@ -109,6 +132,7 @@ func init() {
 
 	rootCmd.Flags().BoolVar(&autoApprove, "auto-approve", false, "Automatically approve and apply changes")
 	rootCmd.Flags().BoolVar(&dryRun, "dry-run", true, "Show planned changes without applying them (default behavior)")
+	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Write execution plan to file instead of stdout")
 }
 
 func main() {
