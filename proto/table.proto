@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package clickhouse.iac.v1;
+
+option go_package = "github.com/posthog/chschema/gen/chschema_v1;chschema_v1";
+
+import "proto/column.proto";
+import "proto/engine.proto";
+
+message Table {
+  string name = 1;
+  optional string database = 2;
+  repeated Column columns = 3;
+  Engine engine = 4;
+  repeated string order_by = 5;
+  optional string partition_by = 6;
+  optional string sample_by = 7;
+  optional string ttl = 8;
+  map<string, string> settings = 9;
+}

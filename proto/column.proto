@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package clickhouse.iac.v1;
+
+option go_package = "github.com/posthog/chschema/gen/chschema_v1;chschema_v1";
+
+message Column {
+  string name = 1;
+  string type = 2;
+  optional string default_expression = 3;
+  optional string codec = 4;
+  optional string ttl = 5;
+  optional string comment = 6;
+}

@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package clickhouse.iac.v1;
+
+option go_package = "github.com/posthog/chschema/gen/chschema_v1;chschema_v1";
+
+message Engine {
+  oneof engine_type {
+    MergeTree merge_tree = 1;
+    ReplicatedMergeTree replicated_merge_tree = 2;
+    ReplacingMergeTree replacing_merge_tree = 3;
+    ReplicatedReplacingMergeTree replicated_replacing_merge_tree = 4;
+    SummingMergeTree summing_merge_tree = 5;
+    Distributed distributed = 20;
+    Log log = 21;
+  }
+}
+
+message MergeTree {}
+
+message ReplicatedMergeTree {
+  string zoo_path = 1;
+  string replica_name = 2;
+}
+
+message ReplacingMergeTree {
+  optional string version_column = 1;
+}
+
+message ReplicatedReplacingMergeTree {
+  string zoo_path = 1;
+  string replica_name = 2;
+  optional string version_column = 3;
+}
+
+message SummingMergeTree {
+  repeated string sum_columns = 1;
+}
+
+message Distributed {
+  string cluster_name = 1;
+  string remote_database = 2;
+  string remote_table = 3;
+  optional string sharding_key = 4;
+}
+
+message Log {}

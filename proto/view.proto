@@ -1,0 +1,18 @@
+syntax = "proto3";
+
+package clickhouse.iac.v1;
+
+option go_package = "github.com/posthog/chschema/gen/chschema_v1;chschema_v1";
+
+message View {
+  string name = 1;
+  optional string database = 2;
+  string select_query = 3;
+}
+
+message MaterializedView {
+  string name = 1;
+  optional string database = 2;
+  string destination_table = 3;
+  string select_query = 4;
+}
