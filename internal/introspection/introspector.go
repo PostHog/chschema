@@ -3,6 +3,7 @@ package introspection
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/posthog/chschema/gen/chschema_v1"
 	"github.com/posthog/chschema/internal/loader"
@@ -34,9 +35,18 @@ func (i *Introspector) GetCurrentState(ctx context.Context) (*loader.DesiredStat
 
 func (i *Introspector) introspectTables(ctx context.Context, state *loader.DesiredState) error {
 	rows, err := i.conn.Query(ctx, `
-		SELECT database, name, engine, sorting_key, partition_key
+		SELECT
+			database,
+			name,
+			engine,
+			sorting_key,
+			partition_key,
+			primary_key,
+			total_rows,
+			total_bytes
 		FROM system.tables
 		WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
+		ORDER BY database, name
 	`)
 	if err != nil {
 		return fmt.Errorf("failed to query system.tables: %w", err)
@@ -44,19 +54,29 @@ func (i *Introspector) introspectTables(ctx context.Context, state *loader.Desir
 	defer rows.Close()
 
 	for rows.Next() {
-		var db, name, engine, sortingKey, partitionKey string
-		if err := rows.Scan(&db, &name, &engine, &sortingKey, &partitionKey); err != nil {
+		var db, name, engine, sortingKey, partitionKey, primaryKey string
+		var totalRows, totalBytes uint64
+		if err := rows.Scan(&db, &name, &engine, &sortingKey, &partitionKey, &primaryKey, &totalRows, &totalBytes); err != nil {
 			return fmt.Errorf("failed to scan table row: %w", err)
 		}
 
 		table := &chschema_v1.Table{
-			Name:        name,
-			Database:    &db,
-			OrderBy:     []string{sortingKey}, // Simplified
-			PartitionBy: &partitionKey,
+			Name:     name,
+			Database: &db,
 		}
 
+		// Parse and set engine information
+		if err := i.parseTableEngine(table, engine, sortingKey, partitionKey, primaryKey); err != nil {
+			return fmt.Errorf("failed to parse engine for table %s: %w", name, err)
+		}
+
+		// Introspect columns
 		if err := i.introspectColumns(ctx, table); err != nil {
+			return err
+		}
+
+		// Get table settings
+		if err := i.introspectTableSettings(ctx, table); err != nil {
 			return err
 		}
 
@@ -90,6 +110,41 @@ func (i *Introspector) introspectColumns(ctx context.Context, table *chschema_v1
 		}
 		table.Columns = append(table.Columns, column)
 	}
+
+	return nil
+}
+
+// parseTableEngine parses engine information and sets table properties
+func (i *Introspector) parseTableEngine(table *chschema_v1.Table, engine, sortingKey, partitionKey, primaryKey string) error {
+	// Set ORDER BY clause
+	if sortingKey != "" {
+		table.OrderBy = strings.Split(sortingKey, ", ")
+	}
+
+	// Set PARTITION BY clause
+	if partitionKey != "" {
+		table.PartitionBy = &partitionKey
+	}
+
+	// For now, we'll store the engine as a string
+	// In a full implementation, you'd parse this into proper engine types
+	// table.Engine = &chschema_v1.Engine{Type: engine}
+
+	return nil
+}
+
+// introspectTableSettings queries table-specific settings
+func (i *Introspector) introspectTableSettings(ctx context.Context, table *chschema_v1.Table) error {
+	// Query table settings from system.table_settings or other system tables
+	// For now, this is a placeholder - in a full implementation you would
+	// query specific settings like index_granularity, etc.
+
+	// Example query (commented out as it might not exist in all ClickHouse versions):
+	// rows, err := i.conn.Query(ctx, `
+	//     SELECT name, value
+	//     FROM system.settings
+	//     WHERE name LIKE '%granularity%'
+	// `)
 
 	return nil
 }

@@ -7,12 +7,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"gopkg.in/yaml.v3"
-
 	"github.com/posthog/chschema/gen/chschema_v1"
-
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
+	"gopkg.in/yaml.v3"
 )
 
 // DesiredState holds the complete desired schema configuration
