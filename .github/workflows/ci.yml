@@ -8,7 +8,7 @@ on:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -17,16 +17,6 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: '1.25'
-
-    - name: Cache Go modules
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
 
     - name: Download dependencies
       run: go mod download
@@ -40,7 +30,7 @@ jobs:
         fi
 
   vet:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -49,16 +39,6 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: '1.25'
-
-    - name: Cache Go modules
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
 
     - name: Download dependencies
       run: go mod download
@@ -70,7 +50,7 @@ jobs:
       run: go vet ./...
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -79,16 +59,6 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: '1.25'
-
-    - name: Cache Go modules
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
 
     - name: Download dependencies
       run: go mod download
@@ -106,7 +76,7 @@ jobs:
         echo "Total test coverage: ${COVERAGE}%"
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     needs: [lint, vet, test]
     steps:
     - name: Checkout code
@@ -116,16 +86,6 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: '1.25'
-
-    - name: Cache Go modules
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cache/go-build
-          ~/go/pkg/mod
-        key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
-        restore-keys: |
-          ${{ runner.os }}-go-
 
     - name: Download dependencies
       run: go mod download
