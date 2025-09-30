@@ -1,0 +1,28 @@
+name: chschema
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    ports:
+      - "8123:8123"  # HTTP interface
+      - "9000:9000"  # Native interface
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - ./docker/config/clickhouse-config.xml:/etc/clickhouse-server/config.d/custom.xml
+    environment:
+      CLICKHOUSE_DB: migration_test
+      CLICKHOUSE_USER: user1
+      CLICKHOUSE_PASSWORD: pass1
+      # CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    healthcheck:
+      test: ["CMD", "clickhouse-client", "--query", "SELECT 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+volumes:
+  clickhouse_data:

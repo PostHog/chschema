@@ -15,6 +15,7 @@ import (
 
 var (
 	updateSnapshots = flag.Bool("update-snapshots", false, "update SQL snapshots")
+	clickhouse      = flag.Bool("clickhouse", false, "run ClickHouse tests")
 	emptyState      = loader.NewDesiredState()
 )
 

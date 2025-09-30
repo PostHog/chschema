@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<clickhouse>
+    <!-- Performance optimizations for high QPS workload -->
+    <max_connections>4096</max_connections>
+    <keep_alive_timeout>3</keep_alive_timeout>
+    <max_concurrent_queries>100</max_concurrent_queries>
+    
+    <!-- Background processing -->
+    <background_pool_size>16</background_pool_size>
+    <background_merges_mutations_concurrency_ratio>2</background_merges_mutations_concurrency_ratio>
+
+
+    <!-- Settings profiles -->
+    <profiles>
+        <!-- Default settings -->
+        <default>
+            <!-- The maximum number of threads when running a single query. -->
+            <max_threads>8</max_threads>
+            <!-- Memory settings -->
+            <max_memory_usage>10000000000</max_memory_usage>
+            <max_bytes_before_external_group_by>20000000000</max_bytes_before_external_group_by>
+            <allow_experimental_analyzer>1</allow_experimental_analyzer>
+        </default>
+    </profiles>
+    
+    <!-- Logging -->
+    <logger>
+        <level>information</level>
+        <console>true</console>
+    </logger>
+</clickhouse>
