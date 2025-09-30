@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"github.com/posthog/chschema/gen/chschema_v1"
 	"github.com/posthog/chschema/internal/loader"
+	"sort"
 )
 
 // ActionType defines the type of DDL action to be taken.
@@ -43,19 +44,32 @@ func (d *Differ) Plan(desired, current *loader.DesiredState) (*Plan, error) {
 }
 
 func (d *Differ) compareTables(plan *Plan, desired, current *loader.DesiredState) {
-	// Check for tables to create
-	for name, desiredTable := range desired.Tables {
+	// Get sorted table names for deterministic ordering
+	desiredTableNames := make([]string, 0, len(desired.Tables))
+	for name := range desired.Tables {
+		desiredTableNames = append(desiredTableNames, name)
+	}
+	sort.Strings(desiredTableNames)
+
+	currentTableNames := make([]string, 0, len(current.Tables))
+	for name := range current.Tables {
+		currentTableNames = append(currentTableNames, name)
+	}
+	sort.Strings(currentTableNames)
+
+	// Check for tables to create (in sorted order)
+	for _, name := range desiredTableNames {
 		if _, exists := current.Tables[name]; !exists {
 			plan.Actions = append(plan.Actions, Action{
 				Type:    ActionCreateTable,
-				Payload: desiredTable,
+				Payload: desired.Tables[name],
 				Reason:  fmt.Sprintf("Table %s is defined in schema but does not exist in the database.", name),
 			})
 		}
 	}
 
-	// Check for tables to drop
-	for name := range current.Tables {
+	// Check for tables to drop (in sorted order)
+	for _, name := range currentTableNames {
 		if _, exists := desired.Tables[name]; !exists {
 			plan.Actions = append(plan.Actions, Action{
 				Type:    ActionDropTable,
@@ -65,10 +79,10 @@ func (d *Differ) compareTables(plan *Plan, desired, current *loader.DesiredState
 		}
 	}
 
-	// Check for tables to modify (columns)
-	for name, desiredTable := range desired.Tables {
+	// Check for tables to modify (columns) (in sorted order)
+	for _, name := range desiredTableNames {
 		if currentTable, exists := current.Tables[name]; exists {
-			d.compareColumns(plan, desiredTable, currentTable)
+			d.compareColumns(plan, desired.Tables[name], currentTable)
 		}
 	}
 }

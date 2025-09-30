@@ -2,6 +2,7 @@ package sqlgen
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/posthog/chschema/gen/chschema_v1"
@@ -117,9 +118,16 @@ func (g *SQLGenerator) GenerateCreateTable(table *chschema_v1.Table) string {
 
 	// Settings
 	if len(table.Settings) > 0 {
+		// Sort setting keys for deterministic output
+		keys := make([]string, 0, len(table.Settings))
+		for key := range table.Settings {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+
 		var settings []string
-		for key, value := range table.Settings {
-			settings = append(settings, fmt.Sprintf("%s = %s", key, value))
+		for _, key := range keys {
+			settings = append(settings, fmt.Sprintf("%s = %s", key, table.Settings[key]))
 		}
 		sb.WriteString(fmt.Sprintf(" SETTINGS %s", strings.Join(settings, ", ")))
 	}
