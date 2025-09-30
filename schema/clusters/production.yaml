@@ -1,10 +1,18 @@
 name: production
-shards:
-  - number: 1
-    replicas:
-      - name: replica1
-        host: clickhouse-01
-        port: 9000
-      - name: replica2
-        host: clickhouse-02
-        port: 9000
+nodes:
+  - host: clickhouse-01a
+    port: 9000
+    shard: 1
+    replica: 1
+  - host: clickhouse-01b
+    port: 9000
+    shard: 1
+    replica: 2
+  - host: clickhouse-02a
+    port: 9000
+    shard: 2
+    replica: 1
+  - host: clickhouse-02b
+    port: 9000
+    shard: 2
+    replica: 2

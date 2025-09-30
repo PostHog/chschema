@@ -1,0 +1,26 @@
+name: events
+database: default
+columns:
+  - name: id
+    type: UUID
+  - name: subject_id
+    type: UUID
+  - name: event
+    type: String
+  - name: timestamp
+    type: DateTime
+  - name: properties
+    type: JSON
+  - name: inserted_at
+    type: DateTime
+engine:
+  replicated_merge_tree:
+    zoo_path: "/clickhouse/tables/{shard}/events"
+    replica_name: "{replica}"
+order_by:
+  - event
+  - timestamp
+partition_by: toYYYYMM(timestamp)
+ttl: timestamp + INTERVAL 2 YEARS
+settings:
+  ttl_only_drop_parts: "1"

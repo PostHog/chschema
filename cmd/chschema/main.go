@@ -183,6 +183,7 @@ used with chschema for declarative schema management.`,
 
 func init() {
 	rootCmd.AddCommand(versionCmd)
+	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(dumpCmd)
 
 	rootCmd.PersistentFlags().StringVarP(&configDir, "config", "c", "schema", "Directory containing schema definition files")

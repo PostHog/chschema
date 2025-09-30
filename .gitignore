@@ -13,3 +13,4 @@
 
 # IDE settings
 .idea/
+/schema-dump/
