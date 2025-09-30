@@ -82,19 +82,6 @@ func PingClickHouse(conn driver.Conn) error {
 	return conn.Ping(ctx)
 }
 
-// ExecuteQuery executes a simple query and returns the result
-func ExecuteQuery(conn driver.Conn, query string) (interface{}, error) {
-	ctx := context.Background()
-	var result interface{}
-
-	err := conn.QueryRow(ctx, query).Scan(&result)
-	if err != nil {
-		return nil, fmt.Errorf("failed to execute query '%s': %w", query, err)
-	}
-
-	return result, nil
-}
-
 // CreateTestDatabase creates a unique test database for isolation
 func CreateTestDatabase(t *testing.T, conn driver.Conn) string {
 	dbName := fmt.Sprintf("chschema_test_%s", t.Name())
