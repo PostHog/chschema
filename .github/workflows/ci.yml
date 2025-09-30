@@ -8,7 +8,7 @@ on:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -40,7 +40,7 @@ jobs:
         fi
 
   vet:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -70,7 +70,7 @@ jobs:
       run: go vet ./...
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -106,7 +106,7 @@ jobs:
         echo "Total test coverage: ${COVERAGE}%"
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     needs: [lint, vet, test]
     steps:
     - name: Checkout code
