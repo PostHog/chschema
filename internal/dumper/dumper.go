@@ -2,15 +2,17 @@ package dumper
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/posthog/chschema/gen/chschema_v1"
 	"github.com/posthog/chschema/internal/introspection"
+	"google.golang.org/protobuf/encoding/protojson"
+	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
-
-	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
 // Dumper handles exporting database schema to YAML files
@@ -113,13 +115,30 @@ func (d *Dumper) dumpClusters(clusters map[string]*chschema_v1.Cluster, opts Dum
 	return nil
 }
 
-// writeYAMLFile writes data to a YAML file
+// writeYAMLFile writes protobuf data to a YAML file in a format compatible with the loader
 func (d *Dumper) writeYAMLFile(filename string, data interface{}, overwrite bool) error {
 	// Check if file exists and overwrite is false
 	if !overwrite {
 		if _, err := os.Stat(filename); err == nil {
 			return fmt.Errorf("file %s already exists (use --overwrite to replace)", filename)
 		}
+	}
+
+	// Convert protobuf to JSON first (to get proper field names), then to YAML
+	var yamlData interface{}
+	if protoMsg, ok := data.(proto.Message); ok {
+		// Convert protobuf to JSON
+		jsonBytes, err := protojson.Marshal(protoMsg)
+		if err != nil {
+			return fmt.Errorf("failed to marshal protobuf to JSON: %w", err)
+		}
+
+		// Convert JSON to Go object for YAML encoding
+		if err := json.Unmarshal(jsonBytes, &yamlData); err != nil {
+			return fmt.Errorf("failed to unmarshal JSON: %w", err)
+		}
+	} else {
+		yamlData = data
 	}
 
 	file, err := os.Create(filename)
@@ -131,7 +150,7 @@ func (d *Dumper) writeYAMLFile(filename string, data interface{}, overwrite bool
 	encoder := yaml.NewEncoder(file)
 	defer encoder.Close()
 
-	if err := encoder.Encode(data); err != nil {
+	if err := encoder.Encode(yamlData); err != nil {
 		return fmt.Errorf("failed to encode YAML: %w", err)
 	}
 
