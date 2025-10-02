@@ -2,12 +2,18 @@ package test
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/posthog/chschema/gen/chschema_v1"
 	"github.com/posthog/chschema/internal/diff"
+	"github.com/posthog/chschema/internal/dumper"
 	"github.com/posthog/chschema/internal/executor"
 	"github.com/posthog/chschema/internal/introspection"
 	"github.com/posthog/chschema/internal/loader"
@@ -133,5 +139,85 @@ func TestLive_EndToEnd_SchemaApply(t *testing.T) {
 			require.Equal(t, desiredTable.Settings, actualTable.Settings,
 				"Settings should match for table %s", tableName)
 		}
+	}
+}
+
+func cleanupSQL(t *testing.T, dbName, createSQL string) string {
+	// regexp.MustCompile(`(TABLE|VIEW) default\.`)
+	createSQL = strings.Replace(createSQL, "TABLE default.", "TABLE "+dbName+".", 1)
+	pattern := regexp.MustCompile(`'/clickhouse/tables/noshard/posthog.(query_log_archive_new)'`)
+	dest := fmt.Sprintf(`'/clickhouse/tables/noshard/%s.$1'`, dbName)
+	createSQL = pattern.ReplaceAllString(createSQL, dest)
+	return createSQL
+}
+
+func TestCleanupSQL(t *testing.T) {
+	createSQL := "CREATE TABLE default.query_log_archive (`hostname` LowCardinality(String),`user` LowCardinality(String),`query_id` String) ENGINE = ReplicatedMergeTree('/clickhouse/tables/noshard/posthog.query_log_archive_new', '{replica}-{shard}') PARTITION BY toYYYYMM(event_date) PRIMARY KEY (team_id, event_date, event_time, query_id) ORDER BY (team_id, event_date, event_time, query_id) SETTINGS index_granularity = 8192"
+	got := cleanupSQL(t, "my_test_database", createSQL)
+	want := "CREATE TABLE my_test_database.query_log_archive (`hostname` LowCardinality(String),`user` LowCardinality(String),`query_id` String) ENGINE = ReplicatedMergeTree('/clickhouse/tables/noshard/my_test_database.query_log_archive_new', '{replica}-{shard}') PARTITION BY toYYYYMM(event_date) PRIMARY KEY (team_id, event_date, event_time, query_id) ORDER BY (team_id, event_date, event_time, query_id) SETTINGS index_granularity = 8192"
+	require.Equal(t, want, got)
+}
+
+// 1. Create a table from SQL dump
+// 2. Dump table from ClickHouse
+// 3. Create a table from a Dump
+// 4. Dump table created from ClickHouse
+// 5. Compare the dumps
+func TestEnd2End(t *testing.T) {
+	if !*clickhouse {
+		t.SkipNow()
+	}
+
+	// 1. Get connection and create test database
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+
+	testCases := []struct {
+		Name   string
+		Engine string
+		Skip   bool
+	}{
+		{
+			Name:   "query_log_archive",
+			Engine: "ReplicatedMergeTree",
+		},
+		{
+			Name:   "sharded_events",
+			Engine: "ReplicatedReplacingMergeTree",
+			Skip:   true,
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.Name, func(t *testing.T) {
+			if testCase.Skip {
+				t.SkipNow()
+			}
+
+			createSQLRaw, err := os.ReadFile(filepath.Join("..", "dump", testCase.Engine, testCase.Name+".sql"))
+			require.NoError(t, err, "Failed to read file %s", testCase.Name)
+			createSQL := cleanupSQL(t, dbName, string(createSQLRaw))
+
+			defer func(t *testing.T) {
+				dropSQL := fmt.Sprintf("DROP TABLE %s.%s", dbName, testCase.Name)
+				require.NoError(t, conn.Exec(context.Background(), dropSQL))
+			}(t)
+
+			require.NoError(t, conn.Exec(context.Background(), createSQL))
+
+			// introspect
+			intro := introspection.NewIntrospector(conn)
+			intro.Databases = []string{dbName}
+			intro.Tables = []string{testCase.Name}
+			state, err := intro.GetCurrentState(context.Background())
+			require.NoError(t, err, "Failed to introspect current state")
+			require.Len(t, state.Tables, 1)
+
+			tempDir, err := os.MkdirTemp("dump", "dumper_test")
+			require.NoError(t, err, "Failed to create temp dir")
+			// defer os.RemoveAll(tempDir)
+
+			require.NoError(t, dumper.WriteYAMLFile(path.Join(tempDir, "table.yaml"), state.Tables[0], false))
+		})
 	}
 }

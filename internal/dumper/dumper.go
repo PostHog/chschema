@@ -90,7 +90,7 @@ func (d *Dumper) dumpTables(tables []*chschema_v1.Table, opts DumpOptions) error
 
 		// Write protobuf table directly to YAML
 		filename := filepath.Join(opts.OutputDir, "tables", table.Name+".yaml")
-		if err := d.writeYAMLFile(filename, table, opts.Overwrite); err != nil {
+		if err := WriteYAMLFile(filename, table, opts.Overwrite); err != nil {
 			return fmt.Errorf("failed to write table %s: %w", table.Name, err)
 		}
 
@@ -105,7 +105,7 @@ func (d *Dumper) dumpClusters(clusters []*chschema_v1.Cluster, opts DumpOptions)
 	for _, cluster := range clusters {
 		// Write protobuf cluster directly to YAML
 		filename := filepath.Join(opts.OutputDir, "clusters", cluster.Name+".yaml")
-		if err := d.writeYAMLFile(filename, cluster, opts.Overwrite); err != nil {
+		if err := WriteYAMLFile(filename, cluster, opts.Overwrite); err != nil {
 			return fmt.Errorf("failed to write cluster %s: %w", cluster.Name, err)
 		}
 
@@ -115,8 +115,8 @@ func (d *Dumper) dumpClusters(clusters []*chschema_v1.Cluster, opts DumpOptions)
 	return nil
 }
 
-// writeYAMLFile writes protobuf data to a YAML file in a format compatible with the loader
-func (d *Dumper) writeYAMLFile(filename string, data interface{}, overwrite bool) error {
+// WriteYAMLFile writes protobuf data to a YAML file in a format compatible with the loader
+func WriteYAMLFile(filename string, data interface{}, overwrite bool) error {
 	// Check if file exists and overwrite is false
 	if !overwrite {
 		if _, err := os.Stat(filename); err == nil {

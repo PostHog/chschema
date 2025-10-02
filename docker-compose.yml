@@ -1,14 +1,33 @@
 name: chschema
 
 services:
+  keeper:
+    image: clickhouse/clickhouse-keeper:latest
+    environment:
+      - KEEPER_SERVER_ID=1
+    volumes:
+      - keeper_data:/var/lib/clickhouse-keeper
+      - ./docker/keeper/config.xml:/etc/clickhouse-keeper/keeper_config.xml:ro
+    ports:
+      - "127.0.0.1:2181:2181"  # Keeper port (localhost only)
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '1'
+    restart: unless-stopped
+
   clickhouse:
     image: clickhouse/clickhouse-server:latest
+    depends_on:
+      - keeper
     ports:
       - "8123:8123"  # HTTP interface
       - "9000:9000"  # Native interface
     volumes:
       - clickhouse_data:/var/lib/clickhouse
-      - ./docker/config/clickhouse-config.xml:/etc/clickhouse-server/config.d/custom.xml
+      - ./docker/clickhouse/clickhouse-config.xml:/etc/clickhouse-server/config.d/custom.xml:ro
+      - ./docker/clickhouse/config.d/default.xml:/etc/clickhouse-server/config.d/default.xml:ro
     environment:
       CLICKHOUSE_DB: migration_test
       CLICKHOUSE_USER: user1
@@ -26,3 +45,4 @@ services:
 
 volumes:
   clickhouse_data:
+  keeper_data:

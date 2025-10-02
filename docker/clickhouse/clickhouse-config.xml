@@ -22,7 +22,17 @@
             <allow_experimental_analyzer>1</allow_experimental_analyzer>
         </default>
     </profiles>
-    
+
+    <!-- ClickHouse Keeper configuration for replication -->
+    <zookeeper>
+        <node>
+            <host>keeper</host>
+            <port>2181</port>
+        </node>
+        <session_timeout_ms>30000</session_timeout_ms>
+        <operation_timeout_ms>10000</operation_timeout_ms>
+    </zookeeper>
+
     <!-- Logging -->
     <logger>
         <level>information</level>

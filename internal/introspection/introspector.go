@@ -13,7 +13,9 @@ import (
 
 // Introspector is responsible for querying a ClickHouse cluster to determine its current state.
 type Introspector struct {
-	conn clickhouse.Conn
+	conn      clickhouse.Conn
+	Databases []string
+	Tables    []string
 }
 
 // NewIntrospector creates a new Introspector with a given ClickHouse connection.
@@ -34,7 +36,20 @@ func (i *Introspector) GetCurrentState(ctx context.Context) (*chschema_v1.NodeSc
 }
 
 func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.NodeSchemaState) error {
-	rows, err := i.conn.Query(ctx, `
+	var (
+		predicate string
+		args      []interface{}
+	)
+	if len(i.Databases) > 0 {
+		predicate = " AND database IN $1"
+		args = append(args, i.Databases)
+	}
+	if len(i.Tables) > 0 {
+		predicate += fmt.Sprintf(" AND name IN $%d", len(args)+1)
+		args = append(args, i.Tables)
+	}
+
+	query_sql := `
 		SELECT
 			database,
 			name,
@@ -46,9 +61,13 @@ func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.
 			total_rows,
 			total_bytes
 		FROM system.tables
-		WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
+		WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')` +
+		predicate +
+		`
 		ORDER BY database, name
-	`)
+	`
+
+	rows, err := i.conn.Query(ctx, query_sql, args...)
 	if err != nil {
 		return fmt.Errorf("failed to query system.tables: %w", err)
 	}
