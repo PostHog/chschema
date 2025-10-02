@@ -1,0 +1,1 @@
+CREATE TABLE default.kafka_person_distinct_id (`distinct_id` String, `person_id` UUID, `team_id` Int64, `_sign` Nullable(Int8), `is_deleted` Nullable(Int8)) ENGINE = Kafka('kafka:9092', 'clickhouse_person_unique_id', 'group1', 'JSONEachRow')

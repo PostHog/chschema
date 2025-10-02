@@ -1,0 +1,1 @@
+CREATE TABLE default.kafka_log_entries_v2_test (`team_id` UInt64, `log_source` LowCardinality(String), `log_source_id` String, `instance_id` String, `timestamp` DateTime64(6, 'UTC'), `level` LowCardinality(String), `message` String) ENGINE = Kafka('kafka:9092', 'log_entries_v2_test', 'group1', 'JSONEachRow')

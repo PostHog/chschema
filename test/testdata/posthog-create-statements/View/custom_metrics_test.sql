@@ -1,0 +1,1 @@
+CREATE VIEW default.custom_metrics_test (`name` String, `labels` Map(String, String), `value` UInt8, `help` String, `type` String) AS SELECT 'ClickHouseCustomMetric_Test' AS name, map('instance', hostname()) AS labels, 1 AS value, 'Test to check that the metric endpoint is working' AS help, 'gauge' AS type

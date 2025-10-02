@@ -1,0 +1,1 @@
+CREATE TABLE default.kafka_error_tracking_issue_fingerprint_overrides (`team_id` Int64, `fingerprint` String, `issue_id` UUID, `is_deleted` Int8, `version` Int64) ENGINE = Kafka('kafka:9092', 'clickhouse_error_tracking_issue_fingerprint', 'clickhouse-error-tracking-issue-fingerprint-overrides', 'JSONEachRow')

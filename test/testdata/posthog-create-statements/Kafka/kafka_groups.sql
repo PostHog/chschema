@@ -1,0 +1,1 @@
+CREATE TABLE default.kafka_groups (`group_type_index` UInt8, `group_key` String, `created_at` DateTime64(3), `team_id` Int64, `group_properties` String) ENGINE = Kafka('kafka:9092', 'clickhouse_groups', 'group1', 'JSONEachRow')

@@ -1,0 +1,1 @@
+CREATE TABLE default.kafka_app_metrics2 (`team_id` Int64, `timestamp` DateTime64(6, 'UTC'), `app_source` LowCardinality(String), `app_source_id` String, `instance_id` String, `metric_kind` String, `metric_name` String, `count` Int64) ENGINE = Kafka('kafka:9092', 'clickhouse_app_metrics2', 'group1', 'JSONEachRow')

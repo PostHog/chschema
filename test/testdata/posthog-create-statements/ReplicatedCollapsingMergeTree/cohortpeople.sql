@@ -1,0 +1,1 @@
+CREATE TABLE default.cohortpeople (`person_id` UUID, `cohort_id` Int64, `team_id` Int64, `sign` Int8, `version` UInt64) ENGINE = ReplicatedCollapsingMergeTree('/clickhouse/tables/noshard/posthog.cohortpeople', '{replica}-{shard}', sign) ORDER BY (team_id, cohort_id, person_id, version) SETTINGS index_granularity = 8192

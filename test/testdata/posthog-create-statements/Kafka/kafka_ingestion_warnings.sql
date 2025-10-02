@@ -1,0 +1,1 @@
+CREATE TABLE default.kafka_ingestion_warnings (`team_id` Int64, `source` LowCardinality(String), `type` String, `details` String CODEC(ZSTD(3)), `timestamp` DateTime64(6, 'UTC')) ENGINE = Kafka('kafka:9092', 'clickhouse_ingestion_warnings', 'group1', 'JSONEachRow')

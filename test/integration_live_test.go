@@ -194,7 +194,8 @@ func TestEnd2End(t *testing.T) {
 				t.SkipNow()
 			}
 
-			createSQLRaw, err := os.ReadFile(filepath.Join("..", "dump", testCase.Engine, testCase.Name+".sql"))
+			sqlPath := filepath.Join("testdata/posthog-create-statements", testCase.Engine, testCase.Name+".sql")
+			createSQLRaw, err := os.ReadFile(sqlPath)
 			require.NoError(t, err, "Failed to read file %s", testCase.Name)
 			createSQL := cleanupSQL(t, dbName, string(createSQLRaw))
 

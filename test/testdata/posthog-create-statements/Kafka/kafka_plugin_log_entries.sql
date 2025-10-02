@@ -1,0 +1,1 @@
+CREATE TABLE default.kafka_plugin_log_entries (`id` UUID, `team_id` Int64, `plugin_id` Int64, `plugin_config_id` Int64, `timestamp` DateTime64(6, 'UTC'), `source` String, `type` String, `message` String, `instance_id` UUID) ENGINE = Kafka('kafka:9092', 'plugin_log_entries', 'group1', 'JSONEachRow')

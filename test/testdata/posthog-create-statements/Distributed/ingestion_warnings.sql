@@ -1,0 +1,1 @@
+CREATE TABLE default.ingestion_warnings (`team_id` Int64, `source` LowCardinality(String), `type` String, `details` String CODEC(ZSTD(3)), `timestamp` DateTime64(6, 'UTC'), `_timestamp` DateTime, `_offset` UInt64, `_partition` UInt64) ENGINE = Distributed('posthog', 'default', 'sharded_ingestion_warnings', rand())

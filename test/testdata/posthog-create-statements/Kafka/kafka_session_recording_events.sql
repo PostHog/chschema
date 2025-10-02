@@ -1,0 +1,1 @@
+CREATE TABLE default.kafka_session_recording_events (`uuid` UUID, `timestamp` DateTime64(6, 'UTC'), `team_id` Int64, `distinct_id` String, `session_id` String, `window_id` String, `snapshot_data` String, `created_at` DateTime64(6, 'UTC')) ENGINE = Kafka('kafka:9092', 'clickhouse_session_recording_events', 'group1', 'JSONEachRow')

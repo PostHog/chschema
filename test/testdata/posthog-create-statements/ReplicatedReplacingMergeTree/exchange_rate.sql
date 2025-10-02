@@ -1,0 +1,1 @@
+CREATE TABLE default.exchange_rate (`currency` String, `date` Date, `rate` Decimal(18, 10), `version` UInt32 DEFAULT toUnixTimestamp(now())) ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/noshard/posthog.exchange_rate', '{replica}-{shard}', version) ORDER BY (date, currency) SETTINGS index_granularity = 8192

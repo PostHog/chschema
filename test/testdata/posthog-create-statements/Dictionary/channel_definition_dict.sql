@@ -1,0 +1,1 @@
+CREATE DICTIONARY default.channel_definition_dict (`domain` String, `kind` String, `domain_type` Nullable(String), `type_if_paid` Nullable(String), `type_if_organic` Nullable(String)) PRIMARY KEY domain, kind SOURCE(CLICKHOUSE(TABLE 'channel_definition' PASSWORD '[HIDDEN]')) LIFETIME(MIN 3000 MAX 3600) LAYOUT(COMPLEX_KEY_HASHED())

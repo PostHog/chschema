@@ -1,0 +1,1 @@
+CREATE MATERIALIZED VIEW default.person_distinct_id_mv TO default.person_distinct_id (`distinct_id` String, `person_id` UUID, `team_id` Int64, `_sign` Int16, `_timestamp` Nullable(DateTime), `_offset` UInt64) AS SELECT distinct_id, person_id, team_id, coalesce(_sign, if(is_deleted = 0, 1, -1)) AS _sign, _timestamp, _offset FROM default.kafka_person_distinct_id

@@ -1,0 +1,1 @@
+CREATE TABLE default.web_pre_aggregated_teams (`team_id` UInt64, `enabled_by` String DEFAULT 'system', `version` UInt32 DEFAULT toUnixTimestamp(now())) ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/noshard/posthog.web_analytics_team_selection', '{replica}-{shard}', version) ORDER BY team_id SETTINGS index_granularity = 8192

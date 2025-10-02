@@ -1,0 +1,1 @@
+CREATE TABLE default.kafka_log_entries_v3 (`team_id` UInt64, `log_source` LowCardinality(String), `log_source_id` String, `instance_id` String, `timestamp` DateTime64(6, 'UTC'), `level` LowCardinality(String), `message` String) ENGINE = Kafka('kafka:9092', 'log_entries', 'clickhouse_log_entries', 'JSONEachRow') SETTINGS kafka_skip_broken_messages = 100

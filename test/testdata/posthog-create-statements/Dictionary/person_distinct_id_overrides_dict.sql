@@ -1,0 +1,1 @@
+CREATE DICTIONARY default.person_distinct_id_overrides_dict (`team_id` Int64, `distinct_id` String, `person_id` UUID) PRIMARY KEY team_id, distinct_id SOURCE(CLICKHOUSE(QUERY 'SELECT team_id, distinct_id, argMax(person_id, version) AS person_id FROM default.person_distinct_id_overrides GROUP BY team_id, distinct_id')) LIFETIME(MIN 3600 MAX 18000) LAYOUT(COMPLEX_KEY_HASHED())

@@ -1,0 +1,1 @@
+CREATE MATERIALIZED VIEW default.person_mv TO default.person (`id` UUID, `created_at` DateTime64(3), `team_id` Int64, `properties` String, `is_identified` Int8, `is_deleted` Int8, `version` UInt64, `_timestamp` Nullable(DateTime), `_offset` UInt64) AS SELECT id, created_at, team_id, properties, is_identified, is_deleted, version, _timestamp, _offset FROM default.kafka_person

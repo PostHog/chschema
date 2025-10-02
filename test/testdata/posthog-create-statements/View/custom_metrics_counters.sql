@@ -1,0 +1,1 @@
+CREATE VIEW default.custom_metrics_counters (`name` String, `labels` Map(String, String), `value` Float64, `help` String, `type` String) AS SELECT name, mapSort(labels) AS labels, sum(increment) AS value, '' AS help, 'counter' AS type FROM default.custom_metrics_counter_events GROUP BY name, type, labels ORDER BY name ASC, type ASC, labels ASC

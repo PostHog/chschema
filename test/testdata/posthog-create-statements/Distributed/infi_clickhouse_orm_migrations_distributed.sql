@@ -1,0 +1,1 @@
+CREATE TABLE default.infi_clickhouse_orm_migrations_distributed (`package_name` String, `module_name` String, `applied` Date DEFAULT '1970-01-01') ENGINE = Distributed('posthog_migrations', 'default', 'infi_clickhouse_orm_migrations', rand())

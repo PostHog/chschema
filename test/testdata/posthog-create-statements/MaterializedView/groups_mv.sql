@@ -1,0 +1,1 @@
+CREATE MATERIALIZED VIEW default.groups_mv TO default.groups (`group_type_index` UInt8, `group_key` String, `created_at` DateTime64(3), `team_id` Int64, `group_properties` String, `_timestamp` Nullable(DateTime), `_offset` UInt64) AS SELECT group_type_index, group_key, created_at, team_id, group_properties, _timestamp, _offset FROM default.kafka_groups

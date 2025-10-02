@@ -1,0 +1,1 @@
+CREATE TABLE default.session_replay_embeddings (`session_id` String, `team_id` Int64, `embeddings` Array(Float32), `generation_timestamp` DateTime64(6, 'UTC') DEFAULT now('UTC'), `source_type` LowCardinality(String), `input` String) ENGINE = Distributed('posthog', 'default', 'sharded_session_replay_embeddings', sipHash64(session_id))

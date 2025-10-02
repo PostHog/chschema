@@ -1,0 +1,1 @@
+CREATE TABLE default.custom_metrics_counter_events (`name` String, `timestamp` DateTime64(3, 'UTC') DEFAULT now(), `labels` Map(String, String), `increment` Float64) ENGINE = ReplicatedMergeTree('/clickhouse/tables/noshard/posthog.metrics_counter_events', '{replica}-{shard}') PARTITION BY toYYYYMM(timestamp) ORDER BY (name, timestamp) SETTINGS index_granularity = 8192

@@ -1,0 +1,1 @@
+CREATE TABLE default.channel_definition (`domain` String, `kind` String, `domain_type` Nullable(String), `type_if_paid` Nullable(String), `type_if_organic` Nullable(String)) ENGINE = ReplicatedMergeTree('/clickhouse/tables/noshard/posthog.channel_definition', '{replica}-{shard}') ORDER BY (domain, kind) SETTINGS index_granularity = 8192

@@ -1,0 +1,1 @@
+CREATE MATERIALIZED VIEW default.person_overrides_mv TO default.person_overrides (`team_id` Int32, `old_person_id` UUID, `override_person_id` UUID, `merged_at` DateTime64(6, 'UTC'), `oldest_event` DateTime64(6, 'UTC'), `version` Int32) AS SELECT team_id, old_person_id, override_person_id, merged_at, oldest_event, version FROM default.kafka_person_overrides

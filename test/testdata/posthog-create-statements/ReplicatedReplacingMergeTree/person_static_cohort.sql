@@ -1,0 +1,1 @@
+CREATE TABLE default.person_static_cohort (`id` UUID, `person_id` UUID, `cohort_id` Int64, `team_id` Int64, `_timestamp` DateTime, `_offset` UInt64) ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/noshard/posthog.person_static_cohort', '{replica}-{shard}', _timestamp) ORDER BY (team_id, cohort_id, person_id, id) SETTINGS index_granularity = 8192

@@ -1,0 +1,1 @@
+CREATE TABLE default.kafka_person_overrides (`team_id` Int32, `old_person_id` UUID, `override_person_id` UUID, `merged_at` DateTime64(6, 'UTC'), `oldest_event` DateTime64(6, 'UTC'), `version` Int32) ENGINE = Kafka('kafka:9092', 'clickhouse_person_override', 'clickhouse-person-overrides', 'JSONEachRow')

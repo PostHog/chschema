@@ -1,0 +1,1 @@
+CREATE TABLE default.kafka_person_distinct_id_overrides (`team_id` Int64, `distinct_id` String, `person_id` UUID, `is_deleted` Int8, `version` Int64) ENGINE = Kafka('kafka:9092', 'clickhouse_person_distinct_id', 'clickhouse-person-distinct-id-overrides', 'JSONEachRow')

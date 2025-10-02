@@ -1,0 +1,1 @@
+CREATE TABLE default.log_entries (`team_id` UInt64, `log_source` LowCardinality(String), `log_source_id` String, `instance_id` String, `timestamp` DateTime64(6, 'UTC'), `level` LowCardinality(String), `message` String, `_timestamp` DateTime, `_offset` UInt64) ENGINE = Distributed('posthog', 'default', 'sharded_log_entries', rand())

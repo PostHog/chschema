@@ -1,0 +1,1 @@
+CREATE TABLE default.infi_clickhouse_orm_migrations (`package_name` String, `module_name` String, `applied` Date DEFAULT '1970-01-01') ENGINE = ReplicatedMergeTree('/clickhouse/prod/tables/noshard/default/infi_clickhouse_orm_migrations', '{replica}-{shard}') PARTITION BY toYYYYMM(applied) ORDER BY (package_name, module_name) SETTINGS index_granularity = 8192
