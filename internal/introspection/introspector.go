@@ -39,6 +39,7 @@ func (i *Introspector) introspectTables(ctx context.Context, state *loader.Desir
 			database,
 			name,
 			engine,
+			engine_full,
 			sorting_key,
 			partition_key,
 			primary_key,
@@ -54,9 +55,9 @@ func (i *Introspector) introspectTables(ctx context.Context, state *loader.Desir
 	defer rows.Close()
 
 	for rows.Next() {
-		var db, name, engine, sortingKey, partitionKey, primaryKey string
+		var db, name, engine, engineFull, sortingKey, partitionKey, primaryKey string
 		var totalRows, totalBytes uint64
-		if err := rows.Scan(&db, &name, &engine, &sortingKey, &partitionKey, &primaryKey, &totalRows, &totalBytes); err != nil {
+		if err := rows.Scan(&db, &name, &engine, &engineFull, &sortingKey, &partitionKey, &primaryKey, &totalRows, &totalBytes); err != nil {
 			return fmt.Errorf("failed to scan table row: %w", err)
 		}
 
@@ -66,7 +67,7 @@ func (i *Introspector) introspectTables(ctx context.Context, state *loader.Desir
 		}
 
 		// Parse and set engine information
-		if err := i.parseTableEngine(table, engine, sortingKey, partitionKey, primaryKey); err != nil {
+		if err := i.parseTableEngine(table, engine, engineFull, sortingKey, partitionKey, primaryKey); err != nil {
 			return fmt.Errorf("failed to parse engine for table %s: %w", name, err)
 		}
 
@@ -115,7 +116,7 @@ func (i *Introspector) introspectColumns(ctx context.Context, table *chschema_v1
 }
 
 // parseTableEngine parses engine information and sets table properties
-func (i *Introspector) parseTableEngine(table *chschema_v1.Table, engine, sortingKey, partitionKey, primaryKey string) error {
+func (i *Introspector) parseTableEngine(table *chschema_v1.Table, engine, engineFull, sortingKey, partitionKey, primaryKey string) error {
 	// Set ORDER BY clause
 	if sortingKey != "" {
 		table.OrderBy = strings.Split(sortingKey, ", ")
@@ -126,9 +127,12 @@ func (i *Introspector) parseTableEngine(table *chschema_v1.Table, engine, sortin
 		table.PartitionBy = &partitionKey
 	}
 
-	// For now, we'll store the engine as a string
-	// In a full implementation, you'd parse this into proper engine types
-	// table.Engine = &chschema_v1.Engine{Type: engine}
+	// Parse engine using the engine parser
+	parsedEngine, err := ParseEngine(engine, engineFull)
+	if err != nil {
+		return fmt.Errorf("failed to parse engine: %w", err)
+	}
+	table.Engine = parsedEngine
 
 	return nil
 }
