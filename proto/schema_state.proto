@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package clickhouse.iac.v1;
+
+option go_package = "github.com/posthog/chschema/gen/chschema_v1;chschema_v1";
+
+import "proto/cluster.proto";
+import "proto/table.proto";
+import "proto/view.proto";
+
+message NodeSchemaState {
+  repeated Cluster clusters = 1;
+  repeated Table tables = 2;
+  repeated View views = 3;
+  repeated MaterializedView materialized_views = 4;
+}
+
+// SchemaState represents the complete desired or current state of a ClickHouse schema.
+// This message serves as the top-level container for all schema objects and can be
+// serialized/deserialized for storage, transmission, or comparison.
+message SchemaState {
+  SchemaMetadata metadata = 1;
+  repeated Cluster clusters = 2;
+  repeated Table tables = 3;
+  repeated View views = 4;
+  repeated MaterializedView materialized_views = 5;
+}
+
+// SchemaMetadata contains metadata about the schema state
+message SchemaMetadata {
+  // Version of the schema format (for future compatibility)
+  string schema_version = 1;
+
+  // Timestamp when this state was captured or defined (RFC3339 format)
+  optional string timestamp = 2;
+
+  // Source of this schema state (e.g., "yaml_files", "introspection", "api")
+  optional string source = 3;
+
+  // Target database or node this schema applies to
+  optional string target_database = 4;
+
+  // Target cluster this schema applies to
+  optional string target_cluster = 5;
+
+  // Optional description or notes about this schema state
+  optional string description = 6;
+
+  // Git commit hash or version identifier (if tracked in version control)
+  optional string version = 7;
+}

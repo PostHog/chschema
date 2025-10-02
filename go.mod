@@ -4,6 +4,7 @@ go 1.25
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.40.3
+	github.com/google/go-cmp v0.7.0
 	github.com/spf13/cobra v1.10.1
 	github.com/stretchr/testify v1.11.1
 	google.golang.org/protobuf v1.36.9

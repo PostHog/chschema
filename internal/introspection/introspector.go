@@ -99,15 +99,19 @@ func (i *Introspector) introspectColumns(ctx context.Context, table *chschema_v1
 	defer rows.Close()
 
 	for rows.Next() {
-		var name, colType, defaultExpr string
-		if err := rows.Scan(&name, &colType, &defaultExpr); err != nil {
+		var name, colType, defaultExprVal string
+		if err := rows.Scan(&name, &colType, &defaultExprVal); err != nil {
 			return fmt.Errorf("failed to scan column row: %w", err)
+		}
+		var defaultExpr *string
+		if defaultExprVal != "" {
+			defaultExpr = &defaultExprVal
 		}
 
 		column := &chschema_v1.Column{
 			Name:              name,
 			Type:              colType,
-			DefaultExpression: &defaultExpr,
+			DefaultExpression: defaultExpr,
 		}
 		table.Columns = append(table.Columns, column)
 	}
