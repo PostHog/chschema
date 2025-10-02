@@ -145,8 +145,8 @@ func TestLive_EndToEnd_SchemaApply(t *testing.T) {
 func cleanupSQL(t *testing.T, dbName, createSQL string) string {
 	// regexp.MustCompile(`(TABLE|VIEW) default\.`)
 	createSQL = strings.Replace(createSQL, "TABLE default.", "TABLE "+dbName+".", 1)
-	pattern := regexp.MustCompile(`'/clickhouse/tables/noshard/posthog.(query_log_archive_new)'`)
-	dest := fmt.Sprintf(`'/clickhouse/tables/noshard/%s.$1'`, dbName)
+	pattern := regexp.MustCompile(`'/clickhouse/tables/(noshard|\{shard\})/posthog.(.*?)'`)
+	dest := fmt.Sprintf(`'/clickhouse/tables/$1/%s.$2'`, dbName)
 	createSQL = pattern.ReplaceAllString(createSQL, dest)
 	return createSQL
 }
@@ -155,6 +155,11 @@ func TestCleanupSQL(t *testing.T) {
 	createSQL := "CREATE TABLE default.query_log_archive (`hostname` LowCardinality(String),`user` LowCardinality(String),`query_id` String) ENGINE = ReplicatedMergeTree('/clickhouse/tables/noshard/posthog.query_log_archive_new', '{replica}-{shard}') PARTITION BY toYYYYMM(event_date) PRIMARY KEY (team_id, event_date, event_time, query_id) ORDER BY (team_id, event_date, event_time, query_id) SETTINGS index_granularity = 8192"
 	got := cleanupSQL(t, "my_test_database", createSQL)
 	want := "CREATE TABLE my_test_database.query_log_archive (`hostname` LowCardinality(String),`user` LowCardinality(String),`query_id` String) ENGINE = ReplicatedMergeTree('/clickhouse/tables/noshard/my_test_database.query_log_archive_new', '{replica}-{shard}') PARTITION BY toYYYYMM(event_date) PRIMARY KEY (team_id, event_date, event_time, query_id) ORDER BY (team_id, event_date, event_time, query_id) SETTINGS index_granularity = 8192"
+	require.Equal(t, want, got)
+
+	createSQL = "CREATE TABLE default.sharded_events (`uuid` UUID, `event` String, `properties` String CODEC(ZSTD(3)), `timestamp` DateTime64(6, 'UTC'), `team_id` Int64) ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/{shard}/posthog.events', '{replica}', _timestamp) PARTITION BY toYYYYMM(timestamp) ORDER BY (team_id, toDate(timestamp), event, cityHash64(distinct_id), cityHash64(uuid)) SAMPLE BY cityHash64(distinct_id) SETTINGS index_granularity = 8192"
+	got = cleanupSQL(t, "my_test_database", createSQL)
+	want = "CREATE TABLE my_test_database.sharded_events (`uuid` UUID, `event` String, `properties` String CODEC(ZSTD(3)), `timestamp` DateTime64(6, 'UTC'), `team_id` Int64) ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/{shard}/my_test_database.events', '{replica}', _timestamp) PARTITION BY toYYYYMM(timestamp) ORDER BY (team_id, toDate(timestamp), event, cityHash64(distinct_id), cityHash64(uuid)) SAMPLE BY cityHash64(distinct_id) SETTINGS index_granularity = 8192"
 	require.Equal(t, want, got)
 }
 
@@ -184,7 +189,6 @@ func TestEnd2End(t *testing.T) {
 		{
 			Name:   "sharded_events",
 			Engine: "ReplicatedReplacingMergeTree",
-			Skip:   true,
 		},
 	}
 
@@ -194,14 +198,17 @@ func TestEnd2End(t *testing.T) {
 				t.SkipNow()
 			}
 
-			sqlPath := filepath.Join("testdata/posthog-create-statements", testCase.Engine, testCase.Name+".sql")
+			tableName := testCase.Name
+			sqlPath := filepath.Join("testdata/posthog-create-statements", testCase.Engine, tableName+".sql")
 			createSQLRaw, err := os.ReadFile(sqlPath)
-			require.NoError(t, err, "Failed to read file %s", testCase.Name)
+			require.NoError(t, err, "Failed to read file %s", tableName)
 			createSQL := cleanupSQL(t, dbName, string(createSQLRaw))
 
 			defer func(t *testing.T) {
-				dropSQL := fmt.Sprintf("DROP TABLE %s.%s", dbName, testCase.Name)
-				require.NoError(t, conn.Exec(context.Background(), dropSQL))
+				dropSQL := fmt.Sprintf("DROP TABLE %s.%s", dbName, tableName)
+				if err := conn.Exec(context.Background(), dropSQL); err != nil {
+					t.Logf("Failed to drop table: %s", dropSQL)
+				}
 			}(t)
 
 			require.NoError(t, conn.Exec(context.Background(), createSQL))
@@ -209,7 +216,7 @@ func TestEnd2End(t *testing.T) {
 			// introspect
 			intro := introspection.NewIntrospector(conn)
 			intro.Databases = []string{dbName}
-			intro.Tables = []string{testCase.Name}
+			intro.Tables = []string{tableName}
 			state, err := intro.GetCurrentState(context.Background())
 			require.NoError(t, err, "Failed to introspect current state")
 			require.Len(t, state.Tables, 1)
@@ -218,7 +225,7 @@ func TestEnd2End(t *testing.T) {
 			require.NoError(t, err, "Failed to create temp dir")
 			// defer os.RemoveAll(tempDir)
 
-			require.NoError(t, dumper.WriteYAMLFile(path.Join(tempDir, "table.yaml"), state.Tables[0], false))
+			require.NoError(t, dumper.WriteYAMLFile(path.Join(tempDir, tableName+".yaml"), state.Tables[0], false))
 		})
 	}
 }
