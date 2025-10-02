@@ -81,35 +81,35 @@ func (d *Dumper) createDirectoryStructure(outputDir string) error {
 }
 
 // dumpTables writes table definitions to YAML files
-func (d *Dumper) dumpTables(tables map[string]*chschema_v1.Table, opts DumpOptions) error {
-	for tableName, table := range tables {
+func (d *Dumper) dumpTables(tables []*chschema_v1.Table, opts DumpOptions) error {
+	for _, table := range tables {
 		// Filter by database if specified
 		if opts.Database != "" && table.Database != nil && *table.Database != opts.Database {
 			continue
 		}
 
 		// Write protobuf table directly to YAML
-		filename := filepath.Join(opts.OutputDir, "tables", tableName+".yaml")
+		filename := filepath.Join(opts.OutputDir, "tables", table.Name+".yaml")
 		if err := d.writeYAMLFile(filename, table, opts.Overwrite); err != nil {
-			return fmt.Errorf("failed to write table %s: %w", tableName, err)
+			return fmt.Errorf("failed to write table %s: %w", table.Name, err)
 		}
 
-		fmt.Printf("Dumped table: %s\n", tableName)
+		fmt.Printf("Dumped table: %s\n", table.Name)
 	}
 
 	return nil
 }
 
 // dumpClusters writes cluster definitions to YAML files
-func (d *Dumper) dumpClusters(clusters map[string]*chschema_v1.Cluster, opts DumpOptions) error {
-	for clusterName, cluster := range clusters {
+func (d *Dumper) dumpClusters(clusters []*chschema_v1.Cluster, opts DumpOptions) error {
+	for _, cluster := range clusters {
 		// Write protobuf cluster directly to YAML
-		filename := filepath.Join(opts.OutputDir, "clusters", clusterName+".yaml")
+		filename := filepath.Join(opts.OutputDir, "clusters", cluster.Name+".yaml")
 		if err := d.writeYAMLFile(filename, cluster, opts.Overwrite); err != nil {
-			return fmt.Errorf("failed to write cluster %s: %w", clusterName, err)
+			return fmt.Errorf("failed to write cluster %s: %w", cluster.Name, err)
 		}
 
-		fmt.Printf("Dumped cluster: %s\n", clusterName)
+		fmt.Printf("Dumped cluster: %s\n", cluster.Name)
 	}
 
 	return nil

@@ -22,7 +22,7 @@ func NewIntrospector(conn clickhouse.Conn) *Introspector {
 }
 
 // GetCurrentState queries the system tables to build a model of the current schema.
-func (i *Introspector) GetCurrentState(ctx context.Context) (*loader.DesiredState, error) {
+func (i *Introspector) GetCurrentState(ctx context.Context) (*chschema_v1.NodeSchemaState, error) {
 	state := loader.NewDesiredState()
 
 	// 1. Introspect Tables and Columns
@@ -33,7 +33,7 @@ func (i *Introspector) GetCurrentState(ctx context.Context) (*loader.DesiredStat
 	return state, nil
 }
 
-func (i *Introspector) introspectTables(ctx context.Context, state *loader.DesiredState) error {
+func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.NodeSchemaState) error {
 	rows, err := i.conn.Query(ctx, `
 		SELECT
 			database,
@@ -81,7 +81,7 @@ func (i *Introspector) introspectTables(ctx context.Context, state *loader.Desir
 			return err
 		}
 
-		state.Tables[table.Name] = table
+		state.Tables = append(state.Tables, table)
 	}
 
 	return nil

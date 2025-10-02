@@ -7,6 +7,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/posthog/chschema/gen/chschema_v1"
 	"github.com/posthog/chschema/internal/introspection"
+	"github.com/posthog/chschema/internal/utils"
 	"github.com/posthog/chschema/test/testhelpers"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/testing/protocmp"
@@ -25,7 +26,9 @@ func TestLive_Introspection_Engine(t *testing.T) {
 	createSQL := `
 		CREATE TABLE ` + dbName + `.test_table (
 			id UInt64,
-			name String
+			name String,
+			age Nullable(UInt8),
+			pineapple_on_pizza Bool DEFAULT TRUE
 		) ENGINE = MergeTree()
 		ORDER BY id
 	`
@@ -38,8 +41,8 @@ func TestLive_Introspection_Engine(t *testing.T) {
 	require.NoError(t, err, "Failed to introspect database")
 
 	// Check that our table was found
-	table, exists := state.Tables["test_table"]
-	require.True(t, exists, "test_table should be found")
+	table := chschema_v1.FindTableByName(state.Tables, "test_table")
+	require.NotNil(t, table, "test_table should be found")
 
 	// Build expected table structure
 	want := &chschema_v1.Table{
@@ -48,6 +51,8 @@ func TestLive_Introspection_Engine(t *testing.T) {
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 			{Name: "name", Type: "String"},
+			{Name: "age", Type: "Nullable(UInt8)"},
+			{Name: "pineapple_on_pizza", Type: "Bool", DefaultExpression: utils.Ptr("true")},
 		},
 		Engine: &chschema_v1.Engine{
 			EngineType: &chschema_v1.Engine_MergeTree{

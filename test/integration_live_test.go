@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	"github.com/posthog/chschema/gen/chschema_v1"
 	"github.com/posthog/chschema/internal/diff"
 	"github.com/posthog/chschema/internal/executor"
 	"github.com/posthog/chschema/internal/introspection"
@@ -96,9 +97,10 @@ func TestLive_EndToEnd_SchemaApply(t *testing.T) {
 	require.Equal(t, len(desiredState.Tables), len(actualState.Tables),
 		"Number of tables should match")
 
-	for tableName, desiredTable := range desiredState.Tables {
-		actualTable, exists := actualState.Tables[tableName]
-		require.True(t, exists, "Table %s should exist in actual state", tableName)
+	for _, desiredTable := range desiredState.Tables {
+		tableName := desiredTable.Name
+		actualTable := chschema_v1.FindTableByName(actualState.Tables, tableName)
+		require.NotNil(t, actualTable, "Table %s should exist in actual state", tableName)
 
 		// Compare basic table properties
 		require.Equal(t, desiredTable.Name, actualTable.Name, "Table names should match")

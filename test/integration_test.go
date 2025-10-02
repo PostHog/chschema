@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/posthog/chschema/gen/chschema_v1"
 	"github.com/posthog/chschema/internal/diff"
 	"github.com/posthog/chschema/internal/loader"
 	"github.com/posthog/chschema/internal/sqlgen"
@@ -21,7 +22,7 @@ var (
 
 // AssertSQLDiff is a generic function that tests SQL generation by comparing desired and current states
 // and validating the generated SQL against a snapshot file.
-func AssertSQLDiff(t *testing.T, current, wanted *loader.DesiredState, snapshotPath string) {
+func AssertSQLDiff(t *testing.T, current, wanted *chschema_v1.NodeSchemaState, snapshotPath string) {
 	// Generate diff plan
 	differ := diff.NewDiffer()
 	plan, err := differ.Plan(wanted, current)
@@ -50,13 +51,12 @@ func TestIntegration_EventsTable_CreateSQL(t *testing.T) {
 	require.NoError(t, err, "Failed to load schema")
 
 	// Verify events table was loaded
-	eventsTable, exists := fullSchema.Tables["events"]
-	require.True(t, exists, "events table should exist in loaded schema")
-	require.NotNil(t, eventsTable, "events table should not be nil")
+	eventsTable := chschema_v1.FindTableByName(fullSchema.Tables, "events")
+	require.NotNil(t, eventsTable, "events table should exist in loaded schema")
 
 	// Prepare test states
 	wanted := loader.NewDesiredState() // Database with events table
-	wanted.Tables["events"] = eventsTable
+	wanted.Tables = append(wanted.Tables, eventsTable)
 
 	// Run the generic test
 	snapshotPath := filepath.Join("testdata", "snapshots", "events_create.sql")
@@ -71,12 +71,12 @@ func TestIntegration_UsersTable_CreateSQL(t *testing.T) {
 	require.NoError(t, err, "Failed to load schema")
 
 	// Get users table
-	usersTable, exists := fullSchema.Tables["users"]
-	require.True(t, exists, "users table should exist in loaded schema")
+	usersTable := chschema_v1.FindTableByName(fullSchema.Tables, "users")
+	require.NotNil(t, usersTable, "users table should exist in loaded schema")
 
 	// Prepare test states
 	wanted := loader.NewDesiredState() // Database with users table
-	wanted.Tables["users"] = usersTable
+	wanted.Tables = append(wanted.Tables, usersTable)
 
 	// Run the generic test
 	snapshotPath := filepath.Join("testdata", "snapshots", "users_create.sql")
@@ -92,8 +92,11 @@ func TestIntegration_BothTables_CreateSQL(t *testing.T) {
 
 	// Prepare test states
 	wanted := loader.NewDesiredState() // Database with both tables
-	wanted.Tables["events"] = fullSchema.Tables["events"]
-	wanted.Tables["users"] = fullSchema.Tables["users"]
+	eventsTable := chschema_v1.FindTableByName(fullSchema.Tables, "events")
+	usersTable := chschema_v1.FindTableByName(fullSchema.Tables, "users")
+	require.NotNil(t, eventsTable, "events table should exist")
+	require.NotNil(t, usersTable, "users table should exist")
+	wanted.Tables = append(wanted.Tables, eventsTable, usersTable)
 
 	// Run the generic test
 	snapshotPath := filepath.Join("testdata", "snapshots", "both_tables_create.sql")
@@ -109,7 +112,9 @@ func TestIntegration_DropTable_SQL(t *testing.T) {
 
 	// Prepare test states - reverse scenario (drop table)
 	current := loader.NewDesiredState() // Database with events table
-	current.Tables["events"] = fullSchema.Tables["events"]
+	eventsTable := chschema_v1.FindTableByName(fullSchema.Tables, "events")
+	require.NotNil(t, eventsTable, "events table should exist")
+	current.Tables = append(current.Tables, eventsTable)
 
 	// Run the generic test
 	snapshotPath := filepath.Join("testdata", "snapshots", "events_drop.sql")

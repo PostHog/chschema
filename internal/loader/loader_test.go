@@ -49,48 +49,24 @@ nodes:
 	require.NoError(t, err, "Failed to load schema")
 
 	// Verify loaded tables
-	if len(state.Tables) != 1 {
-		t.Errorf("Expected 1 table, got %d", len(state.Tables))
-	}
+	require.Equal(t, 1, len(state.Tables), "Expected 1 table")
 
-	if table, exists := state.Tables["users"]; !exists {
-		t.Error("Expected 'users' table to be loaded")
-	} else {
-		if table.Name != "users" {
-			t.Errorf("Expected table name 'users', got '%s'", table.Name)
-		}
-		if table.Database == nil || *table.Database != "myapp" {
-			t.Errorf("Expected database 'myapp', got %v", table.Database)
-		}
-		if len(table.Columns) != 3 {
-			t.Errorf("Expected 3 columns, got %d", len(table.Columns))
-		}
-		if len(table.OrderBy) != 1 || table.OrderBy[0] != "id" {
-			t.Errorf("Expected orderBy ['id'], got %v", table.OrderBy)
-		}
-	}
+	table := state.Tables[0]
+	require.Equal(t, "users", table.Name, "Expected table name 'users'")
+	require.NotNil(t, table.Database, "Expected database to be set")
+	require.Equal(t, "myapp", *table.Database, "Expected database 'myapp'")
+	require.Equal(t, 3, len(table.Columns), "Expected 3 columns")
+	require.Equal(t, 1, len(table.OrderBy), "Expected 1 orderBy field")
+	require.Equal(t, "id", table.OrderBy[0], "Expected orderBy ['id']")
 
 	// Verify loaded clusters
-	if len(state.Clusters) != 1 {
-		t.Errorf("Expected 1 cluster, got %d", len(state.Clusters))
-	}
+	require.Equal(t, 1, len(state.Clusters), "Expected 1 cluster")
 
-	if cluster, exists := state.Clusters["production"]; !exists {
-		t.Error("Expected 'production' cluster to be loaded")
-	} else {
-		if cluster.Name != "production" {
-			t.Errorf("Expected cluster name 'production', got '%s'", cluster.Name)
-		}
-		if len(cluster.Nodes) != 1 {
-			t.Errorf("Expected 1 node, got %d", len(cluster.Nodes))
-		}
-		if cluster.Nodes[0].Host != "localhost" {
-			t.Errorf("Expected host 'localhost', got '%s'", cluster.Nodes[0].Host)
-		}
-		if cluster.Nodes[0].Port != 9000 {
-			t.Errorf("Expected port 9000, got %d", cluster.Nodes[0].Port)
-		}
-	}
+	cluster := state.Clusters[0]
+	require.Equal(t, "production", cluster.Name, "Expected cluster name 'production'")
+	require.Equal(t, 1, len(cluster.Nodes), "Expected 1 node")
+	require.Equal(t, "localhost", cluster.Nodes[0].Host, "Expected host 'localhost'")
+	require.Equal(t, int32(9000), cluster.Nodes[0].Port, "Expected port 9000")
 }
 
 func TestSchemaLoader_Load_EmptyDirectory(t *testing.T) {

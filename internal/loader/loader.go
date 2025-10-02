@@ -13,20 +13,13 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// DesiredState holds the complete desired schema configuration
-type DesiredState struct {
-	Clusters          map[string]*chschema_v1.Cluster
-	Tables            map[string]*chschema_v1.Table
-	Views             map[string]*chschema_v1.View
-	MaterializedViews map[string]*chschema_v1.MaterializedView
-}
-
-func NewDesiredState() *DesiredState {
-	return &DesiredState{
-		Clusters:          make(map[string]*chschema_v1.Cluster),
-		Tables:            make(map[string]*chschema_v1.Table),
-		Views:             make(map[string]*chschema_v1.View),
-		MaterializedViews: make(map[string]*chschema_v1.MaterializedView),
+// NewDesiredState creates a new NodeSchemaState (alias for backward compatibility)
+func NewDesiredState() *chschema_v1.NodeSchemaState {
+	return &chschema_v1.NodeSchemaState{
+		Clusters:          []*chschema_v1.Cluster{},
+		Tables:            []*chschema_v1.Table{},
+		Views:             []*chschema_v1.View{},
+		MaterializedViews: []*chschema_v1.MaterializedView{},
 	}
 }
 
@@ -39,8 +32,8 @@ func NewSchemaLoader(path string) *SchemaLoader {
 	return &SchemaLoader{path: path}
 }
 
-// Load reads all YAML files from the schema directory and returns a DesiredState
-func (l *SchemaLoader) Load() (*DesiredState, error) {
+// Load reads all YAML files from the schema directory and returns a NodeSchemaState
+func (l *SchemaLoader) Load() (*chschema_v1.NodeSchemaState, error) {
 	state := NewDesiredState()
 
 	loaders := map[string]func(data []byte, path string) error{
@@ -49,7 +42,7 @@ func (l *SchemaLoader) Load() (*DesiredState, error) {
 			if err := unmarshalYAMLToProto(data, &cluster); err != nil {
 				return err
 			}
-			state.Clusters[cluster.Name] = &cluster
+			state.Clusters = append(state.Clusters, &cluster)
 			return nil
 		},
 		"tables": func(data []byte, path string) error {
@@ -57,7 +50,7 @@ func (l *SchemaLoader) Load() (*DesiredState, error) {
 			if err := unmarshalYAMLToProto(data, &table); err != nil {
 				return err
 			}
-			state.Tables[table.Name] = &table
+			state.Tables = append(state.Tables, &table)
 			return nil
 		},
 	}

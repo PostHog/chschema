@@ -58,8 +58,9 @@ func TestDumper_RoundTrip(t *testing.T) {
 	require.NoError(t, err, "Failed to load dumped schema")
 
 	// Get the loaded table
-	loadedTable, exists := loadedSchema.Tables["test_table"]
-	require.True(t, exists, "test_table should exist in loaded schema")
+	require.Equal(t, 1, len(loadedSchema.Tables), "Should have exactly one table")
+	loadedTable := loadedSchema.Tables[0]
+	require.Equal(t, "test_table", loadedTable.Name, "Table name should match")
 
 	// Compare using EqualValues
 	require.EqualValues(t, originalTable, loadedTable, "Dumped and loaded table should be identical")

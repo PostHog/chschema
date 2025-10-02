@@ -25,7 +25,7 @@ func TestDiffer_Plan_CreateTable(t *testing.T) {
 	// Desired state has a table
 	desired := loader.NewDesiredState()
 	database := "myapp"
-	desired.Tables["users"] = &chschema_v1.Table{
+	usersTable := &chschema_v1.Table{
 		Name:     "users",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
@@ -33,6 +33,7 @@ func TestDiffer_Plan_CreateTable(t *testing.T) {
 			{Name: "name", Type: "String"},
 		},
 	}
+	desired.Tables = append(desired.Tables, usersTable)
 
 	// Current state is empty
 	current := loader.NewDesiredState()
@@ -44,7 +45,7 @@ func TestDiffer_Plan_CreateTable(t *testing.T) {
 
 	action := plan.Actions[0]
 	require.Equal(t, ActionCreateTable, action.Type, "Expected ActionCreateTable")
-	require.Equal(t, desired.Tables["users"], action.Payload, "Expected payload to be the table object")
+	require.Equal(t, usersTable, action.Payload, "Expected payload to be the table object")
 
 	expectedReason := "Table users is defined in schema but does not exist in the database."
 	require.Equal(t, expectedReason, action.Reason, "Expected correct reason")
@@ -59,13 +60,13 @@ func TestDiffer_Plan_DropTable(t *testing.T) {
 	// Current state has a table
 	current := loader.NewDesiredState()
 	database := "myapp"
-	current.Tables["old_table"] = &chschema_v1.Table{
+	current.Tables = append(current.Tables, &chschema_v1.Table{
 		Name:     "old_table",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 		},
-	}
+	})
 
 	plan, err := differ.Plan(desired, current)
 	if err != nil {
@@ -97,24 +98,24 @@ func TestDiffer_Plan_AddColumn(t *testing.T) {
 
 	// Desired state has table with 2 columns
 	desired := loader.NewDesiredState()
-	desired.Tables["users"] = &chschema_v1.Table{
+	desired.Tables = append(desired.Tables, &chschema_v1.Table{
 		Name:     "users",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 			{Name: "email", Type: "String"}, // New column
 		},
-	}
+	})
 
 	// Current state has table with 1 column
 	current := loader.NewDesiredState()
-	current.Tables["users"] = &chschema_v1.Table{
+	current.Tables = append(current.Tables, &chschema_v1.Table{
 		Name:     "users",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 		},
-	}
+	})
 
 	plan, err := differ.Plan(desired, current)
 	if err != nil {
@@ -158,24 +159,24 @@ func TestDiffer_Plan_DropColumn(t *testing.T) {
 
 	// Desired state has table with 1 column
 	desired := loader.NewDesiredState()
-	desired.Tables["users"] = &chschema_v1.Table{
+	desired.Tables = append(desired.Tables, &chschema_v1.Table{
 		Name:     "users",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 		},
-	}
+	})
 
 	// Current state has table with 2 columns
 	current := loader.NewDesiredState()
-	current.Tables["users"] = &chschema_v1.Table{
+	current.Tables = append(current.Tables, &chschema_v1.Table{
 		Name:     "users",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 			{Name: "old_email", Type: "String"}, // Column to be dropped
 		},
-	}
+	})
 
 	plan, err := differ.Plan(desired, current)
 	if err != nil {
@@ -215,40 +216,40 @@ func TestDiffer_Plan_ComplexScenario(t *testing.T) {
 
 	// Desired state
 	desired := loader.NewDesiredState()
-	desired.Tables["users"] = &chschema_v1.Table{
+	desired.Tables = append(desired.Tables, &chschema_v1.Table{
 		Name:     "users",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 			{Name: "email", Type: "String"}, // New column
 		},
-	}
-	desired.Tables["products"] = &chschema_v1.Table{ // New table
+	})
+	desired.Tables = append(desired.Tables, &chschema_v1.Table{ // New table
 		Name:     "products",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 			{Name: "name", Type: "String"},
 		},
-	}
+	})
 
 	// Current state
 	current := loader.NewDesiredState()
-	current.Tables["users"] = &chschema_v1.Table{
+	current.Tables = append(current.Tables, &chschema_v1.Table{
 		Name:     "users",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 			{Name: "old_name", Type: "String"}, // Column to be dropped
 		},
-	}
-	current.Tables["legacy_table"] = &chschema_v1.Table{ // Table to be dropped
+	})
+	current.Tables = append(current.Tables, &chschema_v1.Table{ // Table to be dropped
 		Name:     "legacy_table",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 		},
-	}
+	})
 
 	plan, err := differ.Plan(desired, current)
 	if err != nil {
@@ -286,24 +287,24 @@ func TestDiffer_Plan_NoChanges(t *testing.T) {
 
 	// Identical states
 	desired := loader.NewDesiredState()
-	desired.Tables["users"] = &chschema_v1.Table{
+	desired.Tables = append(desired.Tables, &chschema_v1.Table{
 		Name:     "users",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 			{Name: "name", Type: "String"},
 		},
-	}
+	})
 
 	current := loader.NewDesiredState()
-	current.Tables["users"] = &chschema_v1.Table{
+	current.Tables = append(current.Tables, &chschema_v1.Table{
 		Name:     "users",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
 			{Name: "id", Type: "UInt64"},
 			{Name: "name", Type: "String"},
 		},
-	}
+	})
 
 	plan, err := differ.Plan(desired, current)
 	if err != nil {
@@ -315,7 +316,7 @@ func TestDiffer_Plan_NoChanges(t *testing.T) {
 	}
 }
 
-func Test_columnExistsIn(t *testing.T) {
+func Test_FindColumnByName(t *testing.T) {
 	columns := []*chschema_v1.Column{
 		{Name: "id", Type: "UInt64"},
 		{Name: "name", Type: "String"},
@@ -323,22 +324,22 @@ func Test_columnExistsIn(t *testing.T) {
 	}
 
 	// Test existing column
-	if !columnExistsIn("name", columns) {
+	if chschema_v1.FindColumnByName(columns, "name") == nil {
 		t.Error("Expected 'name' to exist in columns")
 	}
 
 	// Test non-existing column
-	if columnExistsIn("phone", columns) {
+	if chschema_v1.FindColumnByName(columns, "phone") != nil {
 		t.Error("Expected 'phone' to not exist in columns")
 	}
 
 	// Test empty columns
-	if columnExistsIn("any", []*chschema_v1.Column{}) {
+	if chschema_v1.FindColumnByName([]*chschema_v1.Column{}, "any") != nil {
 		t.Error("Expected no columns to exist in empty slice")
 	}
 
 	// Test case sensitivity
-	if columnExistsIn("NAME", columns) {
+	if chschema_v1.FindColumnByName(columns, "NAME") != nil {
 		t.Error("Expected case-sensitive comparison to fail")
 	}
 }

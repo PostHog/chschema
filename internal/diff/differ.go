@@ -2,9 +2,9 @@ package diff
 
 import (
 	"fmt"
-	"github.com/posthog/chschema/gen/chschema_v1"
-	"github.com/posthog/chschema/internal/loader"
 	"sort"
+
+	"github.com/posthog/chschema/gen/chschema_v1"
 )
 
 // ActionType defines the type of DDL action to be taken.
@@ -37,32 +37,51 @@ func NewDiffer() *Differ {
 }
 
 // Plan generates a list of actions required to migrate the current state to the desired state.
-func (d *Differ) Plan(desired, current *loader.DesiredState) (*Plan, error) {
+func (d *Differ) Plan(desired, current *chschema_v1.NodeSchemaState) (*Plan, error) {
 	plan := &Plan{}
 	d.compareTables(plan, desired, current)
 	return plan, nil
 }
 
-func (d *Differ) compareTables(plan *Plan, desired, current *loader.DesiredState) {
+func listToMap[T any](list []T, getKey func(T) string) map[string]T {
+	result := make(map[string]T)
+	for _, v := range list {
+		result[getKey(v)] = v
+	}
+	return result
+}
+
+// tablesToMap converts a slice of tables to a map keyed by table name
+func tablesToMap(tables []*chschema_v1.Table) map[string]*chschema_v1.Table {
+	return listToMap(tables, func(table *chschema_v1.Table) string {
+		return table.Name
+	})
+}
+
+func (d *Differ) compareTables(plan *Plan, desired, current *chschema_v1.NodeSchemaState) {
+	// Convert slices to maps for easy lookup
+	desiredMap := tablesToMap(desired.Tables)
+	currentMap := tablesToMap(current.Tables)
+
 	// Get sorted table names for deterministic ordering
-	desiredTableNames := make([]string, 0, len(desired.Tables))
-	for name := range desired.Tables {
+	desiredTableNames := make([]string, 0, len(desiredMap))
+	for name := range desiredMap {
 		desiredTableNames = append(desiredTableNames, name)
 	}
 	sort.Strings(desiredTableNames)
 
-	currentTableNames := make([]string, 0, len(current.Tables))
-	for name := range current.Tables {
+	currentTableNames := make([]string, 0, len(currentMap))
+	for name := range currentMap {
 		currentTableNames = append(currentTableNames, name)
 	}
 	sort.Strings(currentTableNames)
 
 	// Check for tables to create (in sorted order)
 	for _, name := range desiredTableNames {
-		if _, exists := current.Tables[name]; !exists {
+		if _, exists := currentMap[name]; !exists {
 			plan.Actions = append(plan.Actions, Action{
 				Type:    ActionCreateTable,
-				Payload: desired.Tables[name],
+				Payload: desiredMap[name],
 				Reason:  fmt.Sprintf("Table %s is defined in schema but does not exist in the database.", name),
 			})
 		}
@@ -70,7 +89,7 @@ func (d *Differ) compareTables(plan *Plan, desired, current *loader.DesiredState
 
 	// Check for tables to drop (in sorted order)
 	for _, name := range currentTableNames {
-		if _, exists := desired.Tables[name]; !exists {
+		if _, exists := desiredMap[name]; !exists {
 			plan.Actions = append(plan.Actions, Action{
 				Type:    ActionDropTable,
 				Payload: name, // Just need the name to drop
@@ -81,21 +100,16 @@ func (d *Differ) compareTables(plan *Plan, desired, current *loader.DesiredState
 
 	// Check for tables to modify (columns) (in sorted order)
 	for _, name := range desiredTableNames {
-		if currentTable, exists := current.Tables[name]; exists {
-			d.compareColumns(plan, desired.Tables[name], currentTable)
+		if currentTable, exists := currentMap[name]; exists {
+			d.compareColumns(plan, desiredMap[name], currentTable)
 		}
 	}
 }
 
 func (d *Differ) compareColumns(plan *Plan, desiredTable, currentTable *chschema_v1.Table) {
-	currentColumns := make(map[string]*chschema_v1.Column)
-	for _, col := range currentTable.Columns {
-		currentColumns[col.Name] = col
-	}
-
 	// Check for columns to add
 	for _, desiredColumn := range desiredTable.Columns {
-		if _, exists := currentColumns[desiredColumn.Name]; !exists {
+		if chschema_v1.FindColumnByName(currentTable.Columns, desiredColumn.Name) == nil {
 			plan.Actions = append(plan.Actions, Action{
 				Type:    ActionAddColumn,
 				Payload: map[string]interface{}{"table": desiredTable.Name, "column": desiredColumn},
@@ -106,7 +120,7 @@ func (d *Differ) compareColumns(plan *Plan, desiredTable, currentTable *chschema
 
 	// Check for columns to drop
 	for _, currentColumn := range currentTable.Columns {
-		if !columnExistsIn(currentColumn.Name, desiredTable.Columns) {
+		if chschema_v1.FindColumnByName(desiredTable.Columns, currentColumn.Name) == nil {
 			plan.Actions = append(plan.Actions, Action{
 				Type:    ActionDropColumn,
 				Payload: map[string]interface{}{"table": desiredTable.Name, "column_name": currentColumn.Name},
@@ -114,13 +128,4 @@ func (d *Differ) compareColumns(plan *Plan, desiredTable, currentTable *chschema
 			})
 		}
 	}
-}
-
-func columnExistsIn(name string, columns []*chschema_v1.Column) bool {
-	for _, col := range columns {
-		if col.Name == name {
-			return true
-		}
-	}
-	return false
 }
