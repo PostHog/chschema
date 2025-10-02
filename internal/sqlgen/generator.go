@@ -75,8 +75,7 @@ func (g *SQLGenerator) GenerateActionSQL(action diff.Action) (string, error) {
 	}
 }
 
-// GenerateCreateTable generates a CREATE TABLE statement.
-func (g *SQLGenerator) GenerateCreateTable(table *chschema_v1.Table) string {
+func GenerateCreateTable(table *chschema_v1.Table) string {
 	var sb strings.Builder
 
 	database := "default"
@@ -99,16 +98,18 @@ func (g *SQLGenerator) GenerateCreateTable(table *chschema_v1.Table) string {
 	sb.WriteString("\n)")
 
 	// Engine
-	sb.WriteString(fmt.Sprintf(" ENGINE = %s\n", g.generateEngineString(table.Engine)))
-
-	// Order By
-	if len(table.OrderBy) > 0 {
-		sb.WriteString(fmt.Sprintf(" ORDER BY (%s)\n", strings.Join(table.OrderBy, ", ")))
-	}
+	sb.WriteString(fmt.Sprintf(" ENGINE = %s\n", GenerateEngineString(table.Engine)))
 
 	// Partition By
 	if table.PartitionBy != nil && *table.PartitionBy != "" {
 		sb.WriteString(fmt.Sprintf(" PARTITION BY %s\n", *table.PartitionBy))
+	}
+
+	// Order By
+	if l := len(table.OrderBy); l == 1 {
+		sb.WriteString(fmt.Sprintf(" ORDER BY %s\n", table.OrderBy[0]))
+	} else if l > 1 {
+		sb.WriteString(fmt.Sprintf(" ORDER BY %s\n", strings.Join(table.OrderBy, ", ")))
 	}
 
 	// TTL
@@ -135,6 +136,11 @@ func (g *SQLGenerator) GenerateCreateTable(table *chschema_v1.Table) string {
 	return sb.String()
 }
 
+// GenerateCreateTable generates a CREATE TABLE statement.
+func (g *SQLGenerator) GenerateCreateTable(table *chschema_v1.Table) string {
+	return GenerateCreateTable(table)
+}
+
 // GenerateDropTable generates a DROP TABLE statement.
 func (g *SQLGenerator) GenerateDropTable(tableName string) string {
 	return fmt.Sprintf("DROP TABLE %s", tableName)
@@ -154,8 +160,7 @@ func (g *SQLGenerator) GenerateDropColumn(tableName, columnName string) string {
 	return fmt.Sprintf("ALTER TABLE %s DROP COLUMN %s", tableName, columnName)
 }
 
-// generateEngineString creates the engine specification string.
-func (g *SQLGenerator) generateEngineString(engine *chschema_v1.Engine) string {
+func GenerateEngineString(engine *chschema_v1.Engine) string {
 	if engine == nil {
 		return "MergeTree()"
 	}
@@ -170,4 +175,9 @@ func (g *SQLGenerator) generateEngineString(engine *chschema_v1.Engine) string {
 
 	// Default fallback
 	return "MergeTree()"
+}
+
+// generateEngineString creates the engine specification string.
+func (g *SQLGenerator) generateEngineString(engine *chschema_v1.Engine) string {
+	return GenerateEngineString(engine)
 }
