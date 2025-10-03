@@ -3,4 +3,4 @@ CREATE TABLE default.users (
   email String,
   created_at DateTime DEFAULT now()
 ) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/users', '{replica}')
- ORDER BY (id)
+ ORDER BY id

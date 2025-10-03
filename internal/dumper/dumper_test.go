@@ -47,9 +47,8 @@ func TestDumper_RoundTrip(t *testing.T) {
 	require.NoError(t, err, "Failed to create tables directory")
 
 	// Dump table to YAML
-	dumper := &Dumper{}
 	yamlFile := filepath.Join(tablesDir, "test_table.yaml")
-	err = dumper.writeYAMLFile(yamlFile, originalTable, true)
+	err = WriteYAMLFile(yamlFile, originalTable, true)
 	require.NoError(t, err, "Failed to write YAML file")
 
 	// Load table back using loader

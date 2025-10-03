@@ -109,7 +109,7 @@ func GenerateCreateTable(table *chschema_v1.Table) string {
 	if l := len(table.OrderBy); l == 1 {
 		sb.WriteString(fmt.Sprintf(" ORDER BY %s\n", table.OrderBy[0]))
 	} else if l > 1 {
-		sb.WriteString(fmt.Sprintf(" ORDER BY %s\n", strings.Join(table.OrderBy, ", ")))
+		sb.WriteString(fmt.Sprintf(" ORDER BY (%s)\n", strings.Join(table.OrderBy, ", ")))
 	}
 
 	// TTL

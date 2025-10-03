@@ -33,7 +33,7 @@ func TestSQLGenerator_GenerateCreateTable(t *testing.T) {
 	require.Contains(t, sql, "id UInt64")
 	require.Contains(t, sql, "name String")
 	require.Contains(t, sql, "ENGINE = MergeTree()")
-	require.Contains(t, sql, "ORDER BY (id)")
+	require.Contains(t, sql, "ORDER BY id")
 }
 
 func TestSQLGenerator_GenerateCreateTable_WithDefaults(t *testing.T) {

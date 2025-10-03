@@ -6,7 +6,7 @@ CREATE TABLE default.events (
   properties JSON,
   inserted_at DateTime
 ) ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/events', '{replica}')
- ORDER BY (event, timestamp)
  PARTITION BY toYYYYMM(timestamp)
+ ORDER BY (event, timestamp)
  TTL timestamp + INTERVAL 2 YEARS
  SETTINGS ttl_only_drop_parts = 1
