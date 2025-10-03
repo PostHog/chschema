@@ -87,9 +87,16 @@ func GenerateCreateTable(table *chschema_v1.Table) string {
 
 	// Columns
 	for i, col := range table.Columns {
-		sb.WriteString(fmt.Sprintf("  %s %s", col.Name, col.Type))
+		// TODO move the column generation to a separate function
+		sb.WriteString(fmt.Sprintf("  `%s` %s", col.Name, col.Type))
 		if col.DefaultExpression != nil && *col.DefaultExpression != "" {
 			sb.WriteString(fmt.Sprintf(" DEFAULT %s", *col.DefaultExpression))
+		}
+		if col.Codec != nil && *col.Codec != "" {
+			sb.WriteString(fmt.Sprintf(" %s", *col.Codec))
+		}
+		if col.Comment != nil && *col.Comment != "" {
+			sb.WriteString(fmt.Sprintf(" COMMENT '%s'", *col.Comment))
 		}
 		if i < len(table.Columns)-1 {
 			sb.WriteString(",\n")
@@ -151,6 +158,13 @@ func (g *SQLGenerator) GenerateAddColumn(tableName string, column *chschema_v1.C
 	sql := fmt.Sprintf("ALTER TABLE %s ADD COLUMN %s %s", tableName, column.Name, column.Type)
 	if column.DefaultExpression != nil && *column.DefaultExpression != "" {
 		sql += fmt.Sprintf(" DEFAULT %s", *column.DefaultExpression)
+	}
+	if column.Codec != nil && *column.Codec != "" {
+		sql += fmt.Sprintf(" %s", *column.Codec)
+	}
+
+	if column.Comment != nil && *column.Comment != "" {
+		sql += fmt.Sprintf(" COMMENT '%s'", *column.Comment)
 	}
 	return sql
 }

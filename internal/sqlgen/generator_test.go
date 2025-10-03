@@ -5,6 +5,7 @@ import (
 
 	"github.com/posthog/chschema/gen/chschema_v1"
 	"github.com/posthog/chschema/internal/diff"
+	"github.com/posthog/chschema/internal/utils"
 	"github.com/stretchr/testify/require"
 )
 
@@ -16,8 +17,8 @@ func TestSQLGenerator_GenerateCreateTable(t *testing.T) {
 		Name:     "users",
 		Database: &database,
 		Columns: []*chschema_v1.Column{
-			{Name: "id", Type: "UInt64"},
-			{Name: "name", Type: "String"},
+			{Name: "id", Type: "UInt64", Comment: utils.Ptr("ID of the user")},
+			{Name: "name", Type: "String", Codec: utils.Ptr("CODEC(ZSTD(3))")},
 		},
 		OrderBy: []string{"id"},
 		Engine: &chschema_v1.Engine{
@@ -31,7 +32,7 @@ func TestSQLGenerator_GenerateCreateTable(t *testing.T) {
 
 	require.Contains(t, sql, "CREATE TABLE test_db.users")
 	require.Contains(t, sql, "id UInt64")
-	require.Contains(t, sql, "name String")
+	require.Contains(t, sql, "name String CODEC(ZSTD(3))")
 	require.Contains(t, sql, "ENGINE = MergeTree()")
 	require.Contains(t, sql, "ORDER BY id")
 }
