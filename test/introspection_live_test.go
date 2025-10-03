@@ -67,6 +67,32 @@ func TestLive_Introspection_Engine(t *testing.T) {
 				OrderBy:     []string{"id"},
 			},
 		},
+		{
+			Name: "ColumnComments",
+			SQL: `
+		CREATE TABLE ` + dbName + `.test_comments (
+			user_id UInt64 COMMENT 'The unique identifier for the user',
+			email String COMMENT 'User email address',
+			status String
+		) ENGINE = MergeTree()
+		ORDER BY user_id
+	`,
+			table: &chschema_v1.Table{
+				Name:     "test_comments",
+				Database: &dbName,
+				Columns: []*chschema_v1.Column{
+					{Name: "user_id", Type: "UInt64", Comment: utils.Ptr("The unique identifier for the user")},
+					{Name: "email", Type: "String", Comment: utils.Ptr("User email address")},
+					{Name: "status", Type: "String"},
+				},
+				Engine: &chschema_v1.Engine{
+					EngineType: &chschema_v1.Engine_MergeTree{
+						MergeTree: &chschema_v1.MergeTree{},
+					},
+				},
+				OrderBy: []string{"user_id"},
+			},
+		},
 	}
 
 	for _, testCase := range testCases {
@@ -76,12 +102,13 @@ func TestLive_Introspection_Engine(t *testing.T) {
 
 			// Introspect the database
 			intro := introspection.NewIntrospector(conn)
+			intro.Databases = []string{dbName}
 			state, err := intro.GetCurrentState(ctx)
 			require.NoError(t, err, "Failed to introspect database")
 
 			// Check that our table was found
-			gotTable := chschema_v1.FindTableByName(state.Tables, "test_table")
-			require.NotNil(t, gotTable, "test_table should be found")
+			gotTable := chschema_v1.FindTableByName(state.Tables, testCase.table.Name)
+			require.NotNil(t, gotTable, "%s should be found", testCase.table.Name)
 
 			// Compare using protocmp for proper protobuf comparison
 			diff := cmp.Diff(testCase.table, gotTable, protocmp.Transform())
@@ -159,6 +186,7 @@ func TestLive_Introspection_AllStatements(t *testing.T) {
 
 					// Introspect the database
 					intro := introspection.NewIntrospector(conn)
+					intro.Databases = []string{dbName}
 					state, err := intro.GetCurrentState(ctx)
 					require.NoError(t, err, "Failed to introspect database")
 
@@ -183,6 +211,8 @@ func TestLive_Introspection_AllStatements(t *testing.T) {
 var whitespaces = regexp.MustCompile(`[\t\n\s]+`)
 
 func simplify(stmt string) string {
+	// Remove backticks
+	stmt = strings.ReplaceAll(stmt, "`", "")
 	return whitespaces.ReplaceAllString(
 		strings.ToLower(
 			strings.TrimSpace(stmt)), " ")

@@ -31,8 +31,8 @@ func TestSQLGenerator_GenerateCreateTable(t *testing.T) {
 	sql := generator.GenerateCreateTable(table)
 
 	require.Contains(t, sql, "CREATE TABLE test_db.users")
-	require.Contains(t, sql, "id UInt64")
-	require.Contains(t, sql, "name String CODEC(ZSTD(3))")
+	require.Contains(t, sql, "`id` UInt64")
+	require.Contains(t, sql, "`name` String CODEC(ZSTD(3))")
 	require.Contains(t, sql, "ENGINE = MergeTree()")
 	require.Contains(t, sql, "ORDER BY id")
 }
@@ -59,8 +59,8 @@ func TestSQLGenerator_GenerateCreateTable_WithDefaults(t *testing.T) {
 
 	sql := generator.GenerateCreateTable(table)
 
-	require.Contains(t, sql, "id UUID")
-	require.Contains(t, sql, "created_at DateTime DEFAULT now()")
+	require.Contains(t, sql, "`id` UUID")
+	require.Contains(t, sql, "`created_at` DateTime DEFAULT now()")
 }
 
 func TestSQLGenerator_GenerateCreateTable_ReplicatedMergeTree(t *testing.T) {

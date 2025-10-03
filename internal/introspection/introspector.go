@@ -108,7 +108,7 @@ func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.
 
 func (i *Introspector) introspectColumns(ctx context.Context, table *chschema_v1.Table) error {
 	rows, err := i.conn.Query(ctx, `
-		SELECT name, type, default_expression, compression_codec
+		SELECT name, type, default_expression, compression_codec, comment
 		FROM system.columns
 		WHERE database = ? AND table = ?
 	`, table.Database, table.Name)
@@ -118,8 +118,8 @@ func (i *Introspector) introspectColumns(ctx context.Context, table *chschema_v1
 	defer rows.Close()
 
 	for rows.Next() {
-		var name, colType, defaultExprVal, codecVal string
-		if err := rows.Scan(&name, &colType, &defaultExprVal, &codecVal); err != nil {
+		var name, colType, defaultExprVal, codecVal, commentVal string
+		if err := rows.Scan(&name, &colType, &defaultExprVal, &codecVal, &commentVal); err != nil {
 			return fmt.Errorf("failed to scan column row: %w", err)
 		}
 		var defaultExpr *string
@@ -132,11 +132,17 @@ func (i *Introspector) introspectColumns(ctx context.Context, table *chschema_v1
 			codec = &codecVal
 		}
 
+		var comment *string
+		if commentVal != "" {
+			comment = &commentVal
+		}
+
 		column := &chschema_v1.Column{
 			Name:              name,
 			Type:              colType,
 			DefaultExpression: defaultExpr,
 			Codec:             codec,
+			Comment:           comment,
 		}
 		table.Columns = append(table.Columns, column)
 	}
