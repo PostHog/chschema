@@ -37,6 +37,10 @@ func ParseEngine(engineName, engineFull string) (*chschema_v1.Engine, error) {
 		return parseReplicatedReplacingMergeTree(engineDecl)
 	case strings.HasPrefix(engineDecl, "SummingMergeTree"):
 		return parseSummingMergeTree(engineDecl)
+	case strings.HasPrefix(engineDecl, "ReplicatedCollapsingMergeTree"):
+		return parseReplicatedCollapsingMergeTree(engineDecl)
+	case strings.HasPrefix(engineDecl, "CollapsingMergeTree"):
+		return parseCollapsingMergeTree(engineDecl)
 	case strings.HasPrefix(engineDecl, "Distributed"):
 		return parseDistributed(engineDecl)
 	case strings.HasPrefix(engineDecl, "Log"):
@@ -167,6 +171,48 @@ func parseSummingMergeTree(engineDecl string) (*chschema_v1.Engine, error) {
 	return &chschema_v1.Engine{
 		EngineType: &chschema_v1.Engine_SummingMergeTree{
 			SummingMergeTree: engine,
+		},
+	}, nil
+}
+
+// parseCollapsingMergeTree parses "CollapsingMergeTree(sign_column)"
+func parseCollapsingMergeTree(engineDecl string) (*chschema_v1.Engine, error) {
+	params, err := extractParameters(engineDecl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse CollapsingMergeTree parameters: %w", err)
+	}
+
+	if len(params) != 1 {
+		return nil, fmt.Errorf("CollapsingMergeTree requires 1 parameter (sign column), got %d", len(params))
+	}
+
+	return &chschema_v1.Engine{
+		EngineType: &chschema_v1.Engine_CollapsingMergeTree{
+			CollapsingMergeTree: &chschema_v1.CollapsingMergeTree{
+				SignColumn: params[0],
+			},
+		},
+	}, nil
+}
+
+// parseReplicatedCollapsingMergeTree parses "ReplicatedCollapsingMergeTree('/path', 'replica', sign_column)"
+func parseReplicatedCollapsingMergeTree(engineDecl string) (*chschema_v1.Engine, error) {
+	params, err := extractParameters(engineDecl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ReplicatedCollapsingMergeTree parameters: %w", err)
+	}
+
+	if len(params) != 3 {
+		return nil, fmt.Errorf("ReplicatedCollapsingMergeTree requires 3 parameters, got %d", len(params))
+	}
+
+	return &chschema_v1.Engine{
+		EngineType: &chschema_v1.Engine_ReplicatedCollapsingMergeTree{
+			ReplicatedCollapsingMergeTree: &chschema_v1.ReplicatedCollapsingMergeTree{
+				ZooPath:     params[0],
+				ReplicaName: params[1],
+				SignColumn:  params[2],
+			},
 		},
 	}, nil
 }

@@ -288,6 +288,34 @@ func TestExtractParameters(t *testing.T) {
 	}
 }
 
+func TestParseEngine_CollapsingMergeTree(t *testing.T) {
+	engineName := "CollapsingMergeTree"
+	engineFull := "CollapsingMergeTree(sign) ORDER BY id"
+
+	engine, err := ParseEngine(engineName, engineFull)
+	require.NoError(t, err)
+	require.NotNil(t, engine)
+
+	cmt := engine.GetCollapsingMergeTree()
+	require.NotNil(t, cmt)
+	require.Equal(t, "sign", cmt.SignColumn)
+}
+
+func TestParseEngine_ReplicatedCollapsingMergeTree(t *testing.T) {
+	engineName := "ReplicatedCollapsingMergeTree"
+	engineFull := "ReplicatedCollapsingMergeTree('/clickhouse/tables/{shard}/test', '{replica}', sign) ORDER BY id"
+
+	engine, err := ParseEngine(engineName, engineFull)
+	require.NoError(t, err)
+	require.NotNil(t, engine)
+
+	rcmt := engine.GetReplicatedCollapsingMergeTree()
+	require.NotNil(t, rcmt)
+	require.Equal(t, "/clickhouse/tables/{shard}/test", rcmt.ZooPath)
+	require.Equal(t, "{replica}", rcmt.ReplicaName)
+	require.Equal(t, "sign", rcmt.SignColumn)
+}
+
 func stringPtr(s string) *string {
 	return &s
 }

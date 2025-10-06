@@ -30,6 +30,8 @@ type Engine struct {
 	//	*Engine_ReplacingMergeTree
 	//	*Engine_ReplicatedReplacingMergeTree
 	//	*Engine_SummingMergeTree
+	//	*Engine_CollapsingMergeTree
+	//	*Engine_ReplicatedCollapsingMergeTree
 	//	*Engine_Distributed
 	//	*Engine_Log
 	EngineType    isEngine_EngineType `protobuf_oneof:"engine_type"`
@@ -119,6 +121,24 @@ func (x *Engine) GetSummingMergeTree() *SummingMergeTree {
 	return nil
 }
 
+func (x *Engine) GetCollapsingMergeTree() *CollapsingMergeTree {
+	if x != nil {
+		if x, ok := x.EngineType.(*Engine_CollapsingMergeTree); ok {
+			return x.CollapsingMergeTree
+		}
+	}
+	return nil
+}
+
+func (x *Engine) GetReplicatedCollapsingMergeTree() *ReplicatedCollapsingMergeTree {
+	if x != nil {
+		if x, ok := x.EngineType.(*Engine_ReplicatedCollapsingMergeTree); ok {
+			return x.ReplicatedCollapsingMergeTree
+		}
+	}
+	return nil
+}
+
 func (x *Engine) GetDistributed() *Distributed {
 	if x != nil {
 		if x, ok := x.EngineType.(*Engine_Distributed); ok {
@@ -161,6 +181,14 @@ type Engine_SummingMergeTree struct {
 	SummingMergeTree *SummingMergeTree `protobuf:"bytes,5,opt,name=summing_merge_tree,json=summingMergeTree,proto3,oneof"`
 }
 
+type Engine_CollapsingMergeTree struct {
+	CollapsingMergeTree *CollapsingMergeTree `protobuf:"bytes,6,opt,name=collapsing_merge_tree,json=collapsingMergeTree,proto3,oneof"`
+}
+
+type Engine_ReplicatedCollapsingMergeTree struct {
+	ReplicatedCollapsingMergeTree *ReplicatedCollapsingMergeTree `protobuf:"bytes,7,opt,name=replicated_collapsing_merge_tree,json=replicatedCollapsingMergeTree,proto3,oneof"`
+}
+
 type Engine_Distributed struct {
 	Distributed *Distributed `protobuf:"bytes,20,opt,name=distributed,proto3,oneof"`
 }
@@ -178,6 +206,10 @@ func (*Engine_ReplacingMergeTree) isEngine_EngineType() {}
 func (*Engine_ReplicatedReplacingMergeTree) isEngine_EngineType() {}
 
 func (*Engine_SummingMergeTree) isEngine_EngineType() {}
+
+func (*Engine_CollapsingMergeTree) isEngine_EngineType() {}
+
+func (*Engine_ReplicatedCollapsingMergeTree) isEngine_EngineType() {}
 
 func (*Engine_Distributed) isEngine_EngineType() {}
 
@@ -419,6 +451,110 @@ func (x *SummingMergeTree) GetSumColumns() []string {
 	return nil
 }
 
+type CollapsingMergeTree struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SignColumn    string                 `protobuf:"bytes,1,opt,name=sign_column,json=signColumn,proto3" json:"sign_column,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CollapsingMergeTree) Reset() {
+	*x = CollapsingMergeTree{}
+	mi := &file_proto_engine_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CollapsingMergeTree) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CollapsingMergeTree) ProtoMessage() {}
+
+func (x *CollapsingMergeTree) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_engine_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CollapsingMergeTree.ProtoReflect.Descriptor instead.
+func (*CollapsingMergeTree) Descriptor() ([]byte, []int) {
+	return file_proto_engine_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *CollapsingMergeTree) GetSignColumn() string {
+	if x != nil {
+		return x.SignColumn
+	}
+	return ""
+}
+
+type ReplicatedCollapsingMergeTree struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ZooPath       string                 `protobuf:"bytes,1,opt,name=zoo_path,json=zooPath,proto3" json:"zoo_path,omitempty"`
+	ReplicaName   string                 `protobuf:"bytes,2,opt,name=replica_name,json=replicaName,proto3" json:"replica_name,omitempty"`
+	SignColumn    string                 `protobuf:"bytes,3,opt,name=sign_column,json=signColumn,proto3" json:"sign_column,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReplicatedCollapsingMergeTree) Reset() {
+	*x = ReplicatedCollapsingMergeTree{}
+	mi := &file_proto_engine_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReplicatedCollapsingMergeTree) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReplicatedCollapsingMergeTree) ProtoMessage() {}
+
+func (x *ReplicatedCollapsingMergeTree) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_engine_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReplicatedCollapsingMergeTree.ProtoReflect.Descriptor instead.
+func (*ReplicatedCollapsingMergeTree) Descriptor() ([]byte, []int) {
+	return file_proto_engine_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ReplicatedCollapsingMergeTree) GetZooPath() string {
+	if x != nil {
+		return x.ZooPath
+	}
+	return ""
+}
+
+func (x *ReplicatedCollapsingMergeTree) GetReplicaName() string {
+	if x != nil {
+		return x.ReplicaName
+	}
+	return ""
+}
+
+func (x *ReplicatedCollapsingMergeTree) GetSignColumn() string {
+	if x != nil {
+		return x.SignColumn
+	}
+	return ""
+}
+
 type Distributed struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	ClusterName    string                 `protobuf:"bytes,1,opt,name=cluster_name,json=clusterName,proto3" json:"cluster_name,omitempty"`
@@ -431,7 +567,7 @@ type Distributed struct {
 
 func (x *Distributed) Reset() {
 	*x = Distributed{}
-	mi := &file_proto_engine_proto_msgTypes[6]
+	mi := &file_proto_engine_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -443,7 +579,7 @@ func (x *Distributed) String() string {
 func (*Distributed) ProtoMessage() {}
 
 func (x *Distributed) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_engine_proto_msgTypes[6]
+	mi := &file_proto_engine_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -456,7 +592,7 @@ func (x *Distributed) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Distributed.ProtoReflect.Descriptor instead.
 func (*Distributed) Descriptor() ([]byte, []int) {
-	return file_proto_engine_proto_rawDescGZIP(), []int{6}
+	return file_proto_engine_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *Distributed) GetClusterName() string {
@@ -495,7 +631,7 @@ type Log struct {
 
 func (x *Log) Reset() {
 	*x = Log{}
-	mi := &file_proto_engine_proto_msgTypes[7]
+	mi := &file_proto_engine_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -507,7 +643,7 @@ func (x *Log) String() string {
 func (*Log) ProtoMessage() {}
 
 func (x *Log) ProtoReflect() protoreflect.Message {
-	mi := &file_proto_engine_proto_msgTypes[7]
+	mi := &file_proto_engine_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -520,21 +656,23 @@ func (x *Log) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Log.ProtoReflect.Descriptor instead.
 func (*Log) Descriptor() ([]byte, []int) {
-	return file_proto_engine_proto_rawDescGZIP(), []int{7}
+	return file_proto_engine_proto_rawDescGZIP(), []int{9}
 }
 
 var File_proto_engine_proto protoreflect.FileDescriptor
 
 const file_proto_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x12proto/engine.proto\x12\x11clickhouse.iac.v1\"\xce\x04\n" +
+	"\x12proto/engine.proto\x12\x11clickhouse.iac.v1\"\xa9\x06\n" +
 	"\x06Engine\x12=\n" +
 	"\n" +
 	"merge_tree\x18\x01 \x01(\v2\x1c.clickhouse.iac.v1.MergeTreeH\x00R\tmergeTree\x12\\\n" +
 	"\x15replicated_merge_tree\x18\x02 \x01(\v2&.clickhouse.iac.v1.ReplicatedMergeTreeH\x00R\x13replicatedMergeTree\x12Y\n" +
 	"\x14replacing_merge_tree\x18\x03 \x01(\v2%.clickhouse.iac.v1.ReplacingMergeTreeH\x00R\x12replacingMergeTree\x12x\n" +
 	"\x1freplicated_replacing_merge_tree\x18\x04 \x01(\v2/.clickhouse.iac.v1.ReplicatedReplacingMergeTreeH\x00R\x1creplicatedReplacingMergeTree\x12S\n" +
-	"\x12summing_merge_tree\x18\x05 \x01(\v2#.clickhouse.iac.v1.SummingMergeTreeH\x00R\x10summingMergeTree\x12B\n" +
+	"\x12summing_merge_tree\x18\x05 \x01(\v2#.clickhouse.iac.v1.SummingMergeTreeH\x00R\x10summingMergeTree\x12\\\n" +
+	"\x15collapsing_merge_tree\x18\x06 \x01(\v2&.clickhouse.iac.v1.CollapsingMergeTreeH\x00R\x13collapsingMergeTree\x12{\n" +
+	" replicated_collapsing_merge_tree\x18\a \x01(\v20.clickhouse.iac.v1.ReplicatedCollapsingMergeTreeH\x00R\x1dreplicatedCollapsingMergeTree\x12B\n" +
 	"\vdistributed\x18\x14 \x01(\v2\x1e.clickhouse.iac.v1.DistributedH\x00R\vdistributed\x12*\n" +
 	"\x03log\x18\x15 \x01(\v2\x16.clickhouse.iac.v1.LogH\x00R\x03logB\r\n" +
 	"\vengine_type\"\v\n" +
@@ -552,7 +690,15 @@ const file_proto_engine_proto_rawDesc = "" +
 	"\x0f_version_column\"3\n" +
 	"\x10SummingMergeTree\x12\x1f\n" +
 	"\vsum_columns\x18\x01 \x03(\tR\n" +
-	"sumColumns\"\xb5\x01\n" +
+	"sumColumns\"6\n" +
+	"\x13CollapsingMergeTree\x12\x1f\n" +
+	"\vsign_column\x18\x01 \x01(\tR\n" +
+	"signColumn\"~\n" +
+	"\x1dReplicatedCollapsingMergeTree\x12\x19\n" +
+	"\bzoo_path\x18\x01 \x01(\tR\azooPath\x12!\n" +
+	"\freplica_name\x18\x02 \x01(\tR\vreplicaName\x12\x1f\n" +
+	"\vsign_column\x18\x03 \x01(\tR\n" +
+	"signColumn\"\xb5\x01\n" +
 	"\vDistributed\x12!\n" +
 	"\fcluster_name\x18\x01 \x01(\tR\vclusterName\x12'\n" +
 	"\x0fremote_database\x18\x02 \x01(\tR\x0eremoteDatabase\x12!\n" +
@@ -573,16 +719,18 @@ func file_proto_engine_proto_rawDescGZIP() []byte {
 	return file_proto_engine_proto_rawDescData
 }
 
-var file_proto_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_proto_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_proto_engine_proto_goTypes = []any{
-	(*Engine)(nil),                       // 0: clickhouse.iac.v1.Engine
-	(*MergeTree)(nil),                    // 1: clickhouse.iac.v1.MergeTree
-	(*ReplicatedMergeTree)(nil),          // 2: clickhouse.iac.v1.ReplicatedMergeTree
-	(*ReplacingMergeTree)(nil),           // 3: clickhouse.iac.v1.ReplacingMergeTree
-	(*ReplicatedReplacingMergeTree)(nil), // 4: clickhouse.iac.v1.ReplicatedReplacingMergeTree
-	(*SummingMergeTree)(nil),             // 5: clickhouse.iac.v1.SummingMergeTree
-	(*Distributed)(nil),                  // 6: clickhouse.iac.v1.Distributed
-	(*Log)(nil),                          // 7: clickhouse.iac.v1.Log
+	(*Engine)(nil),                        // 0: clickhouse.iac.v1.Engine
+	(*MergeTree)(nil),                     // 1: clickhouse.iac.v1.MergeTree
+	(*ReplicatedMergeTree)(nil),           // 2: clickhouse.iac.v1.ReplicatedMergeTree
+	(*ReplacingMergeTree)(nil),            // 3: clickhouse.iac.v1.ReplacingMergeTree
+	(*ReplicatedReplacingMergeTree)(nil),  // 4: clickhouse.iac.v1.ReplicatedReplacingMergeTree
+	(*SummingMergeTree)(nil),              // 5: clickhouse.iac.v1.SummingMergeTree
+	(*CollapsingMergeTree)(nil),           // 6: clickhouse.iac.v1.CollapsingMergeTree
+	(*ReplicatedCollapsingMergeTree)(nil), // 7: clickhouse.iac.v1.ReplicatedCollapsingMergeTree
+	(*Distributed)(nil),                   // 8: clickhouse.iac.v1.Distributed
+	(*Log)(nil),                           // 9: clickhouse.iac.v1.Log
 }
 var file_proto_engine_proto_depIdxs = []int32{
 	1, // 0: clickhouse.iac.v1.Engine.merge_tree:type_name -> clickhouse.iac.v1.MergeTree
@@ -590,13 +738,15 @@ var file_proto_engine_proto_depIdxs = []int32{
 	3, // 2: clickhouse.iac.v1.Engine.replacing_merge_tree:type_name -> clickhouse.iac.v1.ReplacingMergeTree
 	4, // 3: clickhouse.iac.v1.Engine.replicated_replacing_merge_tree:type_name -> clickhouse.iac.v1.ReplicatedReplacingMergeTree
 	5, // 4: clickhouse.iac.v1.Engine.summing_merge_tree:type_name -> clickhouse.iac.v1.SummingMergeTree
-	6, // 5: clickhouse.iac.v1.Engine.distributed:type_name -> clickhouse.iac.v1.Distributed
-	7, // 6: clickhouse.iac.v1.Engine.log:type_name -> clickhouse.iac.v1.Log
-	7, // [7:7] is the sub-list for method output_type
-	7, // [7:7] is the sub-list for method input_type
-	7, // [7:7] is the sub-list for extension type_name
-	7, // [7:7] is the sub-list for extension extendee
-	0, // [0:7] is the sub-list for field type_name
+	6, // 5: clickhouse.iac.v1.Engine.collapsing_merge_tree:type_name -> clickhouse.iac.v1.CollapsingMergeTree
+	7, // 6: clickhouse.iac.v1.Engine.replicated_collapsing_merge_tree:type_name -> clickhouse.iac.v1.ReplicatedCollapsingMergeTree
+	8, // 7: clickhouse.iac.v1.Engine.distributed:type_name -> clickhouse.iac.v1.Distributed
+	9, // 8: clickhouse.iac.v1.Engine.log:type_name -> clickhouse.iac.v1.Log
+	9, // [9:9] is the sub-list for method output_type
+	9, // [9:9] is the sub-list for method input_type
+	9, // [9:9] is the sub-list for extension type_name
+	9, // [9:9] is the sub-list for extension extendee
+	0, // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_proto_engine_proto_init() }
@@ -610,19 +760,21 @@ func file_proto_engine_proto_init() {
 		(*Engine_ReplacingMergeTree)(nil),
 		(*Engine_ReplicatedReplacingMergeTree)(nil),
 		(*Engine_SummingMergeTree)(nil),
+		(*Engine_CollapsingMergeTree)(nil),
+		(*Engine_ReplicatedCollapsingMergeTree)(nil),
 		(*Engine_Distributed)(nil),
 		(*Engine_Log)(nil),
 	}
 	file_proto_engine_proto_msgTypes[3].OneofWrappers = []any{}
 	file_proto_engine_proto_msgTypes[4].OneofWrappers = []any{}
-	file_proto_engine_proto_msgTypes[6].OneofWrappers = []any{}
+	file_proto_engine_proto_msgTypes[8].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_engine_proto_rawDesc), len(file_proto_engine_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   8,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -11,6 +11,8 @@ message Engine {
     ReplacingMergeTree replacing_merge_tree = 3;
     ReplicatedReplacingMergeTree replicated_replacing_merge_tree = 4;
     SummingMergeTree summing_merge_tree = 5;
+    CollapsingMergeTree collapsing_merge_tree = 6;
+    ReplicatedCollapsingMergeTree replicated_collapsing_merge_tree = 7;
     Distributed distributed = 20;
     Log log = 21;
   }
@@ -35,6 +37,16 @@ message ReplicatedReplacingMergeTree {
 
 message SummingMergeTree {
   repeated string sum_columns = 1;
+}
+
+message CollapsingMergeTree {
+  string sign_column = 1;
+}
+
+message ReplicatedCollapsingMergeTree {
+  string zoo_path = 1;
+  string replica_name = 2;
+  string sign_column = 3;
 }
 
 message Distributed {
