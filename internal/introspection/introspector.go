@@ -50,6 +50,11 @@ func (i *Introspector) GetCurrentState(ctx context.Context) (*chschema_v1.NodeSc
 		return nil, err
 	}
 
+	// 3. Introspect Views
+	if err := i.introspectViews(ctx, state); err != nil {
+		return nil, err
+	}
+
 	return state, nil
 }
 
@@ -342,4 +347,62 @@ func (i *Introspector) parseDestinationTable(engineFull string) string {
 	// For most materialized views, the destination is implicit (.inner table)
 	// This is a placeholder - may need enhancement based on actual engine_full format
 	return ""
+}
+
+// introspectViews queries regular views from system.tables
+func (i *Introspector) introspectViews(ctx context.Context, state *chschema_v1.NodeSchemaState) error {
+	var (
+		predicate string
+		args      []interface{}
+	)
+	if len(i.Databases) > 0 {
+		predicate = " AND database IN $1"
+		args = append(args, i.Databases)
+	}
+	if len(i.Tables) > 0 {
+		predicate += fmt.Sprintf(" AND name IN $%d", len(args)+1)
+		args = append(args, i.Tables)
+	}
+
+	query := `
+		SELECT
+			database,
+			name,
+			as_select
+		FROM system.tables
+		WHERE engine = 'View'
+		  AND database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')` +
+		predicate +
+		`
+		ORDER BY database, name
+	`
+
+	rows, err := i.conn.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to query views: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var db, name, selectQuery string
+		if err := rows.Scan(&db, &name, &selectQuery); err != nil {
+			return fmt.Errorf("failed to scan view row: %w", err)
+		}
+
+		view := &chschema_v1.View{
+			Name:        name,
+			Database:    &db,
+			SelectQuery: selectQuery,
+		}
+
+		state.Views = append(state.Views, view)
+
+		// Track dumped views and remove from skipped
+		i.DumpedEngines["View"]++
+		if i.SkippedEngines["View"] > 0 {
+			i.SkippedEngines["View"]--
+		}
+	}
+
+	return nil
 }

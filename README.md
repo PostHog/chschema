@@ -198,11 +198,11 @@ schema/
 
 ### Views
 - ✅ MaterializedView
+- ✅ View
 
 ### Not Yet Supported
 - Dictionary
 - Kafka
-- Regular Views
 
 ## YAML Schema Format
 
@@ -231,6 +231,14 @@ name: users_mv
 database: myapp
 destinationTable: users_aggregated  # optional, uses .inner if not specified
 selectQuery: SELECT user_id, count() as cnt FROM users GROUP BY user_id
+```
+
+### View Definition
+
+```yaml
+name: active_users
+database: myapp
+selectQuery: SELECT user_id, email FROM users WHERE active = 1
 ```
 
 ### Cluster Definition

@@ -57,14 +57,19 @@ func (d *Dumper) Dump(ctx context.Context, opts DumpOptions) error {
 		return fmt.Errorf("failed to dump materialized views: %w", err)
 	}
 
-	// 5. Dump clusters (if not tables-only)
+	// 5. Dump views
+	if err := d.dumpViews(currentState.Views, opts); err != nil {
+		return fmt.Errorf("failed to dump views: %w", err)
+	}
+
+	// 6. Dump clusters (if not tables-only)
 	if !opts.TablesOnly {
 		if err := d.dumpClusters(currentState.Clusters, opts); err != nil {
 			return fmt.Errorf("failed to dump clusters: %w", err)
 		}
 	}
 
-	// 6. Print statistics
+	// 7. Print statistics
 	d.printStatistics(introspector)
 
 	fmt.Printf("\nSchema dump completed successfully to %s\n", opts.OutputDir)
@@ -171,6 +176,26 @@ func (d *Dumper) dumpMaterializedViews(views []*chschema_v1.MaterializedView, op
 		}
 
 		fmt.Printf("Dumped materialized view: %s\n", view.Name)
+	}
+
+	return nil
+}
+
+// dumpViews writes regular view definitions to YAML files
+func (d *Dumper) dumpViews(views []*chschema_v1.View, opts DumpOptions) error {
+	for _, view := range views {
+		// Filter by database if specified
+		if opts.Database != "" && view.Database != nil && *view.Database != opts.Database {
+			continue
+		}
+
+		// Write protobuf view directly to YAML
+		filename := filepath.Join(opts.OutputDir, "views", view.Name+".yaml")
+		if err := WriteYAMLFile(filename, view, opts.Overwrite); err != nil {
+			return fmt.Errorf("failed to write view %s: %w", view.Name, err)
+		}
+
+		fmt.Printf("Dumped view: %s\n", view.Name)
 	}
 
 	return nil
