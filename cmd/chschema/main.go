@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/ClickHouse/clickhouse-go/v2"
+	"github.com/posthog/chschema/config"
 	"github.com/posthog/chschema/internal/diff"
 	"github.com/posthog/chschema/internal/dumper"
 	"github.com/posthog/chschema/internal/executor"
@@ -27,6 +27,8 @@ var (
 	dumpDatabase   string
 	dumpTablesOnly bool
 	dumpOverwrite  bool
+
+	clickhouseConfig config.ClickHouseConfig
 )
 
 func migrateCmdFunc(cmd *cobra.Command, args []string) {
@@ -42,10 +44,9 @@ func migrateCmdFunc(cmd *cobra.Command, args []string) {
 	}
 
 	// 2. Establish connection to ClickHouse
-	fmt.Printf("Connecting to %s...\n", connection)
-	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{connection},
-	})
+	cfg := clickhouseConfig
+	fmt.Printf("Connecting to %s:%d...\n", cfg.Host, cfg.Port)
+	conn, err := config.NewConnection(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error connecting to ClickHouse: %s\n", err)
 		os.Exit(1)
@@ -53,6 +54,7 @@ func migrateCmdFunc(cmd *cobra.Command, args []string) {
 	defer conn.Close()
 
 	// 3. Introspect the current state from the live cluster
+	fmt.Println("Introspecting current state...")
 	introspector := introspection.NewIntrospector(conn)
 	currentState, err := introspector.GetCurrentState(ctx)
 	if err != nil {
@@ -60,7 +62,8 @@ func migrateCmdFunc(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// 4. Compare the states and generate a plan
+	// 4. Compare the states and generate a
+	fmt.Println("Comparing desired and current states...")
 	differ := diff.NewDiffer()
 	plan, err := differ.Plan(desiredState, currentState)
 	if err != nil {
@@ -147,10 +150,9 @@ func dumpCmdFunc(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
 
 	// Establish connection to ClickHouse
-	fmt.Printf("Connecting to %s...\n", connection)
-	conn, err := clickhouse.Open(&clickhouse.Options{
-		Addr: []string{connection},
-	})
+	cfg := clickhouseConfig
+	fmt.Printf("Connecting to %s:%d...\n", cfg.Host, cfg.Port)
+	conn, err := config.NewConnection(cfg)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error connecting to ClickHouse: %s\n", err)
 		os.Exit(1)
@@ -186,16 +188,21 @@ func init() {
 	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(dumpCmd)
 
+	rootCmd.PersistentFlags().BoolVar(&dryRun, "dry-run", true, "Show planned changes without applying them (default behavior)")
 	rootCmd.PersistentFlags().StringVarP(&configDir, "config", "c", "schema", "Directory containing schema definition files")
 	rootCmd.PersistentFlags().StringVar(&connection, "connect", "localhost:9000", "ClickHouse connection string")
+	rootCmd.PersistentFlags().StringVar(&clickhouseConfig.Host, "host", "localhost", "Host to use for schema definition files")
+	rootCmd.PersistentFlags().IntVar(&clickhouseConfig.Port, "port", 9000, "Port to use for schema definition files")
+	rootCmd.PersistentFlags().StringVar(&clickhouseConfig.Database, "database", "default", "Database to use for schema definition files")
+	rootCmd.PersistentFlags().StringVar(&clickhouseConfig.User, "user", "default", "")
+	rootCmd.PersistentFlags().StringVar(&clickhouseConfig.Password, "password", "default", "")
 
 	migrateCmd.Flags().BoolVar(&autoApprove, "auto-approve", false, "Automatically approve and apply changes")
-	migrateCmd.Flags().BoolVar(&dryRun, "dry-run", true, "Show planned changes without applying them (default behavior)")
 	migrateCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Write execution plan to file instead of stdout")
 
 	// Dump command flags
 	dumpCmd.Flags().StringVarP(&dumpOutputDir, "output-dir", "o", "./schema-dump", "Target directory for YAML files")
-	dumpCmd.Flags().StringVarP(&dumpDatabase, "database", "d", "", "Specific database to dump (default: all non-system databases)")
+	//dumpCmd.Flags().StringVarP(&dumpDatabase, "database", "d", "", "Specific database to dump (default: all non-system databases)")
 	dumpCmd.Flags().BoolVar(&dumpTablesOnly, "tables-only", false, "Only dump table definitions, skip clusters/views")
 	dumpCmd.Flags().BoolVar(&dumpOverwrite, "overwrite", false, "Overwrite existing files without prompting")
 }
