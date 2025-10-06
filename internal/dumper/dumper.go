@@ -52,15 +52,55 @@ func (d *Dumper) Dump(ctx context.Context, opts DumpOptions) error {
 		return fmt.Errorf("failed to dump tables: %w", err)
 	}
 
-	// 4. Dump clusters (if not tables-only)
+	// 4. Dump materialized views
+	if err := d.dumpMaterializedViews(currentState.MaterializedViews, opts); err != nil {
+		return fmt.Errorf("failed to dump materialized views: %w", err)
+	}
+
+	// 5. Dump clusters (if not tables-only)
 	if !opts.TablesOnly {
 		if err := d.dumpClusters(currentState.Clusters, opts); err != nil {
 			return fmt.Errorf("failed to dump clusters: %w", err)
 		}
 	}
 
-	fmt.Printf("Schema dump completed successfully to %s\n", opts.OutputDir)
+	// 6. Print statistics
+	d.printStatistics(introspector)
+
+	fmt.Printf("\nSchema dump completed successfully to %s\n", opts.OutputDir)
 	return nil
+}
+
+// printStatistics prints introspection statistics
+func (d *Dumper) printStatistics(introspector *introspection.Introspector) {
+	fmt.Println("\n--- Introspection Statistics ---")
+
+	// Print dumped engines
+	if len(introspector.DumpedEngines) > 0 {
+		fmt.Println("\nDumped engines:")
+		for engine, count := range introspector.DumpedEngines {
+			fmt.Printf("  ✓ %s: %d\n", engine, count)
+		}
+	}
+
+	// Print skipped engines (those with count > 0)
+	skippedCount := 0
+	for _, count := range introspector.SkippedEngines {
+		if count > 0 {
+			skippedCount += count
+		}
+	}
+
+	if skippedCount > 0 {
+		fmt.Println("\nSkipped engines:")
+		for engine, count := range introspector.SkippedEngines {
+			if count > 0 {
+				fmt.Printf("  ✗ %s: %d\n", engine, count)
+			}
+		}
+	}
+
+	fmt.Println("--------------------------------")
 }
 
 // createDirectoryStructure creates the necessary directories
@@ -69,6 +109,7 @@ func (d *Dumper) createDirectoryStructure(outputDir string) error {
 		filepath.Join(outputDir, "tables"),
 		filepath.Join(outputDir, "clusters"),
 		filepath.Join(outputDir, "views"),
+		filepath.Join(outputDir, "materialized_views"),
 	}
 
 	for _, dir := range dirs {
@@ -110,6 +151,26 @@ func (d *Dumper) dumpClusters(clusters []*chschema_v1.Cluster, opts DumpOptions)
 		}
 
 		fmt.Printf("Dumped cluster: %s\n", cluster.Name)
+	}
+
+	return nil
+}
+
+// dumpMaterializedViews writes materialized view definitions to YAML files
+func (d *Dumper) dumpMaterializedViews(views []*chschema_v1.MaterializedView, opts DumpOptions) error {
+	for _, view := range views {
+		// Filter by database if specified
+		if opts.Database != "" && view.Database != nil && *view.Database != opts.Database {
+			continue
+		}
+
+		// Write protobuf materialized view directly to YAML
+		filename := filepath.Join(opts.OutputDir, "materialized_views", view.Name+".yaml")
+		if err := WriteYAMLFile(filename, view, opts.Overwrite); err != nil {
+			return fmt.Errorf("failed to write materialized view %s: %w", view.Name, err)
+		}
+
+		fmt.Printf("Dumped materialized view: %s\n", view.Name)
 	}
 
 	return nil

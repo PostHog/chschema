@@ -36,13 +36,31 @@ Start by dumping your current ClickHouse schema:
 This creates a directory structure:
 ```
 schema/
-├── tables/
+├── tables/              # Table definitions
 │   ├── users.yaml
 │   ├── events.yaml
 │   └── ...
-├── clusters/
+├── materialized_views/  # Materialized view definitions
+│   ├── users_mv.yaml
+│   └── ...
+├── clusters/           # Cluster configurations (future)
 │   └── production.yaml
-└── views/
+└── views/             # Regular views (future)
+```
+
+The dump shows statistics about what was exported:
+```
+--- Introspection Statistics ---
+
+Dumped engines:
+  ✓ ReplicatedReplacingMergeTree: 38
+  ✓ Distributed: 51
+  ✓ MaterializedView: 33
+
+Skipped engines:
+  ✗ Dictionary: 9
+  ✗ Kafka: 27
+--------------------------------
 ```
 
 ### 2. Review and Modify Schema
@@ -152,13 +170,37 @@ Organize your schema files:
 
 ```
 schema/
-├── tables/           # Table definitions
+├── tables/              # Table definitions
 │   ├── users.yaml
 │   └── events.yaml
-├── clusters/         # Cluster configurations
+├── materialized_views/  # Materialized view definitions
+│   ├── users_mv.yaml
+│   └── events_mv.yaml
+├── clusters/            # Cluster configurations (future)
 │   └── production.yaml
-└── views/           # View definitions (future)
+└── views/              # Regular views (future)
 ```
+
+## Supported Engines
+
+### Table Engines
+- ✅ MergeTree
+- ✅ ReplicatedMergeTree
+- ✅ ReplacingMergeTree
+- ✅ ReplicatedReplacingMergeTree
+- ✅ SummingMergeTree
+- ✅ Distributed
+- ✅ Log
+
+### Views
+- ✅ MaterializedView
+
+### Not Yet Supported
+- Dictionary
+- Kafka
+- ReplicatedCollapsingMergeTree
+- ReplicatedAggregatingMergeTree
+- Regular Views
 
 ## YAML Schema Format
 
@@ -178,6 +220,15 @@ columns:
   - name: created_at
     type: DateTime
     defaultexpression: now()
+```
+
+### Materialized View Definition
+
+```yaml
+name: users_mv
+database: myapp
+destinationTable: users_aggregated  # optional, uses .inner if not specified
+selectQuery: SELECT user_id, count() as cnt FROM users GROUP BY user_id
 ```
 
 ### Cluster Definition

@@ -16,23 +16,89 @@ type Introspector struct {
 	conn      clickhouse.Conn
 	Databases []string
 	Tables    []string
+
+	// Statistics
+	DumpedEngines  map[string]int // engine type -> count
+	SkippedEngines map[string]int // engine type -> count
 }
 
 // NewIntrospector creates a new Introspector with a given ClickHouse connection.
 func NewIntrospector(conn clickhouse.Conn) *Introspector {
-	return &Introspector{conn: conn}
+	return &Introspector{
+		conn:           conn,
+		DumpedEngines:  make(map[string]int),
+		SkippedEngines: make(map[string]int),
+	}
 }
 
 // GetCurrentState queries the system tables to build a model of the current schema.
 func (i *Introspector) GetCurrentState(ctx context.Context) (*chschema_v1.NodeSchemaState, error) {
 	state := loader.NewDesiredState()
 
+	// 0. First, get all tables to track what's available
+	if err := i.introspectAllTables(ctx); err != nil {
+		return nil, err
+	}
+
 	// 1. Introspect Tables and Columns
 	if err := i.introspectTables(ctx, state); err != nil {
 		return nil, err
 	}
 
+	// 2. Introspect Materialized Views
+	if err := i.introspectMaterializedViews(ctx, state); err != nil {
+		return nil, err
+	}
+
 	return state, nil
+}
+
+// introspectAllTables queries all tables to build statistics
+func (i *Introspector) introspectAllTables(ctx context.Context) error {
+	var (
+		predicate string
+		args      []interface{}
+	)
+	if len(i.Databases) > 0 {
+		predicate = " AND database IN $1"
+		args = append(args, i.Databases)
+	}
+	if len(i.Tables) > 0 {
+		predicate += fmt.Sprintf(" AND name IN $%d", len(args)+1)
+		args = append(args, i.Tables)
+	}
+
+	query := `
+		SELECT name, engine
+		FROM system.tables
+		WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')` +
+		predicate +
+		`
+		ORDER BY engine, name
+	`
+
+	rows, err := i.conn.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to query all tables: %w", err)
+	}
+	defer rows.Close()
+
+	// Build map of engine -> table names
+	engineTables := make(map[string][]string)
+	for rows.Next() {
+		var name, engine string
+		if err := rows.Scan(&name, &engine); err != nil {
+			return fmt.Errorf("failed to scan table row: %w", err)
+		}
+		engineTables[engine] = append(engineTables[engine], name)
+	}
+
+	// Initialize SkippedEngines with all engines
+	for engine, tables := range engineTables {
+		i.SkippedEngines[engine] = len(tables)
+	}
+
+	return nil
 }
 
 func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.NodeSchemaState) error {
@@ -61,7 +127,16 @@ func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.
 			total_rows,
 			total_bytes
 		FROM system.tables
-		WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')` +
+		WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')
+		  AND engine IN (
+			'MergeTree',
+			'ReplicatedMergeTree',
+			'ReplacingMergeTree',
+			'ReplicatedReplacingMergeTree',             
+			'SummingMergeTree',
+			'Distributed',
+			'Log'
+		  )` +
 		predicate +
 		`
 		ORDER BY database, name
@@ -101,6 +176,12 @@ func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.
 		}
 
 		state.Tables = append(state.Tables, table)
+
+		// Track dumped engine and remove from skipped
+		i.DumpedEngines[engine]++
+		if i.SkippedEngines[engine] > 0 {
+			i.SkippedEngines[engine]--
+		}
 	}
 
 	return nil
@@ -186,4 +267,75 @@ func (i *Introspector) introspectTableSettings(ctx context.Context, table *chsch
 	// `)
 
 	return nil
+}
+
+// introspectMaterializedViews queries materialized views from system.tables
+func (i *Introspector) introspectMaterializedViews(ctx context.Context, state *chschema_v1.NodeSchemaState) error {
+	var (
+		predicate string
+		args      []interface{}
+	)
+	if len(i.Databases) > 0 {
+		predicate = " AND database IN $1"
+		args = append(args, i.Databases)
+	}
+	if len(i.Tables) > 0 {
+		predicate += fmt.Sprintf(" AND name IN $%d", len(args)+1)
+		args = append(args, i.Tables)
+	}
+
+	query := `
+		SELECT
+			database,
+			name,
+			engine_full,
+			as_select
+		FROM system.tables
+		WHERE engine = 'MaterializedView'
+		  AND database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')` +
+		predicate +
+		`
+		ORDER BY database, name
+	`
+
+	rows, err := i.conn.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to query materialized views: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var db, name, engineFull, selectQuery string
+		if err := rows.Scan(&db, &name, &engineFull, &selectQuery); err != nil {
+			return fmt.Errorf("failed to scan materialized view row: %w", err)
+		}
+
+		// Parse destination table from engine_full
+		// Format: "MaterializedView" or sometimes includes destination info
+		destinationTable := i.parseDestinationTable(engineFull)
+
+		mv := &chschema_v1.MaterializedView{
+			Name:             name,
+			Database:         &db,
+			DestinationTable: destinationTable,
+			SelectQuery:      selectQuery,
+		}
+
+		state.MaterializedViews = append(state.MaterializedViews, mv)
+
+		// Track dumped materialized views and remove from skipped
+		i.DumpedEngines["MaterializedView"]++
+		if i.SkippedEngines["MaterializedView"] > 0 {
+			i.SkippedEngines["MaterializedView"]--
+		}
+	}
+
+	return nil
+}
+
+// parseDestinationTable extracts the destination table from materialized view engine_full
+func (i *Introspector) parseDestinationTable(engineFull string) string {
+	// For most materialized views, the destination is implicit (.inner table)
+	// This is a placeholder - may need enhancement based on actual engine_full format
+	return ""
 }
