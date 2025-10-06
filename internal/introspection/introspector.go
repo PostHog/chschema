@@ -136,6 +136,8 @@ func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.
 			'SummingMergeTree',
 			'CollapsingMergeTree',
 			'ReplicatedCollapsingMergeTree',
+			'AggregatingMergeTree',
+			'ReplicatedAggregatingMergeTree',
 			'Distributed',
 			'Log'
 		  )` +

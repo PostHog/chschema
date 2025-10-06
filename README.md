@@ -191,6 +191,8 @@ schema/
 - ✅ SummingMergeTree
 - ✅ CollapsingMergeTree
 - ✅ ReplicatedCollapsingMergeTree
+- ✅ AggregatingMergeTree
+- ✅ ReplicatedAggregatingMergeTree
 - ✅ Distributed
 - ✅ Log
 
@@ -200,7 +202,6 @@ schema/
 ### Not Yet Supported
 - Dictionary
 - Kafka
-- ReplicatedAggregatingMergeTree
 - Regular Views
 
 ## YAML Schema Format

@@ -316,6 +316,48 @@ func TestParseEngine_ReplicatedCollapsingMergeTree(t *testing.T) {
 	require.Equal(t, "sign", rcmt.SignColumn)
 }
 
+func TestParseEngine_AggregatingMergeTree(t *testing.T) {
+	tests := []struct {
+		name       string
+		engineName string
+		engineFull string
+	}{
+		{
+			name:       "simple AggregatingMergeTree",
+			engineName: "AggregatingMergeTree",
+			engineFull: "AggregatingMergeTree ORDER BY id",
+		},
+		{
+			name:       "AggregatingMergeTree with parens",
+			engineName: "AggregatingMergeTree",
+			engineFull: "AggregatingMergeTree() ORDER BY id",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine, err := ParseEngine(tt.engineName, tt.engineFull)
+			require.NoError(t, err)
+			require.NotNil(t, engine)
+			require.NotNil(t, engine.GetAggregatingMergeTree())
+		})
+	}
+}
+
+func TestParseEngine_ReplicatedAggregatingMergeTree(t *testing.T) {
+	engineName := "ReplicatedAggregatingMergeTree"
+	engineFull := "ReplicatedAggregatingMergeTree('/clickhouse/tables/{shard}/test', '{replica}') ORDER BY id"
+
+	engine, err := ParseEngine(engineName, engineFull)
+	require.NoError(t, err)
+	require.NotNil(t, engine)
+
+	ramt := engine.GetReplicatedAggregatingMergeTree()
+	require.NotNil(t, ramt)
+	require.Equal(t, "/clickhouse/tables/{shard}/test", ramt.ZooPath)
+	require.Equal(t, "{replica}", ramt.ReplicaName)
+}
+
 func stringPtr(s string) *string {
 	return &s
 }

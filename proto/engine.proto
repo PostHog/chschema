@@ -13,6 +13,8 @@ message Engine {
     SummingMergeTree summing_merge_tree = 5;
     CollapsingMergeTree collapsing_merge_tree = 6;
     ReplicatedCollapsingMergeTree replicated_collapsing_merge_tree = 7;
+    AggregatingMergeTree aggregating_merge_tree = 8;
+    ReplicatedAggregatingMergeTree replicated_aggregating_merge_tree = 9;
     Distributed distributed = 20;
     Log log = 21;
   }
@@ -47,6 +49,13 @@ message ReplicatedCollapsingMergeTree {
   string zoo_path = 1;
   string replica_name = 2;
   string sign_column = 3;
+}
+
+message AggregatingMergeTree {}
+
+message ReplicatedAggregatingMergeTree {
+  string zoo_path = 1;
+  string replica_name = 2;
 }
 
 message Distributed {

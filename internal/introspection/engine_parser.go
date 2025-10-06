@@ -41,6 +41,10 @@ func ParseEngine(engineName, engineFull string) (*chschema_v1.Engine, error) {
 		return parseReplicatedCollapsingMergeTree(engineDecl)
 	case strings.HasPrefix(engineDecl, "CollapsingMergeTree"):
 		return parseCollapsingMergeTree(engineDecl)
+	case strings.HasPrefix(engineDecl, "ReplicatedAggregatingMergeTree"):
+		return parseReplicatedAggregatingMergeTree(engineDecl)
+	case strings.HasPrefix(engineDecl, "AggregatingMergeTree"):
+		return parseAggregatingMergeTree(engineDecl)
 	case strings.HasPrefix(engineDecl, "Distributed"):
 		return parseDistributed(engineDecl)
 	case strings.HasPrefix(engineDecl, "Log"):
@@ -212,6 +216,36 @@ func parseReplicatedCollapsingMergeTree(engineDecl string) (*chschema_v1.Engine,
 				ZooPath:     params[0],
 				ReplicaName: params[1],
 				SignColumn:  params[2],
+			},
+		},
+	}, nil
+}
+
+// parseAggregatingMergeTree parses "AggregatingMergeTree" or "AggregatingMergeTree()"
+func parseAggregatingMergeTree(engineDecl string) (*chschema_v1.Engine, error) {
+	return &chschema_v1.Engine{
+		EngineType: &chschema_v1.Engine_AggregatingMergeTree{
+			AggregatingMergeTree: &chschema_v1.AggregatingMergeTree{},
+		},
+	}, nil
+}
+
+// parseReplicatedAggregatingMergeTree parses "ReplicatedAggregatingMergeTree('/path', 'replica')"
+func parseReplicatedAggregatingMergeTree(engineDecl string) (*chschema_v1.Engine, error) {
+	params, err := extractParameters(engineDecl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse ReplicatedAggregatingMergeTree parameters: %w", err)
+	}
+
+	if len(params) < 2 {
+		return nil, fmt.Errorf("ReplicatedAggregatingMergeTree requires 2 parameters (zoo_path, replica_name), got %d", len(params))
+	}
+
+	return &chschema_v1.Engine{
+		EngineType: &chschema_v1.Engine_ReplicatedAggregatingMergeTree{
+			ReplicatedAggregatingMergeTree: &chschema_v1.ReplicatedAggregatingMergeTree{
+				ZooPath:     params[0],
+				ReplicaName: params[1],
 			},
 		},
 	}, nil
