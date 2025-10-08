@@ -429,7 +429,7 @@ func (i *Introspector) introspectDictionaries(ctx context.Context, state *chsche
 			name,
 			source,
 			type,
-			key,
+			key.names,
 			attribute.names,
 			attribute.types,
 			lifetime_min,
@@ -449,11 +449,11 @@ func (i *Introspector) introspectDictionaries(ctx context.Context, state *chsche
 
 	for rows.Next() {
 		var db, name, source, layoutType string
-		var keyColumns []string
+		var keyNames []string
 		var attrNames, attrTypes []string
 		var lifetimeMin, lifetimeMax uint64
 
-		if err := rows.Scan(&db, &name, &source, &layoutType, &keyColumns, &attrNames, &attrTypes, &lifetimeMin, &lifetimeMax); err != nil {
+		if err := rows.Scan(&db, &name, &source, &layoutType, &keyNames, &attrNames, &attrTypes, &lifetimeMin, &lifetimeMax); err != nil {
 			return fmt.Errorf("failed to scan dictionary row: %w", err)
 		}
 
@@ -473,8 +473,8 @@ func (i *Introspector) introspectDictionaries(ctx context.Context, state *chsche
 
 		// Mark key attributes
 		keyMap := make(map[string]bool)
-		for _, keyCol := range keyColumns {
-			keyMap[keyCol] = true
+		for _, keyName := range keyNames {
+			keyMap[keyName] = true
 		}
 		for _, attr := range attributes {
 			if keyMap[attr.Name] {
@@ -485,7 +485,7 @@ func (i *Introspector) introspectDictionaries(ctx context.Context, state *chsche
 		dictionary := &chschema_v1.Dictionary{
 			Name:       name,
 			Database:   &db,
-			PrimaryKey: keyColumns,
+			PrimaryKey: keyNames,
 			Source: &chschema_v1.DictionarySource{
 				SourceType:   "clickhouse", // Simplified - can be enhanced
 				SourceConfig: source,
