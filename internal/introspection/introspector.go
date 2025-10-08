@@ -170,7 +170,8 @@ func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.
 			'AggregatingMergeTree',
 			'ReplicatedAggregatingMergeTree',
 			'Distributed',
-			'Log'
+			'Log',
+			'Kafka'
 		  )` +
 		predicate +
 		`

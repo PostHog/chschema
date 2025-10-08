@@ -17,6 +17,7 @@ message Engine {
     ReplicatedAggregatingMergeTree replicated_aggregating_merge_tree = 9;
     Distributed distributed = 20;
     Log log = 21;
+    Kafka kafka = 22;
   }
 }
 
@@ -66,3 +67,10 @@ message Distributed {
 }
 
 message Log {}
+
+message Kafka {
+  repeated string broker_list = 1;
+  string topic = 2;
+  string consumer_group = 3;
+  string format = 4;
+}

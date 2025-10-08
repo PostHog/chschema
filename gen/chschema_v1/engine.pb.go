@@ -36,6 +36,7 @@ type Engine struct {
 	//	*Engine_ReplicatedAggregatingMergeTree
 	//	*Engine_Distributed
 	//	*Engine_Log
+	//	*Engine_Kafka
 	EngineType    isEngine_EngineType `protobuf_oneof:"engine_type"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -177,6 +178,15 @@ func (x *Engine) GetLog() *Log {
 	return nil
 }
 
+func (x *Engine) GetKafka() *Kafka {
+	if x != nil {
+		if x, ok := x.EngineType.(*Engine_Kafka); ok {
+			return x.Kafka
+		}
+	}
+	return nil
+}
+
 type isEngine_EngineType interface {
 	isEngine_EngineType()
 }
@@ -225,6 +235,10 @@ type Engine_Log struct {
 	Log *Log `protobuf:"bytes,21,opt,name=log,proto3,oneof"`
 }
 
+type Engine_Kafka struct {
+	Kafka *Kafka `protobuf:"bytes,22,opt,name=kafka,proto3,oneof"`
+}
+
 func (*Engine_MergeTree) isEngine_EngineType() {}
 
 func (*Engine_ReplicatedMergeTree) isEngine_EngineType() {}
@@ -246,6 +260,8 @@ func (*Engine_ReplicatedAggregatingMergeTree) isEngine_EngineType() {}
 func (*Engine_Distributed) isEngine_EngineType() {}
 
 func (*Engine_Log) isEngine_EngineType() {}
+
+func (*Engine_Kafka) isEngine_EngineType() {}
 
 type MergeTree struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
@@ -779,11 +795,79 @@ func (*Log) Descriptor() ([]byte, []int) {
 	return file_proto_engine_proto_rawDescGZIP(), []int{11}
 }
 
+type Kafka struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	BrokerList    []string               `protobuf:"bytes,1,rep,name=broker_list,json=brokerList,proto3" json:"broker_list,omitempty"`
+	Topic         string                 `protobuf:"bytes,2,opt,name=topic,proto3" json:"topic,omitempty"`
+	ConsumerGroup string                 `protobuf:"bytes,3,opt,name=consumer_group,json=consumerGroup,proto3" json:"consumer_group,omitempty"`
+	Format        string                 `protobuf:"bytes,4,opt,name=format,proto3" json:"format,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Kafka) Reset() {
+	*x = Kafka{}
+	mi := &file_proto_engine_proto_msgTypes[12]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Kafka) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Kafka) ProtoMessage() {}
+
+func (x *Kafka) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_engine_proto_msgTypes[12]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Kafka.ProtoReflect.Descriptor instead.
+func (*Kafka) Descriptor() ([]byte, []int) {
+	return file_proto_engine_proto_rawDescGZIP(), []int{12}
+}
+
+func (x *Kafka) GetBrokerList() []string {
+	if x != nil {
+		return x.BrokerList
+	}
+	return nil
+}
+
+func (x *Kafka) GetTopic() string {
+	if x != nil {
+		return x.Topic
+	}
+	return ""
+}
+
+func (x *Kafka) GetConsumerGroup() string {
+	if x != nil {
+		return x.ConsumerGroup
+	}
+	return ""
+}
+
+func (x *Kafka) GetFormat() string {
+	if x != nil {
+		return x.Format
+	}
+	return ""
+}
+
 var File_proto_engine_proto protoreflect.FileDescriptor
 
 const file_proto_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x12proto/engine.proto\x12\x11clickhouse.iac.v1\"\x8a\b\n" +
+	"\x12proto/engine.proto\x12\x11clickhouse.iac.v1\"\xbc\b\n" +
 	"\x06Engine\x12=\n" +
 	"\n" +
 	"merge_tree\x18\x01 \x01(\v2\x1c.clickhouse.iac.v1.MergeTreeH\x00R\tmergeTree\x12\\\n" +
@@ -796,7 +880,8 @@ const file_proto_engine_proto_rawDesc = "" +
 	"\x16aggregating_merge_tree\x18\b \x01(\v2'.clickhouse.iac.v1.AggregatingMergeTreeH\x00R\x14aggregatingMergeTree\x12~\n" +
 	"!replicated_aggregating_merge_tree\x18\t \x01(\v21.clickhouse.iac.v1.ReplicatedAggregatingMergeTreeH\x00R\x1ereplicatedAggregatingMergeTree\x12B\n" +
 	"\vdistributed\x18\x14 \x01(\v2\x1e.clickhouse.iac.v1.DistributedH\x00R\vdistributed\x12*\n" +
-	"\x03log\x18\x15 \x01(\v2\x16.clickhouse.iac.v1.LogH\x00R\x03logB\r\n" +
+	"\x03log\x18\x15 \x01(\v2\x16.clickhouse.iac.v1.LogH\x00R\x03log\x120\n" +
+	"\x05kafka\x18\x16 \x01(\v2\x18.clickhouse.iac.v1.KafkaH\x00R\x05kafkaB\r\n" +
 	"\vengine_type\"\v\n" +
 	"\tMergeTree\"S\n" +
 	"\x13ReplicatedMergeTree\x12\x19\n" +
@@ -831,7 +916,13 @@ const file_proto_engine_proto_rawDesc = "" +
 	"\fremote_table\x18\x03 \x01(\tR\vremoteTable\x12&\n" +
 	"\fsharding_key\x18\x04 \x01(\tH\x00R\vshardingKey\x88\x01\x01B\x0f\n" +
 	"\r_sharding_key\"\x05\n" +
-	"\x03LogB9Z7github.com/posthog/chschema/gen/chschema_v1;chschema_v1b\x06proto3"
+	"\x03Log\"}\n" +
+	"\x05Kafka\x12\x1f\n" +
+	"\vbroker_list\x18\x01 \x03(\tR\n" +
+	"brokerList\x12\x14\n" +
+	"\x05topic\x18\x02 \x01(\tR\x05topic\x12%\n" +
+	"\x0econsumer_group\x18\x03 \x01(\tR\rconsumerGroup\x12\x16\n" +
+	"\x06format\x18\x04 \x01(\tR\x06formatB9Z7github.com/posthog/chschema/gen/chschema_v1;chschema_v1b\x06proto3"
 
 var (
 	file_proto_engine_proto_rawDescOnce sync.Once
@@ -845,7 +936,7 @@ func file_proto_engine_proto_rawDescGZIP() []byte {
 	return file_proto_engine_proto_rawDescData
 }
 
-var file_proto_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_proto_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_proto_engine_proto_goTypes = []any{
 	(*Engine)(nil),                         // 0: clickhouse.iac.v1.Engine
 	(*MergeTree)(nil),                      // 1: clickhouse.iac.v1.MergeTree
@@ -859,6 +950,7 @@ var file_proto_engine_proto_goTypes = []any{
 	(*ReplicatedAggregatingMergeTree)(nil), // 9: clickhouse.iac.v1.ReplicatedAggregatingMergeTree
 	(*Distributed)(nil),                    // 10: clickhouse.iac.v1.Distributed
 	(*Log)(nil),                            // 11: clickhouse.iac.v1.Log
+	(*Kafka)(nil),                          // 12: clickhouse.iac.v1.Kafka
 }
 var file_proto_engine_proto_depIdxs = []int32{
 	1,  // 0: clickhouse.iac.v1.Engine.merge_tree:type_name -> clickhouse.iac.v1.MergeTree
@@ -872,11 +964,12 @@ var file_proto_engine_proto_depIdxs = []int32{
 	9,  // 8: clickhouse.iac.v1.Engine.replicated_aggregating_merge_tree:type_name -> clickhouse.iac.v1.ReplicatedAggregatingMergeTree
 	10, // 9: clickhouse.iac.v1.Engine.distributed:type_name -> clickhouse.iac.v1.Distributed
 	11, // 10: clickhouse.iac.v1.Engine.log:type_name -> clickhouse.iac.v1.Log
-	11, // [11:11] is the sub-list for method output_type
-	11, // [11:11] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	12, // 11: clickhouse.iac.v1.Engine.kafka:type_name -> clickhouse.iac.v1.Kafka
+	12, // [12:12] is the sub-list for method output_type
+	12, // [12:12] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_proto_engine_proto_init() }
@@ -896,6 +989,7 @@ func file_proto_engine_proto_init() {
 		(*Engine_ReplicatedAggregatingMergeTree)(nil),
 		(*Engine_Distributed)(nil),
 		(*Engine_Log)(nil),
+		(*Engine_Kafka)(nil),
 	}
 	file_proto_engine_proto_msgTypes[3].OneofWrappers = []any{}
 	file_proto_engine_proto_msgTypes[4].OneofWrappers = []any{}
@@ -906,7 +1000,7 @@ func file_proto_engine_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_engine_proto_rawDesc), len(file_proto_engine_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   0,
 		},

@@ -165,3 +165,61 @@ func TestSQLGenerator_GenerateActionSQL_DropColumn(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, "ALTER TABLE users DROP COLUMN old_email", sql)
 }
+
+func TestSQLGenerator_GenerateCreateTable_Kafka(t *testing.T) {
+	generator := NewSQLGenerator()
+	database := "test_db"
+
+	table := &chschema_v1.Table{
+		Name:     "kafka_events",
+		Database: &database,
+		Columns: []*chschema_v1.Column{
+			{Name: "id", Type: "UUID"},
+			{Name: "data", Type: "String"},
+		},
+		Engine: &chschema_v1.Engine{
+			EngineType: &chschema_v1.Engine_Kafka{
+				Kafka: &chschema_v1.Kafka{
+					BrokerList:    []string{"localhost:9092"},
+					Topic:         "events",
+					ConsumerGroup: "consumer_group1",
+					Format:        "JSONEachRow",
+				},
+			},
+		},
+	}
+
+	sql := generator.GenerateCreateTable(table)
+
+	require.Contains(t, sql, "CREATE TABLE test_db.kafka_events")
+	require.Contains(t, sql, "ENGINE = Kafka('localhost:9092', 'events', 'consumer_group1', 'JSONEachRow')")
+}
+
+func TestSQLGenerator_GenerateCreateTable_KafkaMultipleBrokers(t *testing.T) {
+	generator := NewSQLGenerator()
+	database := "test_db"
+
+	table := &chschema_v1.Table{
+		Name:     "kafka_events",
+		Database: &database,
+		Columns: []*chschema_v1.Column{
+			{Name: "id", Type: "UUID"},
+			{Name: "data", Type: "String"},
+		},
+		Engine: &chschema_v1.Engine{
+			EngineType: &chschema_v1.Engine_Kafka{
+				Kafka: &chschema_v1.Kafka{
+					BrokerList:    []string{"broker1:9092", "broker2:9092", "broker3:9092"},
+					Topic:         "events",
+					ConsumerGroup: "consumer_group1",
+					Format:        "JSONEachRow",
+				},
+			},
+		},
+	}
+
+	sql := generator.GenerateCreateTable(table)
+
+	require.Contains(t, sql, "CREATE TABLE test_db.kafka_events")
+	require.Contains(t, sql, "ENGINE = Kafka('broker1:9092,broker2:9092,broker3:9092', 'events', 'consumer_group1', 'JSONEachRow')")
+}

@@ -358,6 +358,49 @@ func TestParseEngine_ReplicatedAggregatingMergeTree(t *testing.T) {
 	require.Equal(t, "{replica}", ramt.ReplicaName)
 }
 
+func TestParseEngine_Kafka(t *testing.T) {
+	tests := []struct {
+		name             string
+		engineFull       string
+		expectBrokerList []string
+		expectTopic      string
+		expectGroup      string
+		expectFormat     string
+	}{
+		{
+			name:             "single broker",
+			engineFull:       "Kafka('localhost:9092', 'events', 'consumer_group1', 'JSONEachRow')",
+			expectBrokerList: []string{"localhost:9092"},
+			expectTopic:      "events",
+			expectGroup:      "consumer_group1",
+			expectFormat:     "JSONEachRow",
+		},
+		{
+			name:             "multiple brokers",
+			engineFull:       "Kafka('broker1:9092,broker2:9092', 'events', 'consumer_group1', 'JSONEachRow')",
+			expectBrokerList: []string{"broker1:9092", "broker2:9092"},
+			expectTopic:      "events",
+			expectGroup:      "consumer_group1",
+			expectFormat:     "JSONEachRow",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			engine, err := ParseEngine("Kafka", tt.engineFull)
+			require.NoError(t, err)
+			require.NotNil(t, engine)
+
+			kafka := engine.GetKafka()
+			require.NotNil(t, kafka)
+			require.Equal(t, tt.expectBrokerList, kafka.BrokerList)
+			require.Equal(t, tt.expectTopic, kafka.Topic)
+			require.Equal(t, tt.expectGroup, kafka.ConsumerGroup)
+			require.Equal(t, tt.expectFormat, kafka.Format)
+		})
+	}
+}
+
 func stringPtr(s string) *string {
 	return &s
 }

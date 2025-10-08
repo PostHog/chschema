@@ -179,12 +179,69 @@ func GenerateEngineString(engine *chschema_v1.Engine) string {
 		return "MergeTree()"
 	}
 
+	// MergeTree family
+	if engine.GetMergeTree() != nil {
+		return "MergeTree()"
+	}
+
 	if t := engine.GetReplicatedMergeTree(); t != nil {
 		return fmt.Sprintf("ReplicatedMergeTree('%s', '%s')", t.ZooPath, t.ReplicaName)
 	}
 
-	if engine.GetMergeTree() != nil {
-		return "MergeTree()"
+	if t := engine.GetReplacingMergeTree(); t != nil {
+		if t.VersionColumn != nil {
+			return fmt.Sprintf("ReplacingMergeTree(%s)", *t.VersionColumn)
+		}
+		return "ReplacingMergeTree()"
+	}
+
+	if t := engine.GetReplicatedReplacingMergeTree(); t != nil {
+		if t.VersionColumn != nil {
+			return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s', %s)", t.ZooPath, t.ReplicaName, *t.VersionColumn)
+		}
+		return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s')", t.ZooPath, t.ReplicaName)
+	}
+
+	if t := engine.GetSummingMergeTree(); t != nil {
+		if len(t.SumColumns) > 0 {
+			return fmt.Sprintf("SummingMergeTree((%s))", strings.Join(t.SumColumns, ", "))
+		}
+		return "SummingMergeTree()"
+	}
+
+	if t := engine.GetCollapsingMergeTree(); t != nil {
+		return fmt.Sprintf("CollapsingMergeTree(%s)", t.SignColumn)
+	}
+
+	if t := engine.GetReplicatedCollapsingMergeTree(); t != nil {
+		return fmt.Sprintf("ReplicatedCollapsingMergeTree('%s', '%s', %s)", t.ZooPath, t.ReplicaName, t.SignColumn)
+	}
+
+	if engine.GetAggregatingMergeTree() != nil {
+		return "AggregatingMergeTree()"
+	}
+
+	if t := engine.GetReplicatedAggregatingMergeTree(); t != nil {
+		return fmt.Sprintf("ReplicatedAggregatingMergeTree('%s', '%s')", t.ZooPath, t.ReplicaName)
+	}
+
+	// Distributed
+	if t := engine.GetDistributed(); t != nil {
+		if t.ShardingKey != nil {
+			return fmt.Sprintf("Distributed(%s, %s, %s, %s)", t.ClusterName, t.RemoteDatabase, t.RemoteTable, *t.ShardingKey)
+		}
+		return fmt.Sprintf("Distributed(%s, %s, %s)", t.ClusterName, t.RemoteDatabase, t.RemoteTable)
+	}
+
+	// Log
+	if engine.GetLog() != nil {
+		return "Log()"
+	}
+
+	// Kafka
+	if t := engine.GetKafka(); t != nil {
+		brokerList := strings.Join(t.BrokerList, ",")
+		return fmt.Sprintf("Kafka('%s', '%s', '%s', '%s')", brokerList, t.Topic, t.ConsumerGroup, t.Format)
 	}
 
 	// Default fallback

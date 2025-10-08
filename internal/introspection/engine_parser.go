@@ -53,6 +53,8 @@ func ParseEngine(engineName, engineFull string) (*chschema_v1.Engine, error) {
 				Log: &chschema_v1.Log{},
 			},
 		}, nil
+	case strings.HasPrefix(engineDecl, "Kafka"):
+		return parseKafka(engineDecl)
 	default:
 		return nil, fmt.Errorf("unsupported engine type: %s", engineName)
 	}
@@ -275,6 +277,37 @@ func parseDistributed(engineDecl string) (*chschema_v1.Engine, error) {
 	return &chschema_v1.Engine{
 		EngineType: &chschema_v1.Engine_Distributed{
 			Distributed: engine,
+		},
+	}, nil
+}
+
+// parseKafka parses "Kafka(broker_list, topic, consumer_group, format)"
+func parseKafka(engineDecl string) (*chschema_v1.Engine, error) {
+	params, err := extractParameters(engineDecl)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse Kafka parameters: %w", err)
+	}
+
+	if len(params) < 4 {
+		return nil, fmt.Errorf("Kafka requires 4 parameters (broker_list, topic, consumer_group, format), got %d", len(params))
+	}
+
+	// Split broker list by comma
+	brokerList := strings.Split(params[0], ",")
+	for i := range brokerList {
+		brokerList[i] = strings.TrimSpace(brokerList[i])
+	}
+
+	engine := &chschema_v1.Kafka{
+		BrokerList:    brokerList,
+		Topic:         params[1],
+		ConsumerGroup: params[2],
+		Format:        params[3],
+	}
+
+	return &chschema_v1.Engine{
+		EngineType: &chschema_v1.Engine_Kafka{
+			Kafka: engine,
 		},
 	}, nil
 }
