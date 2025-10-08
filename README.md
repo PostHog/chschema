@@ -62,9 +62,10 @@ Dumped engines:
   ✓ Distributed: 51
   ✓ MaterializedView: 33
   ✓ Dictionary: 9
+  ✓ Kafka: 27
 
 Skipped engines:
-  ✗ Kafka: 27
+  (none)
 --------------------------------
 ```
 
@@ -78,11 +79,17 @@ name: users
 database: myapp
 order_by: [user_id, created_at]
 partition_by: toYYYYMM(created_at)
+engine:
+  merge_tree: {}
 columns:
   - name: user_id
     type: UInt64
+    comment: "Unique user identifier"
   - name: email
     type: String
+  - name: metadata
+    type: String
+    codec: "CODEC(ZSTD(3))"
   - name: created_at
     type: DateTime
     defaultexpression: now()
@@ -203,6 +210,7 @@ schema/
 - ✅ ReplicatedAggregatingMergeTree
 - ✅ Distributed
 - ✅ Log
+- ✅ Kafka
 
 ### Views
 - ✅ MaterializedView
@@ -210,9 +218,6 @@ schema/
 
 ### Dictionaries
 - ✅ Dictionary
-
-### Not Yet Supported
-- Kafka
 
 ## YAML Schema Format
 
@@ -223,12 +228,18 @@ name: table_name
 database: database_name        # optional
 order_by: [col1, col2]        # ORDER BY clause
 partition_by: toYYYYMM(date)  # PARTITION BY clause
+engine:
+  merge_tree: {}               # or replicated_merge_tree, replacing_merge_tree, etc.
 columns:
   - name: id
     type: UInt64
+    comment: "Unique identifier"  # optional, column comment
   - name: name
     type: String
-    defaultexpression: ''      # DEFAULT expression
+    defaultexpression: ''         # optional, DEFAULT expression
+  - name: data
+    type: String
+    codec: "CODEC(ZSTD(3))"      # optional, compression codec
   - name: created_at
     type: DateTime
     defaultexpression: now()
@@ -273,6 +284,28 @@ attributes:
   - name: email
     type: String
     isKey: false
+```
+
+### Kafka Table Definition
+
+```yaml
+name: kafka_events
+database: myapp
+columns:
+  - name: event_id
+    type: UUID
+  - name: event_data
+    type: String
+  - name: timestamp
+    type: DateTime
+engine:
+  kafka:
+    broker_list:
+      - "localhost:9092"
+      - "broker2:9092"
+    topic: "events"
+    consumer_group: "consumer_group1"
+    format: "JSONEachRow"
 ```
 
 ### Cluster Definition
