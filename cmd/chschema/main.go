@@ -12,6 +12,8 @@ import (
 	"github.com/posthog/chschema/internal/executor"
 	"github.com/posthog/chschema/internal/introspection"
 	"github.com/posthog/chschema/internal/loader"
+	"github.com/posthog/chschema/internal/logger"
+	"github.com/rs/zerolog/log"
 	"github.com/spf13/cobra"
 )
 
@@ -28,6 +30,12 @@ var (
 	dumpTablesOnly bool
 	dumpOverwrite  bool
 
+	// Logger flags
+	logLevel   string
+	logFormat  string
+	logFile    string
+	logNoColor bool
+
 	clickhouseConfig config.ClickHouseConfig
 )
 
@@ -35,58 +43,58 @@ func migrateCmdFunc(cmd *cobra.Command, args []string) {
 	ctx := context.Background()
 
 	// 1. Load the desired schema from YAML files
-	fmt.Printf("Using config directory: %s\n", configDir)
+	log.Info().Str("config_dir", configDir).Msg("Loading schema configuration")
 	schemaLoader := loader.NewSchemaLoader(configDir)
 	desiredState, err := schemaLoader.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error loading schema: %s\n", err)
+		log.Error().Err(err).Str("config_dir", configDir).Msg("Failed to load schema")
 		os.Exit(1)
 	}
 
 	// 2. Establish connection to ClickHouse
 	cfg := clickhouseConfig
-	fmt.Printf("Connecting to %s:%d...\n", cfg.Host, cfg.Port)
+	log.Info().Str("host", cfg.Host).Int("port", cfg.Port).Str("database", cfg.Database).Msg("Connecting to ClickHouse")
 	conn, err := config.NewConnection(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error connecting to ClickHouse: %s\n", err)
+		log.Error().Err(err).Str("host", cfg.Host).Int("port", cfg.Port).Msg("Failed to connect to ClickHouse")
 		os.Exit(1)
 	}
 	defer conn.Close()
 
 	// 3. Introspect the current state from the live cluster
-	fmt.Println("Introspecting current state...")
+	log.Info().Msg("Introspecting current state")
 	introspector := introspection.NewIntrospector(conn)
 	currentState, err := introspector.GetCurrentState(ctx)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error introspecting schema: %s\n", err)
+		log.Error().Err(err).Msg("Failed to introspect schema")
 		os.Exit(1)
 	}
 
-	// 4. Compare the states and generate a
-	fmt.Println("Comparing desired and current states...")
+	// 4. Compare the states and generate a plan
+	log.Info().Msg("Comparing desired and current states")
 	differ := diff.NewDiffer()
 	plan, err := differ.Plan(desiredState, currentState)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error creating execution plan: %s\n", err)
+		log.Error().Err(err).Msg("Failed to create execution plan")
 		os.Exit(1)
 	}
 
 	// 5. Display the plan
 	if err := printPlan(plan, outputFile); err != nil {
-		fmt.Fprintf(os.Stderr, "Error writing plan: %s\n", err)
+		log.Error().Err(err).Msg("Failed to write plan")
 		os.Exit(1)
 	}
 
 	// 6. Execute the plan if approved
 	if autoApprove {
-		fmt.Println("\nAuto-approving and applying changes...")
+		log.Info().Msg("Auto-approving and applying changes")
 		exec := executor.NewExecutor(conn)
 		if err := exec.Execute(ctx, plan); err != nil {
-			fmt.Fprintf(os.Stderr, "Error applying schema changes: %s\n", err)
+			log.Error().Err(err).Msg("Failed to apply schema changes")
 			os.Exit(1)
 		}
 	} else if len(plan.Actions) > 0 {
-		fmt.Println("\nRun with --auto-approve to apply these changes.")
+		log.Info().Msg("Run with --auto-approve to apply these changes")
 	}
 }
 
@@ -95,6 +103,13 @@ var rootCmd = &cobra.Command{
 	Short: "A declarative schema management tool for ClickHouse",
 	Long: `chschema is a tool to manage ClickHouse schemas using a declarative
 approach, inspired by Infrastructure-as-Code (IaC) principles.`,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		// Initialize logger after flags are parsed
+		if err := logger.Init(logLevel, logFormat, logFile, logNoColor); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to initialize logger: %s\n", err)
+			os.Exit(1)
+		}
+	},
 	Run: func(cmd *cobra.Command, args []string) {
 		fmt.Println("chschema is a tool to manage ClickHouse schemas using a declarative approach, inspired by Infrastructure-as-Code (IaC) principles.")
 	},
@@ -110,12 +125,14 @@ func printPlan(plan *diff.Plan, outputFile string) error {
 		}
 		defer file.Close()
 		writer = file
-		fmt.Printf("Writing execution plan to %s\n", outputFile)
+		log.Info().Str("file", outputFile).Msg("Writing execution plan to file")
 	}
 
+	// Plan output goes to stdout (program output, not logging)
 	fmt.Fprintln(writer, "\n--- Execution Plan ---")
 	if len(plan.Actions) == 0 {
 		fmt.Fprintln(writer, "No changes detected. The schema is up-to-date.")
+		log.Info().Msg("No schema changes detected")
 		return nil
 	}
 
@@ -124,8 +141,10 @@ func printPlan(plan *diff.Plan, outputFile string) error {
 	}
 	fmt.Fprintln(writer, "----------------------")
 
+	log.Info().Int("action_count", len(plan.Actions)).Msg("Execution plan generated")
+
 	if outputFile != "" {
-		fmt.Printf("Execution plan written to %s\n", outputFile)
+		log.Info().Str("file", outputFile).Msg("Execution plan written successfully")
 	}
 
 	return nil
@@ -151,10 +170,10 @@ func dumpCmdFunc(cmd *cobra.Command, args []string) {
 
 	// Establish connection to ClickHouse
 	cfg := clickhouseConfig
-	fmt.Printf("Connecting to %s:%d...\n", cfg.Host, cfg.Port)
+	log.Info().Str("host", cfg.Host).Int("port", cfg.Port).Str("database", cfg.Database).Msg("Connecting to ClickHouse")
 	conn, err := config.NewConnection(cfg)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Error connecting to ClickHouse: %s\n", err)
+		log.Error().Err(err).Str("host", cfg.Host).Int("port", cfg.Port).Msg("Failed to connect to ClickHouse")
 		os.Exit(1)
 	}
 	defer conn.Close()
@@ -168,9 +187,11 @@ func dumpCmdFunc(cmd *cobra.Command, args []string) {
 		Overwrite:  dumpOverwrite,
 	}
 
+	log.Info().Str("output_dir", dumpOutputDir).Bool("tables_only", dumpTablesOnly).Msg("Starting schema dump")
+
 	// Perform the dump
 	if err := d.Dump(ctx, opts); err != nil {
-		fmt.Fprintf(os.Stderr, "Error dumping schema: %s\n", err)
+		log.Error().Err(err).Msg("Failed to dump schema")
 		os.Exit(1)
 	}
 }
@@ -197,6 +218,12 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&clickhouseConfig.User, "user", "default", "")
 	rootCmd.PersistentFlags().StringVar(&clickhouseConfig.Password, "password", "default", "")
 
+	// Logger flags
+	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "info", "Log level (debug, info, warn, error)")
+	rootCmd.PersistentFlags().StringVar(&logFormat, "log-format", "auto", "Log format (console, json, auto)")
+	rootCmd.PersistentFlags().StringVar(&logFile, "log-file", "", "Log file path (default: stderr)")
+	rootCmd.PersistentFlags().BoolVar(&logNoColor, "log-no-color", false, "Disable color output in console format")
+
 	migrateCmd.Flags().BoolVar(&autoApprove, "auto-approve", false, "Automatically approve and apply changes")
 	migrateCmd.Flags().StringVarP(&outputFile, "output", "o", "", "Write execution plan to file instead of stdout")
 
@@ -209,7 +236,8 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		fmt.Fprintf(os.Stderr, "Whoops. There was an error while executing your CLI: %s", err)
+		// Logger may not be initialized yet if error happens during flag parsing
+		fmt.Fprintf(os.Stderr, "Error: %s\n", err)
 		os.Exit(1)
 	}
 }

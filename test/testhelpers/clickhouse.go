@@ -9,6 +9,7 @@ import (
 	"unsafe"
 
 	"github.com/posthog/chschema/config"
+	"github.com/posthog/chschema/internal/logger"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
@@ -17,11 +18,23 @@ var (
 	testConn     driver.Conn
 	testConnOnce sync.Once
 	testConnErr  error
+	loggerOnce   sync.Once
 )
+
+// InitTestLogger initializes the logger in test mode (suppresses output)
+func InitTestLogger() {
+	loggerOnce.Do(func() {
+		// Initialize logger at error level for tests to reduce noise
+		_ = logger.Init("error", "console", "", true)
+	})
+}
 
 // GetTestConnection returns a shared ClickHouse connection for tests
 // The connection is initialized once and reused across all tests
 func GetTestConnection(t *testing.T) driver.Conn {
+	// Initialize test logger first
+	InitTestLogger()
+
 	testConnOnce.Do(func() {
 		cfg := config.GetDefaultConfig()
 		testConn, testConnErr = config.NewConnection(cfg)

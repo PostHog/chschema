@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/posthog/chschema/gen/chschema_v1"
+	"github.com/rs/zerolog/log"
 )
 
 // ActionType defines the type of DDL action to be taken.
@@ -38,8 +39,34 @@ func NewDiffer() *Differ {
 
 // Plan generates a list of actions required to migrate the current state to the desired state.
 func (d *Differ) Plan(desired, current *chschema_v1.NodeSchemaState) (*Plan, error) {
+	log.Debug().
+		Int("desired_tables", len(desired.Tables)).
+		Int("current_tables", len(current.Tables)).
+		Msg("Starting schema diff")
+
 	plan := &Plan{}
 	d.compareTables(plan, desired, current)
+
+	// Count action types
+	creates, drops, alters := 0, 0, 0
+	for _, action := range plan.Actions {
+		switch action.Type {
+		case ActionCreateTable:
+			creates++
+		case ActionDropTable:
+			drops++
+		case ActionAddColumn, ActionDropColumn:
+			alters++
+		}
+	}
+
+	log.Info().
+		Int("total_actions", len(plan.Actions)).
+		Int("creates", creates).
+		Int("drops", drops).
+		Int("alters", alters).
+		Msg("Schema diff completed")
+
 	return plan, nil
 }
 

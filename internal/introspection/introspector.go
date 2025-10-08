@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/posthog/chschema/gen/chschema_v1"
 	"github.com/posthog/chschema/internal/loader"
+	"github.com/rs/zerolog/log"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
@@ -33,6 +35,9 @@ func NewIntrospector(conn clickhouse.Conn) *Introspector {
 
 // GetCurrentState queries the system tables to build a model of the current schema.
 func (i *Introspector) GetCurrentState(ctx context.Context) (*chschema_v1.NodeSchemaState, error) {
+	start := time.Now()
+	log.Debug().Msg("Starting schema introspection")
+
 	state := loader.NewDesiredState()
 
 	// 0. First, get all tables to track what's available
@@ -41,24 +46,40 @@ func (i *Introspector) GetCurrentState(ctx context.Context) (*chschema_v1.NodeSc
 	}
 
 	// 1. Introspect Tables and Columns
+	log.Debug().Msg("Introspecting tables")
 	if err := i.introspectTables(ctx, state); err != nil {
 		return nil, err
 	}
+	log.Debug().Int("table_count", len(state.Tables)).Msg("Tables introspected")
 
 	// 2. Introspect Materialized Views
+	log.Debug().Msg("Introspecting materialized views")
 	if err := i.introspectMaterializedViews(ctx, state); err != nil {
 		return nil, err
 	}
+	log.Debug().Int("materialized_view_count", len(state.MaterializedViews)).Msg("Materialized views introspected")
 
 	// 3. Introspect Views
+	log.Debug().Msg("Introspecting views")
 	if err := i.introspectViews(ctx, state); err != nil {
 		return nil, err
 	}
+	log.Debug().Int("view_count", len(state.Views)).Msg("Views introspected")
 
 	// 4. Introspect Dictionaries
+	log.Debug().Msg("Introspecting dictionaries")
 	if err := i.introspectDictionaries(ctx, state); err != nil {
 		return nil, err
 	}
+	log.Debug().Int("dictionary_count", len(state.Dictionaries)).Msg("Dictionaries introspected")
+
+	log.Info().
+		Dur("duration", time.Since(start)).
+		Int("tables", len(state.Tables)).
+		Int("materialized_views", len(state.MaterializedViews)).
+		Int("views", len(state.Views)).
+		Int("dictionaries", len(state.Dictionaries)).
+		Msg("Schema introspection completed")
 
 	return state, nil
 }

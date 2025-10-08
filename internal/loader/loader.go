@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/posthog/chschema/gen/chschema_v1"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
@@ -79,7 +80,7 @@ func (l *SchemaLoader) Load() (*chschema_v1.NodeSchemaState, error) {
 			if err := loaderFunc(data, filePath); err != nil {
 				return nil, fmt.Errorf("failed to process file %s: %w", filePath, err)
 			}
-			fmt.Printf("Successfully loaded and parsed %s\n", filePath)
+			log.Debug().Str("file", filePath).Msg("Successfully loaded and parsed YAML file")
 		}
 	}
 

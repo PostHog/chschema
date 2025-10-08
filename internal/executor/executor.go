@@ -6,6 +6,7 @@ import (
 
 	"github.com/posthog/chschema/internal/diff"
 	"github.com/posthog/chschema/internal/sqlgen"
+	"github.com/rs/zerolog/log"
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 )
@@ -27,29 +28,35 @@ func NewExecutor(conn clickhouse.Conn) *Executor {
 // Execute applies the actions in the plan to the database.
 func (e *Executor) Execute(ctx context.Context, plan *diff.Plan) error {
 	if len(plan.Actions) == 0 {
-		fmt.Println("No actions to execute.")
+		log.Debug().Msg("No actions to execute")
 		return nil
 	}
 
-	fmt.Println("Executing plan...")
+	log.Info().Int("action_count", len(plan.Actions)).Msg("Executing plan")
 
-	for _, action := range plan.Actions {
+	for i, action := range plan.Actions {
 		ddl, err := e.sqlGen.GenerateActionSQL(action)
 		if err != nil {
 			return fmt.Errorf("failed to generate DDL for action %s: %w", action.Type, err)
 		}
 
 		if ddl == "" {
-			fmt.Printf("Skipping action %s: No DDL generated.\n", action.Type)
+			log.Warn().Str("action_type", string(action.Type)).Msg("Skipping action: no DDL generated")
 			continue
 		}
 
-		fmt.Printf("Executing: %s\n", ddl)
+		log.Info().
+			Str("action_type", string(action.Type)).
+			Str("sql", ddl).
+			Int("action_number", i+1).
+			Msg("Executing DDL")
+
 		if err := e.conn.Exec(ctx, ddl); err != nil {
+			log.Error().Err(err).Str("sql", ddl).Msg("Failed to execute DDL")
 			return fmt.Errorf("failed to execute DDL: %w", err)
 		}
 	}
 
-	fmt.Println("Plan executed successfully.")
+	log.Info().Int("actions_executed", len(plan.Actions)).Msg("Plan executed successfully")
 	return nil
 }

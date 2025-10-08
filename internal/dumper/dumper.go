@@ -10,6 +10,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/posthog/chschema/gen/chschema_v1"
 	"github.com/posthog/chschema/internal/introspection"
+	"github.com/rs/zerolog/log"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	"gopkg.in/yaml.v3"
@@ -77,19 +78,18 @@ func (d *Dumper) Dump(ctx context.Context, opts DumpOptions) error {
 	// 8. Print statistics
 	d.printStatistics(introspector)
 
-	fmt.Printf("\nSchema dump completed successfully to %s\n", opts.OutputDir)
+	log.Info().Str("output_dir", opts.OutputDir).Msg("Schema dump completed successfully")
 	return nil
 }
 
 // printStatistics prints introspection statistics
 func (d *Dumper) printStatistics(introspector *introspection.Introspector) {
-	fmt.Println("\n--- Introspection Statistics ---")
+	log.Info().Msg("Introspection Statistics")
 
 	// Print dumped engines
 	if len(introspector.DumpedEngines) > 0 {
-		fmt.Println("\nDumped engines:")
 		for engine, count := range introspector.DumpedEngines {
-			fmt.Printf("  ✓ %s: %d\n", engine, count)
+			log.Info().Str("engine", engine).Int("count", count).Msg("Dumped engine")
 		}
 	}
 
@@ -102,15 +102,12 @@ func (d *Dumper) printStatistics(introspector *introspection.Introspector) {
 	}
 
 	if skippedCount > 0 {
-		fmt.Println("\nSkipped engines:")
 		for engine, count := range introspector.SkippedEngines {
 			if count > 0 {
-				fmt.Printf("  ✗ %s: %d\n", engine, count)
+				log.Warn().Str("engine", engine).Int("count", count).Msg("Skipped unsupported engine")
 			}
 		}
 	}
-
-	fmt.Println("--------------------------------")
 }
 
 // createDirectoryStructure creates the necessary directories
@@ -146,7 +143,7 @@ func (d *Dumper) dumpTables(tables []*chschema_v1.Table, opts DumpOptions) error
 			return fmt.Errorf("failed to write table %s: %w", table.Name, err)
 		}
 
-		fmt.Printf("Dumped table: %s\n", table.Name)
+		log.Debug().Str("table", table.Name).Str("file", filename).Msg("Dumped table")
 	}
 
 	return nil
@@ -161,7 +158,7 @@ func (d *Dumper) dumpClusters(clusters []*chschema_v1.Cluster, opts DumpOptions)
 			return fmt.Errorf("failed to write cluster %s: %w", cluster.Name, err)
 		}
 
-		fmt.Printf("Dumped cluster: %s\n", cluster.Name)
+		log.Debug().Str("cluster", cluster.Name).Str("file", filename).Msg("Dumped cluster")
 	}
 
 	return nil
@@ -181,7 +178,7 @@ func (d *Dumper) dumpMaterializedViews(views []*chschema_v1.MaterializedView, op
 			return fmt.Errorf("failed to write materialized view %s: %w", view.Name, err)
 		}
 
-		fmt.Printf("Dumped materialized view: %s\n", view.Name)
+		log.Debug().Str("view", view.Name).Str("file", filename).Msg("Dumped materialized view")
 	}
 
 	return nil
@@ -201,7 +198,7 @@ func (d *Dumper) dumpViews(views []*chschema_v1.View, opts DumpOptions) error {
 			return fmt.Errorf("failed to write view %s: %w", view.Name, err)
 		}
 
-		fmt.Printf("Dumped view: %s\n", view.Name)
+		log.Debug().Str("view", view.Name).Str("file", filename).Msg("Dumped view")
 	}
 
 	return nil
@@ -221,7 +218,7 @@ func (d *Dumper) dumpDictionaries(dictionaries []*chschema_v1.Dictionary, opts D
 			return fmt.Errorf("failed to write dictionary %s: %w", dict.Name, err)
 		}
 
-		fmt.Printf("Dumped dictionary: %s\n", dict.Name)
+		log.Debug().Str("dictionary", dict.Name).Str("file", filename).Msg("Dumped dictionary")
 	}
 
 	return nil
