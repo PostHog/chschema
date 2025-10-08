@@ -6,6 +6,7 @@ docker run --rm -v "$(pwd):/app" proto-builder:latest \
          --go-grpc_out=/app/gen --go-grpc_opt=paths=source_relative \
          /app/proto/cluster.proto \
          /app/proto/column.proto \
+         /app/proto/dictionary.proto \
          /app/proto/engine.proto \
          /app/proto/schema_state.proto \
          /app/proto/table.proto \

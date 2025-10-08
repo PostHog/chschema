@@ -62,14 +62,19 @@ func (d *Dumper) Dump(ctx context.Context, opts DumpOptions) error {
 		return fmt.Errorf("failed to dump views: %w", err)
 	}
 
-	// 6. Dump clusters (if not tables-only)
+	// 6. Dump dictionaries
+	if err := d.dumpDictionaries(currentState.Dictionaries, opts); err != nil {
+		return fmt.Errorf("failed to dump dictionaries: %w", err)
+	}
+
+	// 7. Dump clusters (if not tables-only)
 	if !opts.TablesOnly {
 		if err := d.dumpClusters(currentState.Clusters, opts); err != nil {
 			return fmt.Errorf("failed to dump clusters: %w", err)
 		}
 	}
 
-	// 7. Print statistics
+	// 8. Print statistics
 	d.printStatistics(introspector)
 
 	fmt.Printf("\nSchema dump completed successfully to %s\n", opts.OutputDir)
@@ -115,6 +120,7 @@ func (d *Dumper) createDirectoryStructure(outputDir string) error {
 		filepath.Join(outputDir, "clusters"),
 		filepath.Join(outputDir, "views"),
 		filepath.Join(outputDir, "materialized_views"),
+		filepath.Join(outputDir, "dictionaries"),
 	}
 
 	for _, dir := range dirs {
@@ -196,6 +202,26 @@ func (d *Dumper) dumpViews(views []*chschema_v1.View, opts DumpOptions) error {
 		}
 
 		fmt.Printf("Dumped view: %s\n", view.Name)
+	}
+
+	return nil
+}
+
+// dumpDictionaries writes dictionary definitions to YAML files
+func (d *Dumper) dumpDictionaries(dictionaries []*chschema_v1.Dictionary, opts DumpOptions) error {
+	for _, dict := range dictionaries {
+		// Filter by database if specified
+		if opts.Database != "" && dict.Database != nil && *dict.Database != opts.Database {
+			continue
+		}
+
+		// Write protobuf dictionary directly to YAML
+		filename := filepath.Join(opts.OutputDir, "dictionaries", dict.Name+".yaml")
+		if err := WriteYAMLFile(filename, dict, opts.Overwrite); err != nil {
+			return fmt.Errorf("failed to write dictionary %s: %w", dict.Name, err)
+		}
+
+		fmt.Printf("Dumped dictionary: %s\n", dict.Name)
 	}
 
 	return nil

@@ -1,0 +1,62 @@
+syntax = "proto3";
+
+package clickhouse.iac.v1;
+
+option go_package = "github.com/posthog/chschema/gen/chschema_v1;chschema_v1";
+
+// Dictionary represents a ClickHouse dictionary definition
+message Dictionary {
+  string name = 1;
+  optional string database = 2;
+
+  // Source configuration
+  DictionarySource source = 3;
+
+  // Layout type (flat, hashed, cache, etc.)
+  DictionaryLayout layout = 4;
+
+  // Lifetime configuration
+  optional DictionaryLifetime lifetime = 5;
+
+  // Structure: key and attribute definitions
+  repeated DictionaryAttribute attributes = 6;
+
+  // Primary key definition
+  repeated string primary_key = 7;
+}
+
+// DictionarySource defines where the dictionary gets its data
+message DictionarySource {
+  // Source type (clickhouse, mysql, postgresql, etc.)
+  string source_type = 1;
+
+  // Raw source configuration string
+  string source_config = 2;
+}
+
+// DictionaryLayout defines the storage layout type
+message DictionaryLayout {
+  // Layout type: flat, hashed, cache, range_hashed, complex_key_hashed, etc.
+  string layout_type = 1;
+
+  // Optional size hint for some layouts
+  optional int64 size_hint = 2;
+}
+
+// DictionaryLifetime defines update frequency
+message DictionaryLifetime {
+  optional int64 min_seconds = 1;
+  optional int64 max_seconds = 2;
+}
+
+// DictionaryAttribute represents a column in the dictionary
+message DictionaryAttribute {
+  string name = 1;
+  string type = 2;
+
+  // Default value expression
+  optional string default_expression = 3;
+
+  // Whether this is a key attribute
+  bool is_key = 4;
+}

@@ -55,6 +55,11 @@ func (i *Introspector) GetCurrentState(ctx context.Context) (*chschema_v1.NodeSc
 		return nil, err
 	}
 
+	// 4. Introspect Dictionaries
+	if err := i.introspectDictionaries(ctx, state); err != nil {
+		return nil, err
+	}
+
 	return state, nil
 }
 
@@ -401,6 +406,106 @@ func (i *Introspector) introspectViews(ctx context.Context, state *chschema_v1.N
 		i.DumpedEngines["View"]++
 		if i.SkippedEngines["View"] > 0 {
 			i.SkippedEngines["View"]--
+		}
+	}
+
+	return nil
+}
+
+// introspectDictionaries queries dictionaries from system.dictionaries
+func (i *Introspector) introspectDictionaries(ctx context.Context, state *chschema_v1.NodeSchemaState) error {
+	var (
+		predicate string
+		args      []interface{}
+	)
+	if len(i.Databases) > 0 {
+		predicate = " AND database IN $1"
+		args = append(args, i.Databases)
+	}
+
+	query := `
+		SELECT
+			database,
+			name,
+			source,
+			type,
+			key,
+			attribute.names,
+			attribute.types,
+			lifetime_min,
+			lifetime_max
+		FROM system.dictionaries
+		WHERE database NOT IN ('system', 'information_schema', 'INFORMATION_SCHEMA')` +
+		predicate +
+		`
+		ORDER BY database, name
+	`
+
+	rows, err := i.conn.Query(ctx, query, args...)
+	if err != nil {
+		return fmt.Errorf("failed to query dictionaries: %w", err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var db, name, source, layoutType string
+		var keyColumns []string
+		var attrNames, attrTypes []string
+		var lifetimeMin, lifetimeMax uint64
+
+		if err := rows.Scan(&db, &name, &source, &layoutType, &keyColumns, &attrNames, &attrTypes, &lifetimeMin, &lifetimeMax); err != nil {
+			return fmt.Errorf("failed to scan dictionary row: %w", err)
+		}
+
+		// Build attributes
+		var attributes []*chschema_v1.DictionaryAttribute
+		for idx, attrName := range attrNames {
+			attrType := ""
+			if idx < len(attrTypes) {
+				attrType = attrTypes[idx]
+			}
+			attributes = append(attributes, &chschema_v1.DictionaryAttribute{
+				Name:  attrName,
+				Type:  attrType,
+				IsKey: false, // Will be set based on keyColumns
+			})
+		}
+
+		// Mark key attributes
+		keyMap := make(map[string]bool)
+		for _, keyCol := range keyColumns {
+			keyMap[keyCol] = true
+		}
+		for _, attr := range attributes {
+			if keyMap[attr.Name] {
+				attr.IsKey = true
+			}
+		}
+
+		dictionary := &chschema_v1.Dictionary{
+			Name:       name,
+			Database:   &db,
+			PrimaryKey: keyColumns,
+			Source: &chschema_v1.DictionarySource{
+				SourceType:   "clickhouse", // Simplified - can be enhanced
+				SourceConfig: source,
+			},
+			Layout: &chschema_v1.DictionaryLayout{
+				LayoutType: layoutType,
+			},
+			Lifetime: &chschema_v1.DictionaryLifetime{
+				MinSeconds: func() *int64 { v := int64(lifetimeMin); return &v }(),
+				MaxSeconds: func() *int64 { v := int64(lifetimeMax); return &v }(),
+			},
+			Attributes: attributes,
+		}
+
+		state.Dictionaries = append(state.Dictionaries, dictionary)
+
+		// Track dumped dictionaries and remove from skipped
+		i.DumpedEngines["Dictionary"]++
+		if i.SkippedEngines["Dictionary"] > 0 {
+			i.SkippedEngines["Dictionary"]--
 		}
 	}
 

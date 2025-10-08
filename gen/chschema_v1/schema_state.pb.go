@@ -27,6 +27,7 @@ type NodeSchemaState struct {
 	Tables            []*Table               `protobuf:"bytes,2,rep,name=tables,proto3" json:"tables,omitempty"`
 	Views             []*View                `protobuf:"bytes,3,rep,name=views,proto3" json:"views,omitempty"`
 	MaterializedViews []*MaterializedView    `protobuf:"bytes,4,rep,name=materialized_views,json=materializedViews,proto3" json:"materialized_views,omitempty"`
+	Dictionaries      []*Dictionary          `protobuf:"bytes,5,rep,name=dictionaries,proto3" json:"dictionaries,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -89,6 +90,13 @@ func (x *NodeSchemaState) GetMaterializedViews() []*MaterializedView {
 	return nil
 }
 
+func (x *NodeSchemaState) GetDictionaries() []*Dictionary {
+	if x != nil {
+		return x.Dictionaries
+	}
+	return nil
+}
+
 // SchemaState represents the complete desired or current state of a ClickHouse schema.
 // This message serves as the top-level container for all schema objects and can be
 // serialized/deserialized for storage, transmission, or comparison.
@@ -99,6 +107,7 @@ type SchemaState struct {
 	Tables            []*Table               `protobuf:"bytes,3,rep,name=tables,proto3" json:"tables,omitempty"`
 	Views             []*View                `protobuf:"bytes,4,rep,name=views,proto3" json:"views,omitempty"`
 	MaterializedViews []*MaterializedView    `protobuf:"bytes,5,rep,name=materialized_views,json=materializedViews,proto3" json:"materialized_views,omitempty"`
+	Dictionaries      []*Dictionary          `protobuf:"bytes,6,rep,name=dictionaries,proto3" json:"dictionaries,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -164,6 +173,13 @@ func (x *SchemaState) GetViews() []*View {
 func (x *SchemaState) GetMaterializedViews() []*MaterializedView {
 	if x != nil {
 		return x.MaterializedViews
+	}
+	return nil
+}
+
+func (x *SchemaState) GetDictionaries() []*Dictionary {
+	if x != nil {
+		return x.Dictionaries
 	}
 	return nil
 }
@@ -272,18 +288,20 @@ var File_proto_schema_state_proto protoreflect.FileDescriptor
 
 const file_proto_schema_state_proto_rawDesc = "" +
 	"\n" +
-	"\x18proto/schema_state.proto\x12\x11clickhouse.iac.v1\x1a\x13proto/cluster.proto\x1a\x11proto/table.proto\x1a\x10proto/view.proto\"\xfe\x01\n" +
+	"\x18proto/schema_state.proto\x12\x11clickhouse.iac.v1\x1a\x13proto/cluster.proto\x1a\x11proto/table.proto\x1a\x10proto/view.proto\x1a\x16proto/dictionary.proto\"\xc1\x02\n" +
 	"\x0fNodeSchemaState\x126\n" +
 	"\bclusters\x18\x01 \x03(\v2\x1a.clickhouse.iac.v1.ClusterR\bclusters\x120\n" +
 	"\x06tables\x18\x02 \x03(\v2\x18.clickhouse.iac.v1.TableR\x06tables\x12-\n" +
 	"\x05views\x18\x03 \x03(\v2\x17.clickhouse.iac.v1.ViewR\x05views\x12R\n" +
-	"\x12materialized_views\x18\x04 \x03(\v2#.clickhouse.iac.v1.MaterializedViewR\x11materializedViews\"\xb9\x02\n" +
+	"\x12materialized_views\x18\x04 \x03(\v2#.clickhouse.iac.v1.MaterializedViewR\x11materializedViews\x12A\n" +
+	"\fdictionaries\x18\x05 \x03(\v2\x1d.clickhouse.iac.v1.DictionaryR\fdictionaries\"\xfc\x02\n" +
 	"\vSchemaState\x12=\n" +
 	"\bmetadata\x18\x01 \x01(\v2!.clickhouse.iac.v1.SchemaMetadataR\bmetadata\x126\n" +
 	"\bclusters\x18\x02 \x03(\v2\x1a.clickhouse.iac.v1.ClusterR\bclusters\x120\n" +
 	"\x06tables\x18\x03 \x03(\v2\x18.clickhouse.iac.v1.TableR\x06tables\x12-\n" +
 	"\x05views\x18\x04 \x03(\v2\x17.clickhouse.iac.v1.ViewR\x05views\x12R\n" +
-	"\x12materialized_views\x18\x05 \x03(\v2#.clickhouse.iac.v1.MaterializedViewR\x11materializedViews\"\xf3\x02\n" +
+	"\x12materialized_views\x18\x05 \x03(\v2#.clickhouse.iac.v1.MaterializedViewR\x11materializedViews\x12A\n" +
+	"\fdictionaries\x18\x06 \x03(\v2\x1d.clickhouse.iac.v1.DictionaryR\fdictionaries\"\xf3\x02\n" +
 	"\x0eSchemaMetadata\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\tR\rschemaVersion\x12!\n" +
 	"\ttimestamp\x18\x02 \x01(\tH\x00R\ttimestamp\x88\x01\x01\x12\x1b\n" +
@@ -322,22 +340,25 @@ var file_proto_schema_state_proto_goTypes = []any{
 	(*Table)(nil),            // 4: clickhouse.iac.v1.Table
 	(*View)(nil),             // 5: clickhouse.iac.v1.View
 	(*MaterializedView)(nil), // 6: clickhouse.iac.v1.MaterializedView
+	(*Dictionary)(nil),       // 7: clickhouse.iac.v1.Dictionary
 }
 var file_proto_schema_state_proto_depIdxs = []int32{
-	3, // 0: clickhouse.iac.v1.NodeSchemaState.clusters:type_name -> clickhouse.iac.v1.Cluster
-	4, // 1: clickhouse.iac.v1.NodeSchemaState.tables:type_name -> clickhouse.iac.v1.Table
-	5, // 2: clickhouse.iac.v1.NodeSchemaState.views:type_name -> clickhouse.iac.v1.View
-	6, // 3: clickhouse.iac.v1.NodeSchemaState.materialized_views:type_name -> clickhouse.iac.v1.MaterializedView
-	2, // 4: clickhouse.iac.v1.SchemaState.metadata:type_name -> clickhouse.iac.v1.SchemaMetadata
-	3, // 5: clickhouse.iac.v1.SchemaState.clusters:type_name -> clickhouse.iac.v1.Cluster
-	4, // 6: clickhouse.iac.v1.SchemaState.tables:type_name -> clickhouse.iac.v1.Table
-	5, // 7: clickhouse.iac.v1.SchemaState.views:type_name -> clickhouse.iac.v1.View
-	6, // 8: clickhouse.iac.v1.SchemaState.materialized_views:type_name -> clickhouse.iac.v1.MaterializedView
-	9, // [9:9] is the sub-list for method output_type
-	9, // [9:9] is the sub-list for method input_type
-	9, // [9:9] is the sub-list for extension type_name
-	9, // [9:9] is the sub-list for extension extendee
-	0, // [0:9] is the sub-list for field type_name
+	3,  // 0: clickhouse.iac.v1.NodeSchemaState.clusters:type_name -> clickhouse.iac.v1.Cluster
+	4,  // 1: clickhouse.iac.v1.NodeSchemaState.tables:type_name -> clickhouse.iac.v1.Table
+	5,  // 2: clickhouse.iac.v1.NodeSchemaState.views:type_name -> clickhouse.iac.v1.View
+	6,  // 3: clickhouse.iac.v1.NodeSchemaState.materialized_views:type_name -> clickhouse.iac.v1.MaterializedView
+	7,  // 4: clickhouse.iac.v1.NodeSchemaState.dictionaries:type_name -> clickhouse.iac.v1.Dictionary
+	2,  // 5: clickhouse.iac.v1.SchemaState.metadata:type_name -> clickhouse.iac.v1.SchemaMetadata
+	3,  // 6: clickhouse.iac.v1.SchemaState.clusters:type_name -> clickhouse.iac.v1.Cluster
+	4,  // 7: clickhouse.iac.v1.SchemaState.tables:type_name -> clickhouse.iac.v1.Table
+	5,  // 8: clickhouse.iac.v1.SchemaState.views:type_name -> clickhouse.iac.v1.View
+	6,  // 9: clickhouse.iac.v1.SchemaState.materialized_views:type_name -> clickhouse.iac.v1.MaterializedView
+	7,  // 10: clickhouse.iac.v1.SchemaState.dictionaries:type_name -> clickhouse.iac.v1.Dictionary
+	11, // [11:11] is the sub-list for method output_type
+	11, // [11:11] is the sub-list for method input_type
+	11, // [11:11] is the sub-list for extension type_name
+	11, // [11:11] is the sub-list for extension extendee
+	0,  // [0:11] is the sub-list for field type_name
 }
 
 func init() { file_proto_schema_state_proto_init() }
@@ -348,6 +369,7 @@ func file_proto_schema_state_proto_init() {
 	file_proto_cluster_proto_init()
 	file_proto_table_proto_init()
 	file_proto_view_proto_init()
+	file_proto_dictionary_proto_init()
 	file_proto_schema_state_proto_msgTypes[2].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

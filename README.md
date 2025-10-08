@@ -43,9 +43,14 @@ schema/
 ├── materialized_views/  # Materialized view definitions
 │   ├── users_mv.yaml
 │   └── ...
-├── clusters/           # Cluster configurations (future)
-│   └── production.yaml
-└── views/             # Regular views (future)
+├── views/              # Regular view definitions
+│   ├── active_users.yaml
+│   └── ...
+├── dictionaries/       # Dictionary definitions
+│   ├── user_dict.yaml
+│   └── ...
+└── clusters/           # Cluster configurations (future)
+    └── production.yaml
 ```
 
 The dump shows statistics about what was exported:
@@ -56,9 +61,9 @@ Dumped engines:
   ✓ ReplicatedReplacingMergeTree: 38
   ✓ Distributed: 51
   ✓ MaterializedView: 33
+  ✓ Dictionary: 9
 
 Skipped engines:
-  ✗ Dictionary: 9
   ✗ Kafka: 27
 --------------------------------
 ```
@@ -176,9 +181,12 @@ schema/
 ├── materialized_views/  # Materialized view definitions
 │   ├── users_mv.yaml
 │   └── events_mv.yaml
-├── clusters/            # Cluster configurations (future)
-│   └── production.yaml
-└── views/              # Regular views (future)
+├── views/              # Regular view definitions
+│   └── active_users.yaml
+├── dictionaries/       # Dictionary definitions
+│   └── user_dict.yaml
+└── clusters/           # Cluster configurations (future)
+    └── production.yaml
 ```
 
 ## Supported Engines
@@ -200,8 +208,10 @@ schema/
 - ✅ MaterializedView
 - ✅ View
 
+### Dictionaries
+- ✅ Dictionary
+
 ### Not Yet Supported
-- Dictionary
 - Kafka
 
 ## YAML Schema Format
@@ -239,6 +249,30 @@ selectQuery: SELECT user_id, count() as cnt FROM users GROUP BY user_id
 name: active_users
 database: myapp
 selectQuery: SELECT user_id, email FROM users WHERE active = 1
+```
+
+### Dictionary Definition
+
+```yaml
+name: user_dict
+database: myapp
+primaryKey:
+  - user_id
+source:
+  sourceType: clickhouse
+  sourceConfig: "SELECT user_id, email FROM users"
+layout:
+  layoutType: flat
+lifetime:
+  minSeconds: 300
+  maxSeconds: 360
+attributes:
+  - name: user_id
+    type: UInt64
+    isKey: true
+  - name: email
+    type: String
+    isKey: false
 ```
 
 ### Cluster Definition

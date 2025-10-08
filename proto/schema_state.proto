@@ -7,12 +7,14 @@ option go_package = "github.com/posthog/chschema/gen/chschema_v1;chschema_v1";
 import "proto/cluster.proto";
 import "proto/table.proto";
 import "proto/view.proto";
+import "proto/dictionary.proto";
 
 message NodeSchemaState {
   repeated Cluster clusters = 1;
   repeated Table tables = 2;
   repeated View views = 3;
   repeated MaterializedView materialized_views = 4;
+  repeated Dictionary dictionaries = 5;
 }
 
 // SchemaState represents the complete desired or current state of a ClickHouse schema.
@@ -24,6 +26,7 @@ message SchemaState {
   repeated Table tables = 3;
   repeated View views = 4;
   repeated MaterializedView materialized_views = 5;
+  repeated Dictionary dictionaries = 6;
 }
 
 // SchemaMetadata contains metadata about the schema state
