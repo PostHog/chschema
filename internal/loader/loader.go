@@ -54,6 +54,30 @@ func (l *SchemaLoader) Load() (*chschema_v1.NodeSchemaState, error) {
 			state.Tables = append(state.Tables, &table)
 			return nil
 		},
+		"views": func(data []byte, path string) error {
+			var view chschema_v1.View
+			if err := unmarshalYAMLToProto(data, &view); err != nil {
+				return err
+			}
+			state.Views = append(state.Views, &view)
+			return nil
+		},
+		"materialized_views": func(data []byte, path string) error {
+			var mv chschema_v1.MaterializedView
+			if err := unmarshalYAMLToProto(data, &mv); err != nil {
+				return err
+			}
+			state.MaterializedViews = append(state.MaterializedViews, &mv)
+			return nil
+		},
+		"dictionaries": func(data []byte, path string) error {
+			var dict chschema_v1.Dictionary
+			if err := unmarshalYAMLToProto(data, &dict); err != nil {
+				return err
+			}
+			state.Dictionaries = append(state.Dictionaries, &dict)
+			return nil
+		},
 	}
 
 	for subdir, loaderFunc := range loaders {

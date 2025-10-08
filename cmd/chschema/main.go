@@ -204,10 +204,47 @@ used with chschema for declarative schema management.`,
 	Run: dumpCmdFunc,
 }
 
+func validateCmdFunc(cmd *cobra.Command, args []string) {
+	// Load the desired schema from YAML files
+	log.Info().Str("config_dir", configDir).Msg("Loading schema configuration")
+	schemaLoader := loader.NewSchemaLoader(configDir)
+	desiredState, err := schemaLoader.Load()
+	if err != nil {
+		log.Error().Err(err).Str("config_dir", configDir).Msg("Failed to load schema")
+		os.Exit(1)
+	}
+
+	// Display summary statistics
+	fmt.Println("\n--- Schema Validation Summary ---")
+	fmt.Printf("✓ Tables: %d\n", len(desiredState.Tables))
+	fmt.Printf("✓ Materialized Views: %d\n", len(desiredState.MaterializedViews))
+	fmt.Printf("✓ Views: %d\n", len(desiredState.Views))
+	fmt.Printf("✓ Dictionaries: %d\n", len(desiredState.Dictionaries))
+	fmt.Println("----------------------------------")
+	fmt.Println("Schema loaded successfully!")
+
+	log.Info().
+		Int("tables", len(desiredState.Tables)).
+		Int("materialized_views", len(desiredState.MaterializedViews)).
+		Int("views", len(desiredState.Views)).
+		Int("dictionaries", len(desiredState.Dictionaries)).
+		Msg("Schema validation completed successfully")
+}
+
+var validateCmd = &cobra.Command{
+	Use:   "validate",
+	Short: "Validate schema YAML files without connecting to database",
+	Long: `Load and validate schema definition files from the specified directory.
+This command checks that all YAML files can be parsed correctly and reports
+any errors. No database connection is required.`,
+	Run: validateCmdFunc,
+}
+
 func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(migrateCmd)
 	rootCmd.AddCommand(dumpCmd)
+	rootCmd.AddCommand(validateCmd)
 
 	rootCmd.PersistentFlags().BoolVar(&dryRun, "dry-run", true, "Show planned changes without applying them (default behavior)")
 	rootCmd.PersistentFlags().StringVarP(&configDir, "config", "c", "schema", "Directory containing schema definition files")
