@@ -41,6 +41,7 @@ func TestLive_Introspection_Engine(t *testing.T) {
 			name String,
 			age Nullable(UInt8),
 			props String CODEC(ZSTD(3)),
+			props_json JSON,
 			pineapple_on_pizza Bool DEFAULT TRUE,
 			created_at DateTime DEFAULT now()
 		) ENGINE = MergeTree()
@@ -55,6 +56,7 @@ func TestLive_Introspection_Engine(t *testing.T) {
 					{Name: "name", Type: "String"},
 					{Name: "age", Type: "Nullable(UInt8)"},
 					{Name: "props", Type: "String", Codec: utils.Ptr("CODEC(ZSTD(3))")},
+					{Name: "props_json", Type: "JSON"},
 					{Name: "pineapple_on_pizza", Type: "Bool", DefaultExpression: utils.Ptr("true")},
 					{Name: "created_at", Type: "DateTime", DefaultExpression: utils.Ptr("now()")},
 				},
@@ -91,6 +93,189 @@ func TestLive_Introspection_Engine(t *testing.T) {
 					},
 				},
 				OrderBy: []string{"user_id"},
+			},
+		},
+		{
+			Name: "MinMaxIndex",
+			SQL: `
+		CREATE TABLE ` + dbName + `.test_minmax_index (
+			id UInt64,
+			timestamp DateTime,
+			value Float64,
+			INDEX idx_timestamp_minmax timestamp TYPE minmax GRANULARITY 4
+		) ENGINE = MergeTree()
+		ORDER BY id
+	`,
+			table: &chschema_v1.Table{
+				Name:     "test_minmax_index",
+				Database: &dbName,
+				Columns: []*chschema_v1.Column{
+					{Name: "id", Type: "UInt64"},
+					{Name: "timestamp", Type: "DateTime"},
+					{Name: "value", Type: "Float64"},
+				},
+				Engine: &chschema_v1.Engine{
+					EngineType: &chschema_v1.Engine_MergeTree{
+						MergeTree: &chschema_v1.MergeTree{},
+					},
+				},
+				OrderBy: []string{"id"},
+				Indexes: []*chschema_v1.Index{
+					{Name: "idx_timestamp_minmax", Type: "minmax", Expression: "timestamp", Granularity: 4},
+				},
+			},
+		},
+		{
+			Name: "SetIndex",
+			SQL: `
+		CREATE TABLE ` + dbName + `.test_set_index (
+			id UInt64,
+			category String,
+			tags Array(String),
+			INDEX idx_category_set category TYPE set(100) GRANULARITY 4
+		) ENGINE = MergeTree()
+		ORDER BY id
+	`,
+			table: &chschema_v1.Table{
+				Name:     "test_set_index",
+				Database: &dbName,
+				Columns: []*chschema_v1.Column{
+					{Name: "id", Type: "UInt64"},
+					{Name: "category", Type: "String"},
+					{Name: "tags", Type: "Array(String)"},
+				},
+				Engine: &chschema_v1.Engine{
+					EngineType: &chschema_v1.Engine_MergeTree{
+						MergeTree: &chschema_v1.MergeTree{},
+					},
+				},
+				OrderBy: []string{"id"},
+				Indexes: []*chschema_v1.Index{
+					{Name: "idx_category_set", Type: "set(100)", Expression: "category", Granularity: 4},
+				},
+			},
+		},
+		{
+			Name: "BloomFilterIndex",
+			SQL: `
+		CREATE TABLE ` + dbName + `.test_bloom_index (
+			id UInt64,
+			email String,
+			content String,
+			INDEX idx_email_bloom email TYPE bloom_filter() GRANULARITY 1
+		) ENGINE = MergeTree()
+		ORDER BY id
+	`,
+			table: &chschema_v1.Table{
+				Name:     "test_bloom_index",
+				Database: &dbName,
+				Columns: []*chschema_v1.Column{
+					{Name: "id", Type: "UInt64"},
+					{Name: "email", Type: "String"},
+					{Name: "content", Type: "String"},
+				},
+				Engine: &chschema_v1.Engine{
+					EngineType: &chschema_v1.Engine_MergeTree{
+						MergeTree: &chschema_v1.MergeTree{},
+					},
+				},
+				OrderBy: []string{"id"},
+				Indexes: []*chschema_v1.Index{
+					{Name: "idx_email_bloom", Type: "bloom_filter()", Expression: "email", Granularity: 1},
+				},
+			},
+		},
+		{
+			Name: "TokenBfIndex",
+			SQL: `
+		CREATE TABLE ` + dbName + `.test_tokenbf_index (
+			id UInt64,
+			description String,
+			INDEX idx_description_tokenbf description TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 2
+		) ENGINE = MergeTree()
+		ORDER BY id
+	`,
+			table: &chschema_v1.Table{
+				Name:     "test_tokenbf_index",
+				Database: &dbName,
+				Columns: []*chschema_v1.Column{
+					{Name: "id", Type: "UInt64"},
+					{Name: "description", Type: "String"},
+				},
+				Engine: &chschema_v1.Engine{
+					EngineType: &chschema_v1.Engine_MergeTree{
+						MergeTree: &chschema_v1.MergeTree{},
+					},
+				},
+				OrderBy: []string{"id"},
+				Indexes: []*chschema_v1.Index{
+					{Name: "idx_description_tokenbf", Type: "tokenbf_v1(32768, 3, 0)", Expression: "description", Granularity: 2},
+				},
+			},
+		},
+		{
+			Name: "NgramBfIndex",
+			SQL: `
+		CREATE TABLE ` + dbName + `.test_ngrambf_index (
+			id UInt64,
+			search_text String,
+			INDEX idx_search_ngrambf search_text TYPE ngrambf_v1(4, 32768, 3, 0) GRANULARITY 1
+		) ENGINE = MergeTree()
+		ORDER BY id
+	`,
+			table: &chschema_v1.Table{
+				Name:     "test_ngrambf_index",
+				Database: &dbName,
+				Columns: []*chschema_v1.Column{
+					{Name: "id", Type: "UInt64"},
+					{Name: "search_text", Type: "String"},
+				},
+				Engine: &chschema_v1.Engine{
+					EngineType: &chschema_v1.Engine_MergeTree{
+						MergeTree: &chschema_v1.MergeTree{},
+					},
+				},
+				OrderBy: []string{"id"},
+				Indexes: []*chschema_v1.Index{
+					{Name: "idx_search_ngrambf", Type: "ngrambf_v1(4, 32768, 3, 0)", Expression: "search_text", Granularity: 1},
+				},
+			},
+		},
+		{
+			Name: "MultipleIndexes",
+			SQL: `
+		CREATE TABLE ` + dbName + `.test_multiple_indexes (
+			id UInt64,
+			timestamp DateTime,
+			category String,
+			email String,
+			INDEX idx_category_set category TYPE set(50) GRANULARITY 4,
+			INDEX idx_email_bloom email TYPE bloom_filter() GRANULARITY 1,
+			INDEX idx_timestamp_minmax timestamp TYPE minmax GRANULARITY 4
+		) ENGINE = MergeTree()
+		ORDER BY id
+	`,
+			table: &chschema_v1.Table{
+				Name:     "test_multiple_indexes",
+				Database: &dbName,
+				Columns: []*chschema_v1.Column{
+					{Name: "id", Type: "UInt64"},
+					{Name: "timestamp", Type: "DateTime"},
+					{Name: "category", Type: "String"},
+					{Name: "email", Type: "String"},
+				},
+				Engine: &chschema_v1.Engine{
+					EngineType: &chschema_v1.Engine_MergeTree{
+						MergeTree: &chschema_v1.MergeTree{},
+					},
+				},
+				OrderBy: []string{"id"},
+				Indexes: []*chschema_v1.Index{
+					// Indexes are returned alphabetically by name from system.data_skipping_indices
+					{Name: "idx_category_set", Type: "set(50)", Expression: "category", Granularity: 4},
+					{Name: "idx_email_bloom", Type: "bloom_filter()", Expression: "email", Granularity: 1},
+					{Name: "idx_timestamp_minmax", Type: "minmax", Expression: "timestamp", Granularity: 4},
+				},
 			},
 		},
 	}

@@ -8,6 +8,7 @@ docker run --rm -v "$(pwd):/app" proto-builder:latest \
          /app/proto/column.proto \
          /app/proto/dictionary.proto \
          /app/proto/engine.proto \
+         /app/proto/index.proto \
          /app/proto/schema_state.proto \
          /app/proto/table.proto \
          /app/proto/view.proto

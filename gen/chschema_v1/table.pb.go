@@ -32,6 +32,7 @@ type Table struct {
 	SampleBy      *string                `protobuf:"bytes,7,opt,name=sample_by,json=sampleBy,proto3,oneof" json:"sample_by,omitempty"`
 	Ttl           *string                `protobuf:"bytes,8,opt,name=ttl,proto3,oneof" json:"ttl,omitempty"`
 	Settings      map[string]string      `protobuf:"bytes,9,rep,name=settings,proto3" json:"settings,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Indexes       []*Index               `protobuf:"bytes,10,rep,name=indexes,proto3" json:"indexes,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -129,11 +130,18 @@ func (x *Table) GetSettings() map[string]string {
 	return nil
 }
 
+func (x *Table) GetIndexes() []*Index {
+	if x != nil {
+		return x.Indexes
+	}
+	return nil
+}
+
 var File_proto_table_proto protoreflect.FileDescriptor
 
 const file_proto_table_proto_rawDesc = "" +
 	"\n" +
-	"\x11proto/table.proto\x12\x11clickhouse.iac.v1\x1a\x12proto/column.proto\x1a\x12proto/engine.proto\"\xd5\x03\n" +
+	"\x11proto/table.proto\x12\x11clickhouse.iac.v1\x1a\x12proto/column.proto\x1a\x12proto/engine.proto\x1a\x11proto/index.proto\"\x89\x04\n" +
 	"\x05Table\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\bdatabase\x18\x02 \x01(\tH\x00R\bdatabase\x88\x01\x01\x123\n" +
@@ -143,7 +151,9 @@ const file_proto_table_proto_rawDesc = "" +
 	"\fpartition_by\x18\x06 \x01(\tH\x01R\vpartitionBy\x88\x01\x01\x12 \n" +
 	"\tsample_by\x18\a \x01(\tH\x02R\bsampleBy\x88\x01\x01\x12\x15\n" +
 	"\x03ttl\x18\b \x01(\tH\x03R\x03ttl\x88\x01\x01\x12B\n" +
-	"\bsettings\x18\t \x03(\v2&.clickhouse.iac.v1.Table.SettingsEntryR\bsettings\x1a;\n" +
+	"\bsettings\x18\t \x03(\v2&.clickhouse.iac.v1.Table.SettingsEntryR\bsettings\x122\n" +
+	"\aindexes\x18\n" +
+	" \x03(\v2\x18.clickhouse.iac.v1.IndexR\aindexes\x1a;\n" +
 	"\rSettingsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\v\n" +
@@ -171,16 +181,18 @@ var file_proto_table_proto_goTypes = []any{
 	nil,            // 1: clickhouse.iac.v1.Table.SettingsEntry
 	(*Column)(nil), // 2: clickhouse.iac.v1.Column
 	(*Engine)(nil), // 3: clickhouse.iac.v1.Engine
+	(*Index)(nil),  // 4: clickhouse.iac.v1.Index
 }
 var file_proto_table_proto_depIdxs = []int32{
 	2, // 0: clickhouse.iac.v1.Table.columns:type_name -> clickhouse.iac.v1.Column
 	3, // 1: clickhouse.iac.v1.Table.engine:type_name -> clickhouse.iac.v1.Engine
 	1, // 2: clickhouse.iac.v1.Table.settings:type_name -> clickhouse.iac.v1.Table.SettingsEntry
-	3, // [3:3] is the sub-list for method output_type
-	3, // [3:3] is the sub-list for method input_type
-	3, // [3:3] is the sub-list for extension type_name
-	3, // [3:3] is the sub-list for extension extendee
-	0, // [0:3] is the sub-list for field type_name
+	4, // 3: clickhouse.iac.v1.Table.indexes:type_name -> clickhouse.iac.v1.Index
+	4, // [4:4] is the sub-list for method output_type
+	4, // [4:4] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_proto_table_proto_init() }
@@ -190,6 +202,7 @@ func file_proto_table_proto_init() {
 	}
 	file_proto_column_proto_init()
 	file_proto_engine_proto_init()
+	file_proto_index_proto_init()
 	file_proto_table_proto_msgTypes[0].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

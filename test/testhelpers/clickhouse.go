@@ -8,8 +8,12 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/google/go-cmp/cmp"
 	"github.com/posthog/chschema/config"
 	"github.com/posthog/chschema/internal/logger"
+	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/testing/protocmp"
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
@@ -79,4 +83,9 @@ func CreateTestDatabase(t *testing.T, conn driver.Conn) string {
 	})
 
 	return dbName
+}
+
+func EqualProto(t *testing.T, want, got proto.Message) {
+	diff := cmp.Diff(want, got, protocmp.Transform())
+	require.Empty(t, diff, "Protos should match. Diff:\n%s", diff)
 }

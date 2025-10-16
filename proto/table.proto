@@ -6,6 +6,7 @@ option go_package = "github.com/posthog/chschema/gen/chschema_v1;chschema_v1";
 
 import "proto/column.proto";
 import "proto/engine.proto";
+import "proto/index.proto";
 
 message Table {
   string name = 1;
@@ -17,4 +18,5 @@ message Table {
   optional string sample_by = 7;
   optional string ttl = 8;
   map<string, string> settings = 9;
+  repeated Index indexes = 10;
 }

@@ -206,6 +206,11 @@ func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.
 			return err
 		}
 
+		// Introspect indexes
+		if err := i.introspectIndexes(ctx, table); err != nil {
+			return err
+		}
+
 		// Get table settings
 		if err := i.introspectTableSettings(ctx, table); err != nil {
 			return err
@@ -301,6 +306,38 @@ func (i *Introspector) introspectTableSettings(ctx context.Context, table *chsch
 	//     FROM system.settings
 	//     WHERE name LIKE '%granularity%'
 	// `)
+
+	return nil
+}
+
+// introspectIndexes queries data skipping indexes from system.data_skipping_indices
+func (i *Introspector) introspectIndexes(ctx context.Context, table *chschema_v1.Table) error {
+	rows, err := i.conn.Query(ctx, `
+		SELECT name, type_full, expr, granularity
+		FROM system.data_skipping_indices
+		WHERE database = ? AND table = ?
+		ORDER BY name
+	`, table.Database, table.Name)
+	if err != nil {
+		return fmt.Errorf("failed to query system.data_skipping_indices for table %s: %w", table.Name, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var name, typeFull, expr string
+		var granularity uint64
+		if err := rows.Scan(&name, &typeFull, &expr, &granularity); err != nil {
+			return fmt.Errorf("failed to scan index row: %w", err)
+		}
+
+		index := &chschema_v1.Index{
+			Name:        name,
+			Type:        typeFull, // Use type_full to get parameters like "set(100)" or "tokenbf_v1(32768, 3, 0)"
+			Expression:  expr,
+			Granularity: granularity,
+		}
+		table.Indexes = append(table.Indexes, index)
+	}
 
 	return nil
 }

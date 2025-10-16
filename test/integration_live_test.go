@@ -80,10 +80,11 @@ func TestLive_EndToEnd_SchemaApply(t *testing.T) {
 	// 3. Get current state (should be empty - no tables in new database)
 	ctx := context.Background()
 	introspector := introspection.NewIntrospector(conn)
+	introspector.Databases = []string{dbName}
 	currentState, err := introspector.GetCurrentState(ctx)
 	require.NoError(t, err, "Failed to introspect current state")
 
-	// 4. Compute diff between empty state and desired state
+	// 4. Compute diff between the empty state and the desired state
 	differ := diff.NewDiffer()
 	plan, err := differ.Plan(desiredState, currentState)
 	require.NoError(t, err, "Failed to create diff plan")
@@ -130,8 +131,8 @@ func TestLive_EndToEnd_SchemaApply(t *testing.T) {
 
 		// Compare engine
 		require.NotNil(t, actualTable.Engine, "Engine should be set for table %s", tableName)
-		require.EqualValues(t, desiredTable.Engine, actualTable.Engine,
-			"Engine should match for table %s", tableName)
+		// TODO use proper protocmp for proper protobuf comparison
+		testhelpers.EqualProto(t, desiredTable.Engine, actualTable.Engine)
 
 		// TODO: Enable settings comparison once settings introspection is implemented
 		// Currently settings introspection is placeholder (see introspector.go:149)

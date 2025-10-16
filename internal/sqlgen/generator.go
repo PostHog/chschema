@@ -98,10 +98,20 @@ func GenerateCreateTable(table *chschema_v1.Table) string {
 		if col.Comment != nil && *col.Comment != "" {
 			sb.WriteString(fmt.Sprintf(" COMMENT '%s'", *col.Comment))
 		}
-		if i < len(table.Columns)-1 {
+		if i < len(table.Columns)-1 || len(table.Indexes) > 0 {
 			sb.WriteString(",\n")
 		}
 	}
+
+	// Indexes
+	for i, idx := range table.Indexes {
+		sb.WriteString(fmt.Sprintf("  INDEX `%s` %s TYPE %s GRANULARITY %d",
+			idx.Name, idx.Expression, idx.Type, idx.Granularity))
+		if i < len(table.Indexes)-1 {
+			sb.WriteString(",\n")
+		}
+	}
+
 	sb.WriteString("\n)")
 
 	// Engine

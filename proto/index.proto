@@ -1,0 +1,14 @@
+syntax = "proto3";
+
+package clickhouse.iac.v1;
+
+option go_package = "github.com/posthog/chschema/gen/chschema_v1;chschema_v1";
+
+// Index represents a data skipping index in ClickHouse
+// Data skipping indices help ClickHouse skip reading unnecessary data during query execution
+message Index {
+  string name = 1;
+  string type = 2;  // minmax, set, bloom_filter, tokenbf_v1, ngrambf_v1, etc.
+  string expression = 3;  // The expression or column name the index is based on
+  uint64 granularity = 4;  // Index granularity (number of granules)
+}

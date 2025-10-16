@@ -31,6 +31,14 @@ func TestDumper_RoundTrip(t *testing.T) {
 		Settings: map[string]string{
 			"index_granularity": "8192",
 		},
+		Indexes: []*chschema_v1.Index{
+			{
+				Name:        "idx_name",
+				Type:        "minmax",
+				Expression:  "name",
+				Granularity: 4,
+			},
+		},
 	}
 
 	engine := &chschema_v1.Engine{}
