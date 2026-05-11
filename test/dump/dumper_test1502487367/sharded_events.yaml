@@ -1,0 +1,1328 @@
+columns:
+    - name: uuid
+      type: UUID
+    - name: event
+      type: String
+    - codec: CODEC(ZSTD(3))
+      name: properties
+      type: String
+    - name: timestamp
+      type: DateTime64(6, 'UTC')
+    - name: team_id
+      type: Int64
+    - name: distinct_id
+      type: String
+    - name: elements_chain
+      type: String
+    - name: created_at
+      type: DateTime64(6, 'UTC')
+    - name: person_id
+      type: UUID
+    - name: person_created_at
+      type: DateTime64(3)
+    - codec: CODEC(ZSTD(3))
+      name: person_properties
+      type: String
+    - codec: CODEC(ZSTD(3))
+      name: group0_properties
+      type: String
+    - codec: CODEC(ZSTD(3))
+      name: group1_properties
+      type: String
+    - codec: CODEC(ZSTD(3))
+      name: group2_properties
+      type: String
+    - codec: CODEC(ZSTD(3))
+      name: group3_properties
+      type: String
+    - codec: CODEC(ZSTD(3))
+      name: group4_properties
+      type: String
+    - name: group0_created_at
+      type: DateTime64(3)
+    - name: group1_created_at
+      type: DateTime64(3)
+    - name: group2_created_at
+      type: DateTime64(3)
+    - name: group3_created_at
+      type: DateTime64(3)
+    - name: group4_created_at
+      type: DateTime64(3)
+    - name: person_mode
+      type: Enum8('full' = 0, 'propertyless' = 1, 'force_upgrade' = 2)
+    - comment: column_materializer::$group_0
+      defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$group_0'), '^"|"$', '')
+      name: $group_0
+      type: String
+    - comment: column_materializer::$group_1
+      defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$group_1'), '^"|"$', '')
+      name: $group_1
+      type: String
+    - comment: column_materializer::$group_2
+      defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$group_2'), '^"|"$', '')
+      name: $group_2
+      type: String
+    - comment: column_materializer::$group_3
+      defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$group_3'), '^"|"$', '')
+      name: $group_3
+      type: String
+    - comment: column_materializer::$group_4
+      defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$group_4'), '^"|"$', '')
+      name: $group_4
+      type: String
+    - comment: column_materializer::$window_id
+      defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$window_id'), '^"|"$', '')
+      name: $window_id
+      type: String
+    - comment: column_materializer::$session_id
+      defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$session_id'), '^"|"$', '')
+      name: $session_id
+      type: String
+    - defaultExpression: toUInt128(JSONExtract(properties, '$session_id', 'Nullable(UUID)'))
+      name: $session_id_uuid
+      type: Nullable(UInt128)
+    - defaultExpression: extract(elements_chain, '(?::|")href="(.*?)"')
+      name: elements_chain_href
+      type: String
+    - defaultExpression: arrayDistinct(extractAll(elements_chain, '(?::|")text="(.*?)"'))
+      name: elements_chain_texts
+      type: Array(String)
+    - defaultExpression: arrayDistinct(extractAll(elements_chain, '(?:^|;)(a|button|form|input|select|textarea|label)(?:\\.|$|:)'))
+      name: elements_chain_elements
+      type: Array(Enum8('a' = 1, 'button' = 2, 'form' = 3, 'input' = 4, 'select' = 5, 'textarea' = 6, 'label' = 7))
+    - codec: CODEC(ZSTD(1))
+      defaultExpression: mapSort(mapFilter((key, _) -> ((key NOT LIKE '$%') AND (key NOT IN ('token', 'distinct_id', 'utm_source', 'utm_medium', 'utm_campaign', 'utm_content', 'utm_term', 'gclid', 'gad_source', 'gclsrc', 'dclid', 'gbraid', 'wbraid', 'fbclid', 'msclkid', 'twclid', 'li_fat_id', 'mc_cid', 'igshid', 'ttclid', 'rdt_cid', 'epik', 'qclid', 'sccid', 'irclid', '_kx'))), CAST(JSONExtractKeysAndValues(properties, 'String'), 'Map(String, String)')))
+      name: properties_group_custom
+      type: Map(String, String)
+    - codec: CODEC(ZSTD(1))
+      defaultExpression: mapSort(mapFilter((key, _) -> ((key LIKE '$ai_%') AND (key != '$ai_input') AND (key != '$ai_output_choices')), CAST(JSONExtractKeysAndValues(properties, 'String'), 'Map(String, String)')))
+      name: properties_group_ai
+      type: Map(String, String)
+    - codec: CODEC(ZSTD(1))
+      defaultExpression: mapSort(mapFilter((key, _) -> (key LIKE '$feature/%'), CAST(JSONExtractKeysAndValues(properties, 'String'), 'Map(String, String)')))
+      name: properties_group_feature_flags
+      type: Map(String, String)
+    - codec: CODEC(ZSTD(1))
+      defaultExpression: mapSort(mapFilter((key, _) -> (key NOT LIKE '$%'), CAST(JSONExtractKeysAndValues(person_properties, 'String'), 'Map(String, String)')))
+      name: person_properties_map_custom
+      type: Map(String, String)
+    - name: _timestamp
+      type: DateTime
+    - name: _offset
+      type: UInt64
+    - defaultExpression: now64()
+      name: inserted_at
+      type: Nullable(DateTime64(6, 'UTC'))
+    - name: consumer_breadcrumbs
+      type: Array(String)
+    - defaultExpression: arrayDistinct(extractAll(elements_chain, '(?::|")attr_id="(.*?)"'))
+      name: elements_chain_ids
+      type: Array(String)
+    - name: is_deleted
+      type: Bool
+    - defaultExpression: CAST(JSONExtractKeysAndValues(properties, 'String'), 'Map(String, String)')
+      name: properties_map_ephemeral
+      type: Map(String, String)
+    - defaultExpression: CAST(JSONExtractKeysAndValues(person_properties, 'String'), 'Map(String, String)')
+      name: person_properties_map_ephemeral
+      type: Map(String, String)
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$app_build'), '^"|"$', '')
+      name: mat_$app_build
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$app_name'), '^"|"$', '')
+      name: mat_$app_name
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$app_namespace'), '^"|"$', '')
+      name: mat_$app_namespace
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$app_version'), '^"|"$', '')
+      name: mat_$app_version
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$browser'), '^"|"$', '')
+      name: mat_$browser
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$browser_language'), '^"|"$', '')
+      name: mat_$browser_language
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$browser_version'), '^"|"$', '')
+      name: mat_$browser_version
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$current_url'), '^"|"$', '')
+      name: mat_$current_url
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$device_type'), '^"|"$', '')
+      name: mat_$device_type
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$exception_fingerprint'), '^"|"$', '')
+      name: mat_$exception_fingerprint
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$exception_functions'), '^"|"$', '')
+      name: mat_$exception_functions
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$exception_issue_id'), '^"|"$', '')
+      name: mat_$exception_issue_id
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$exception_sources'), '^"|"$', '')
+      name: mat_$exception_sources
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$exception_types'), '^"|"$', '')
+      name: mat_$exception_types
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$exception_values'), '^"|"$', '')
+      name: mat_$exception_values
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$geoip_city_name'), '^"|"$', '')
+      name: mat_$geoip_city_name
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$geoip_country_code'), '^"|"$', '')
+      name: mat_$geoip_country_code
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$geoip_subdivision_1_code'), '^"|"$', '')
+      name: mat_$geoip_subdivision_1_code
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$geoip_subdivision_1_name'), '^"|"$', '')
+      name: mat_$geoip_subdivision_1_name
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$host'), '^"|"$', '')
+      name: mat_$host
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$lib'), '^"|"$', '')
+      name: mat_$lib
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$lib_version'), '^"|"$', '')
+      name: mat_$lib_version
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$os'), '^"|"$', '')
+      name: mat_$os
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$os_version'), '^"|"$', '')
+      name: mat_$os_version
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$pathname'), '^"|"$', '')
+      name: mat_$pathname
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$prev_pageview_max_content_percentage'), '^"|"$', '')
+      name: mat_$prev_pageview_max_content_percentage
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$prev_pageview_max_scroll_percentage'), '^"|"$', '')
+      name: mat_$prev_pageview_max_scroll_percentage
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$prev_pageview_pathname'), '^"|"$', '')
+      name: mat_$prev_pageview_pathname
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$raw_user_agent'), '^"|"$', '')
+      name: mat_$raw_user_agent
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$referrer'), '^"|"$', '')
+      name: mat_$referrer
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$referring_domain'), '^"|"$', '')
+      name: mat_$referring_domain
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$screen_height'), '^"|"$', '')
+      name: mat_$screen_height
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$screen_name'), '^"|"$', '')
+      name: mat_$screen_name
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$screen_width'), '^"|"$', '')
+      name: mat_$screen_width
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$timezone_offset'), '^"|"$', '')
+      name: mat_$timezone_offset
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$viewport_height'), '^"|"$', '')
+      name: mat_$viewport_height
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '$viewport_width'), '^"|"$', '')
+      name: mat_$viewport_width
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, '_kx'), '^"|"$', '')
+      name: mat__kx
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'dclid'), '^"|"$', '')
+      name: mat_dclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'epik'), '^"|"$', '')
+      name: mat_epik
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'fbclid'), '^"|"$', '')
+      name: mat_fbclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'gad_source'), '^"|"$', '')
+      name: mat_gad_source
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'gbraid'), '^"|"$', '')
+      name: mat_gbraid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'gclid'), '^"|"$', '')
+      name: mat_gclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'gclsrc'), '^"|"$', '')
+      name: mat_gclsrc
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'igshid'), '^"|"$', '')
+      name: mat_igshid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'irclid'), '^"|"$', '')
+      name: mat_irclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'li_fat_id'), '^"|"$', '')
+      name: mat_li_fat_id
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'mc_cid'), '^"|"$', '')
+      name: mat_mc_cid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'msclkid'), '^"|"$', '')
+      name: mat_msclkid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'qclid'), '^"|"$', '')
+      name: mat_qclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'rdt_cid'), '^"|"$', '')
+      name: mat_rdt_cid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'sccid'), '^"|"$', '')
+      name: mat_sccid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'ttclid'), '^"|"$', '')
+      name: mat_ttclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'twclid'), '^"|"$', '')
+      name: mat_twclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'utm_campaign'), '^"|"$', '')
+      name: mat_utm_campaign
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'utm_content'), '^"|"$', '')
+      name: mat_utm_content
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'utm_medium'), '^"|"$', '')
+      name: mat_utm_medium
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'utm_source'), '^"|"$', '')
+      name: mat_utm_source
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'utm_term'), '^"|"$', '')
+      name: mat_utm_term
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(properties, 'wbraid'), '^"|"$', '')
+      name: mat_wbraid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$app_build'), '^"|"$', '')
+      name: mat_pp_$app_build
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$app_name'), '^"|"$', '')
+      name: mat_pp_$app_name
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$app_namespace'), '^"|"$', '')
+      name: mat_pp_$app_namespace
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$app_version'), '^"|"$', '')
+      name: mat_pp_$app_version
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$browser'), '^"|"$', '')
+      name: mat_pp_$browser
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$browser_version'), '^"|"$', '')
+      name: mat_pp_$browser_version
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$current_url'), '^"|"$', '')
+      name: mat_pp_$current_url
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$device_type'), '^"|"$', '')
+      name: mat_pp_$device_type
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_Email'), '^"|"$', '')
+      name: mat_pp_$initial_Email
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_Name'), '^"|"$', '')
+      name: mat_pp_$initial_Name
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_UserName'), '^"|"$', '')
+      name: mat_pp_$initial_UserName
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_Username'), '^"|"$', '')
+      name: mat_pp_$initial_Username
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial__kx'), '^"|"$', '')
+      name: mat_pp_$initial__kx
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_app_build'), '^"|"$', '')
+      name: mat_pp_$initial_app_build
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_app_name'), '^"|"$', '')
+      name: mat_pp_$initial_app_name
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_app_namespace'), '^"|"$', '')
+      name: mat_pp_$initial_app_namespace
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_app_version'), '^"|"$', '')
+      name: mat_pp_$initial_app_version
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_browser'), '^"|"$', '')
+      name: mat_pp_$initial_browser
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_browser_version'), '^"|"$', '')
+      name: mat_pp_$initial_browser_version
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_current_url'), '^"|"$', '')
+      name: mat_pp_$initial_current_url
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_dclid'), '^"|"$', '')
+      name: mat_pp_$initial_dclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_device_type'), '^"|"$', '')
+      name: mat_pp_$initial_device_type
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_email'), '^"|"$', '')
+      name: mat_pp_$initial_email
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_epik'), '^"|"$', '')
+      name: mat_pp_$initial_epik
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_fbclid'), '^"|"$', '')
+      name: mat_pp_$initial_fbclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_gad_source'), '^"|"$', '')
+      name: mat_pp_$initial_gad_source
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_gbraid'), '^"|"$', '')
+      name: mat_pp_$initial_gbraid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_gclid'), '^"|"$', '')
+      name: mat_pp_$initial_gclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_gclsrc'), '^"|"$', '')
+      name: mat_pp_$initial_gclsrc
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_igshid'), '^"|"$', '')
+      name: mat_pp_$initial_igshid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_irclid'), '^"|"$', '')
+      name: mat_pp_$initial_irclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_li_fat_id'), '^"|"$', '')
+      name: mat_pp_$initial_li_fat_id
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_mc_cid'), '^"|"$', '')
+      name: mat_pp_$initial_mc_cid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_msclkid'), '^"|"$', '')
+      name: mat_pp_$initial_msclkid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_name'), '^"|"$', '')
+      name: mat_pp_$initial_name
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_os'), '^"|"$', '')
+      name: mat_pp_$initial_os
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_os_version'), '^"|"$', '')
+      name: mat_pp_$initial_os_version
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_pathname'), '^"|"$', '')
+      name: mat_pp_$initial_pathname
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_qclid'), '^"|"$', '')
+      name: mat_pp_$initial_qclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_raw_user_agent'), '^"|"$', '')
+      name: mat_pp_$initial_raw_user_agent
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_rdt_cid'), '^"|"$', '')
+      name: mat_pp_$initial_rdt_cid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_referrer'), '^"|"$', '')
+      name: mat_pp_$initial_referrer
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_referring_domain'), '^"|"$', '')
+      name: mat_pp_$initial_referring_domain
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_sccid'), '^"|"$', '')
+      name: mat_pp_$initial_sccid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_screen_height'), '^"|"$', '')
+      name: mat_pp_$initial_screen_height
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_screen_width'), '^"|"$', '')
+      name: mat_pp_$initial_screen_width
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_ttclid'), '^"|"$', '')
+      name: mat_pp_$initial_ttclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_twclid'), '^"|"$', '')
+      name: mat_pp_$initial_twclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_username'), '^"|"$', '')
+      name: mat_pp_$initial_username
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_utm_campaign'), '^"|"$', '')
+      name: mat_pp_$initial_utm_campaign
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_utm_content'), '^"|"$', '')
+      name: mat_pp_$initial_utm_content
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_utm_medium'), '^"|"$', '')
+      name: mat_pp_$initial_utm_medium
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_utm_source'), '^"|"$', '')
+      name: mat_pp_$initial_utm_source
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_utm_term'), '^"|"$', '')
+      name: mat_pp_$initial_utm_term
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_viewport_height'), '^"|"$', '')
+      name: mat_pp_$initial_viewport_height
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_viewport_width'), '^"|"$', '')
+      name: mat_pp_$initial_viewport_width
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$initial_wbraid'), '^"|"$', '')
+      name: mat_pp_$initial_wbraid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$os'), '^"|"$', '')
+      name: mat_pp_$os
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$os_version'), '^"|"$', '')
+      name: mat_pp_$os_version
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$pathname'), '^"|"$', '')
+      name: mat_pp_$pathname
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$raw_user_agent'), '^"|"$', '')
+      name: mat_pp_$raw_user_agent
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$referrer'), '^"|"$', '')
+      name: mat_pp_$referrer
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$referring_domain'), '^"|"$', '')
+      name: mat_pp_$referring_domain
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$screen_height'), '^"|"$', '')
+      name: mat_pp_$screen_height
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$screen_width'), '^"|"$', '')
+      name: mat_pp_$screen_width
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$viewport_height'), '^"|"$', '')
+      name: mat_pp_$viewport_height
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '$viewport_width'), '^"|"$', '')
+      name: mat_pp_$viewport_width
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'Email'), '^"|"$', '')
+      name: mat_pp_Email
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'Name'), '^"|"$', '')
+      name: mat_pp_Name
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'UserName'), '^"|"$', '')
+      name: mat_pp_UserName
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'Username'), '^"|"$', '')
+      name: mat_pp_Username
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, '_kx'), '^"|"$', '')
+      name: mat_pp__kx
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'dclid'), '^"|"$', '')
+      name: mat_pp_dclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'email'), '^"|"$', '')
+      name: mat_pp_email
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'epik'), '^"|"$', '')
+      name: mat_pp_epik
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'fbclid'), '^"|"$', '')
+      name: mat_pp_fbclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'gad_source'), '^"|"$', '')
+      name: mat_pp_gad_source
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'gbraid'), '^"|"$', '')
+      name: mat_pp_gbraid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'gclid'), '^"|"$', '')
+      name: mat_pp_gclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'gclsrc'), '^"|"$', '')
+      name: mat_pp_gclsrc
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'igshid'), '^"|"$', '')
+      name: mat_pp_igshid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'irclid'), '^"|"$', '')
+      name: mat_pp_irclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'li_fat_id'), '^"|"$', '')
+      name: mat_pp_li_fat_id
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'mc_cid'), '^"|"$', '')
+      name: mat_pp_mc_cid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'msclkid'), '^"|"$', '')
+      name: mat_pp_msclkid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'name'), '^"|"$', '')
+      name: mat_pp_name
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'qclid'), '^"|"$', '')
+      name: mat_pp_qclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'rdt_cid'), '^"|"$', '')
+      name: mat_pp_rdt_cid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'sccid'), '^"|"$', '')
+      name: mat_pp_sccid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'ttclid'), '^"|"$', '')
+      name: mat_pp_ttclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'twclid'), '^"|"$', '')
+      name: mat_pp_twclid
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'username'), '^"|"$', '')
+      name: mat_pp_username
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'utm_campaign'), '^"|"$', '')
+      name: mat_pp_utm_campaign
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'utm_content'), '^"|"$', '')
+      name: mat_pp_utm_content
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'utm_medium'), '^"|"$', '')
+      name: mat_pp_utm_medium
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'utm_source'), '^"|"$', '')
+      name: mat_pp_utm_source
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'utm_term'), '^"|"$', '')
+      name: mat_pp_utm_term
+      type: String
+    - defaultExpression: replaceRegexpAll(JSONExtractRaw(person_properties, 'wbraid'), '^"|"$', '')
+      name: mat_pp_wbraid
+      type: String
+database: chschema_test_hjdwo8w0
+engine:
+    replicatedReplacingMergeTree:
+        replicaName: '{replica}'
+        versionColumn: _timestamp
+        zooPath: /clickhouse/tables/{shard}/chschema_test_hjdwo8w0.events
+indexes:
+    - expression: is_deleted
+      granularity: "1"
+      name: is_deleted_idx
+      type: minmax
+    - expression: _timestamp
+      granularity: "3"
+      name: kafka_timestamp_minmax_sharded_events
+      type: minmax
+    - expression: '`$group_0`'
+      granularity: "1"
+      name: minmax_$group_0
+      type: minmax
+    - expression: '`$group_1`'
+      granularity: "1"
+      name: minmax_$group_1
+      type: minmax
+    - expression: '`$group_2`'
+      granularity: "1"
+      name: minmax_$group_2
+      type: minmax
+    - expression: '`$group_3`'
+      granularity: "1"
+      name: minmax_$group_3
+      type: minmax
+    - expression: '`$group_4`'
+      granularity: "1"
+      name: minmax_$group_4
+      type: minmax
+    - expression: '`$session_id`'
+      granularity: "1"
+      name: minmax_$session_id
+      type: minmax
+    - expression: '`$window_id`'
+      granularity: "1"
+      name: minmax_$window_id
+      type: minmax
+    - expression: coalesce(inserted_at, _timestamp)
+      granularity: "1"
+      name: minmax_inserted_at
+      type: minmax
+    - expression: '`mat_$app_build`'
+      granularity: "1"
+      name: minmax_mat_$app_build
+      type: minmax
+    - expression: '`mat_$app_name`'
+      granularity: "1"
+      name: minmax_mat_$app_name
+      type: minmax
+    - expression: '`mat_$app_namespace`'
+      granularity: "1"
+      name: minmax_mat_$app_namespace
+      type: minmax
+    - expression: '`mat_$app_version`'
+      granularity: "1"
+      name: minmax_mat_$app_version
+      type: minmax
+    - expression: '`mat_$browser`'
+      granularity: "1"
+      name: minmax_mat_$browser
+      type: minmax
+    - expression: '`mat_$browser_language`'
+      granularity: "1"
+      name: minmax_mat_$browser_language
+      type: minmax
+    - expression: '`mat_$browser_version`'
+      granularity: "1"
+      name: minmax_mat_$browser_version
+      type: minmax
+    - expression: '`mat_$current_url`'
+      granularity: "1"
+      name: minmax_mat_$current_url
+      type: minmax
+    - expression: '`mat_$device_type`'
+      granularity: "1"
+      name: minmax_mat_$device_type
+      type: minmax
+    - expression: '`mat_$exception_fingerprint`'
+      granularity: "1"
+      name: minmax_mat_$exception_fingerprint
+      type: minmax
+    - expression: '`mat_$exception_functions`'
+      granularity: "1"
+      name: minmax_mat_$exception_functions
+      type: minmax
+    - expression: '`mat_$exception_issue_id`'
+      granularity: "1"
+      name: minmax_mat_$exception_issue_id
+      type: minmax
+    - expression: '`mat_$exception_sources`'
+      granularity: "1"
+      name: minmax_mat_$exception_sources
+      type: minmax
+    - expression: '`mat_$exception_types`'
+      granularity: "1"
+      name: minmax_mat_$exception_types
+      type: minmax
+    - expression: '`mat_$exception_values`'
+      granularity: "1"
+      name: minmax_mat_$exception_values
+      type: minmax
+    - expression: '`mat_$geoip_city_name`'
+      granularity: "1"
+      name: minmax_mat_$geoip_city_name
+      type: minmax
+    - expression: '`mat_$geoip_country_code`'
+      granularity: "1"
+      name: minmax_mat_$geoip_country_code
+      type: minmax
+    - expression: '`mat_$geoip_subdivision_1_code`'
+      granularity: "1"
+      name: minmax_mat_$geoip_subdivision_1_code
+      type: minmax
+    - expression: '`mat_$geoip_subdivision_1_name`'
+      granularity: "1"
+      name: minmax_mat_$geoip_subdivision_1_name
+      type: minmax
+    - expression: '`mat_$host`'
+      granularity: "1"
+      name: minmax_mat_$host
+      type: minmax
+    - expression: '`mat_$lib`'
+      granularity: "1"
+      name: minmax_mat_$lib
+      type: minmax
+    - expression: '`mat_$lib_version`'
+      granularity: "1"
+      name: minmax_mat_$lib_version
+      type: minmax
+    - expression: '`mat_$os`'
+      granularity: "1"
+      name: minmax_mat_$os
+      type: minmax
+    - expression: '`mat_$os_version`'
+      granularity: "1"
+      name: minmax_mat_$os_version
+      type: minmax
+    - expression: '`mat_$pathname`'
+      granularity: "1"
+      name: minmax_mat_$pathname
+      type: minmax
+    - expression: '`mat_$prev_pageview_max_content_percentage`'
+      granularity: "1"
+      name: minmax_mat_$prev_pageview_max_content_percentage
+      type: minmax
+    - expression: '`mat_$prev_pageview_max_scroll_percentage`'
+      granularity: "1"
+      name: minmax_mat_$prev_pageview_max_scroll_percentage
+      type: minmax
+    - expression: '`mat_$prev_pageview_pathname`'
+      granularity: "1"
+      name: minmax_mat_$prev_pageview_pathname
+      type: minmax
+    - expression: '`mat_$raw_user_agent`'
+      granularity: "1"
+      name: minmax_mat_$raw_user_agent
+      type: minmax
+    - expression: '`mat_$referrer`'
+      granularity: "1"
+      name: minmax_mat_$referrer
+      type: minmax
+    - expression: '`mat_$referring_domain`'
+      granularity: "1"
+      name: minmax_mat_$referring_domain
+      type: minmax
+    - expression: '`mat_$screen_height`'
+      granularity: "1"
+      name: minmax_mat_$screen_height
+      type: minmax
+    - expression: '`mat_$screen_name`'
+      granularity: "1"
+      name: minmax_mat_$screen_name
+      type: minmax
+    - expression: '`mat_$screen_width`'
+      granularity: "1"
+      name: minmax_mat_$screen_width
+      type: minmax
+    - expression: '`mat_$timezone_offset`'
+      granularity: "1"
+      name: minmax_mat_$timezone_offset
+      type: minmax
+    - expression: '`mat_$viewport_height`'
+      granularity: "1"
+      name: minmax_mat_$viewport_height
+      type: minmax
+    - expression: '`mat_$viewport_width`'
+      granularity: "1"
+      name: minmax_mat_$viewport_width
+      type: minmax
+    - expression: mat__kx
+      granularity: "1"
+      name: minmax_mat__kx
+      type: minmax
+    - expression: mat_dclid
+      granularity: "1"
+      name: minmax_mat_dclid
+      type: minmax
+    - expression: mat_epik
+      granularity: "1"
+      name: minmax_mat_epik
+      type: minmax
+    - expression: mat_fbclid
+      granularity: "1"
+      name: minmax_mat_fbclid
+      type: minmax
+    - expression: mat_gad_source
+      granularity: "1"
+      name: minmax_mat_gad_source
+      type: minmax
+    - expression: mat_gbraid
+      granularity: "1"
+      name: minmax_mat_gbraid
+      type: minmax
+    - expression: mat_gclid
+      granularity: "1"
+      name: minmax_mat_gclid
+      type: minmax
+    - expression: mat_gclsrc
+      granularity: "1"
+      name: minmax_mat_gclsrc
+      type: minmax
+    - expression: mat_igshid
+      granularity: "1"
+      name: minmax_mat_igshid
+      type: minmax
+    - expression: mat_irclid
+      granularity: "1"
+      name: minmax_mat_irclid
+      type: minmax
+    - expression: mat_li_fat_id
+      granularity: "1"
+      name: minmax_mat_li_fat_id
+      type: minmax
+    - expression: mat_mc_cid
+      granularity: "1"
+      name: minmax_mat_mc_cid
+      type: minmax
+    - expression: mat_msclkid
+      granularity: "1"
+      name: minmax_mat_msclkid
+      type: minmax
+    - expression: '`mat_pp_$app_build`'
+      granularity: "1"
+      name: minmax_mat_pp_$app_build
+      type: minmax
+    - expression: '`mat_pp_$app_name`'
+      granularity: "1"
+      name: minmax_mat_pp_$app_name
+      type: minmax
+    - expression: '`mat_pp_$app_namespace`'
+      granularity: "1"
+      name: minmax_mat_pp_$app_namespace
+      type: minmax
+    - expression: '`mat_pp_$app_version`'
+      granularity: "1"
+      name: minmax_mat_pp_$app_version
+      type: minmax
+    - expression: '`mat_pp_$browser`'
+      granularity: "1"
+      name: minmax_mat_pp_$browser
+      type: minmax
+    - expression: '`mat_pp_$browser_version`'
+      granularity: "1"
+      name: minmax_mat_pp_$browser_version
+      type: minmax
+    - expression: '`mat_pp_$current_url`'
+      granularity: "1"
+      name: minmax_mat_pp_$current_url
+      type: minmax
+    - expression: '`mat_pp_$device_type`'
+      granularity: "1"
+      name: minmax_mat_pp_$device_type
+      type: minmax
+    - expression: '`mat_pp_$initial_Email`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_Email
+      type: minmax
+    - expression: '`mat_pp_$initial_Name`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_Name
+      type: minmax
+    - expression: '`mat_pp_$initial_UserName`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_UserName
+      type: minmax
+    - expression: '`mat_pp_$initial_Username`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_Username
+      type: minmax
+    - expression: '`mat_pp_$initial__kx`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial__kx
+      type: minmax
+    - expression: '`mat_pp_$initial_app_build`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_app_build
+      type: minmax
+    - expression: '`mat_pp_$initial_app_name`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_app_name
+      type: minmax
+    - expression: '`mat_pp_$initial_app_namespace`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_app_namespace
+      type: minmax
+    - expression: '`mat_pp_$initial_app_version`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_app_version
+      type: minmax
+    - expression: '`mat_pp_$initial_browser`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_browser
+      type: minmax
+    - expression: '`mat_pp_$initial_browser_version`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_browser_version
+      type: minmax
+    - expression: '`mat_pp_$initial_current_url`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_current_url
+      type: minmax
+    - expression: '`mat_pp_$initial_dclid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_dclid
+      type: minmax
+    - expression: '`mat_pp_$initial_device_type`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_device_type
+      type: minmax
+    - expression: '`mat_pp_$initial_email`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_email
+      type: minmax
+    - expression: '`mat_pp_$initial_epik`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_epik
+      type: minmax
+    - expression: '`mat_pp_$initial_fbclid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_fbclid
+      type: minmax
+    - expression: '`mat_pp_$initial_gad_source`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_gad_source
+      type: minmax
+    - expression: '`mat_pp_$initial_gbraid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_gbraid
+      type: minmax
+    - expression: '`mat_pp_$initial_gclid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_gclid
+      type: minmax
+    - expression: '`mat_pp_$initial_gclsrc`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_gclsrc
+      type: minmax
+    - expression: '`mat_pp_$initial_igshid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_igshid
+      type: minmax
+    - expression: '`mat_pp_$initial_irclid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_irclid
+      type: minmax
+    - expression: '`mat_pp_$initial_li_fat_id`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_li_fat_id
+      type: minmax
+    - expression: '`mat_pp_$initial_mc_cid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_mc_cid
+      type: minmax
+    - expression: '`mat_pp_$initial_msclkid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_msclkid
+      type: minmax
+    - expression: '`mat_pp_$initial_name`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_name
+      type: minmax
+    - expression: '`mat_pp_$initial_os`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_os
+      type: minmax
+    - expression: '`mat_pp_$initial_os_version`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_os_version
+      type: minmax
+    - expression: '`mat_pp_$initial_pathname`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_pathname
+      type: minmax
+    - expression: '`mat_pp_$initial_qclid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_qclid
+      type: minmax
+    - expression: '`mat_pp_$initial_raw_user_agent`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_raw_user_agent
+      type: minmax
+    - expression: '`mat_pp_$initial_rdt_cid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_rdt_cid
+      type: minmax
+    - expression: '`mat_pp_$initial_referrer`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_referrer
+      type: minmax
+    - expression: '`mat_pp_$initial_referring_domain`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_referring_domain
+      type: minmax
+    - expression: '`mat_pp_$initial_sccid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_sccid
+      type: minmax
+    - expression: '`mat_pp_$initial_screen_height`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_screen_height
+      type: minmax
+    - expression: '`mat_pp_$initial_screen_width`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_screen_width
+      type: minmax
+    - expression: '`mat_pp_$initial_ttclid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_ttclid
+      type: minmax
+    - expression: '`mat_pp_$initial_twclid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_twclid
+      type: minmax
+    - expression: '`mat_pp_$initial_username`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_username
+      type: minmax
+    - expression: '`mat_pp_$initial_utm_campaign`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_utm_campaign
+      type: minmax
+    - expression: '`mat_pp_$initial_utm_content`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_utm_content
+      type: minmax
+    - expression: '`mat_pp_$initial_utm_medium`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_utm_medium
+      type: minmax
+    - expression: '`mat_pp_$initial_utm_source`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_utm_source
+      type: minmax
+    - expression: '`mat_pp_$initial_utm_term`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_utm_term
+      type: minmax
+    - expression: '`mat_pp_$initial_viewport_height`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_viewport_height
+      type: minmax
+    - expression: '`mat_pp_$initial_viewport_width`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_viewport_width
+      type: minmax
+    - expression: '`mat_pp_$initial_wbraid`'
+      granularity: "1"
+      name: minmax_mat_pp_$initial_wbraid
+      type: minmax
+    - expression: '`mat_pp_$os`'
+      granularity: "1"
+      name: minmax_mat_pp_$os
+      type: minmax
+    - expression: '`mat_pp_$os_version`'
+      granularity: "1"
+      name: minmax_mat_pp_$os_version
+      type: minmax
+    - expression: '`mat_pp_$pathname`'
+      granularity: "1"
+      name: minmax_mat_pp_$pathname
+      type: minmax
+    - expression: '`mat_pp_$raw_user_agent`'
+      granularity: "1"
+      name: minmax_mat_pp_$raw_user_agent
+      type: minmax
+    - expression: '`mat_pp_$referrer`'
+      granularity: "1"
+      name: minmax_mat_pp_$referrer
+      type: minmax
+    - expression: '`mat_pp_$referring_domain`'
+      granularity: "1"
+      name: minmax_mat_pp_$referring_domain
+      type: minmax
+    - expression: '`mat_pp_$screen_height`'
+      granularity: "1"
+      name: minmax_mat_pp_$screen_height
+      type: minmax
+    - expression: '`mat_pp_$screen_width`'
+      granularity: "1"
+      name: minmax_mat_pp_$screen_width
+      type: minmax
+    - expression: '`mat_pp_$viewport_height`'
+      granularity: "1"
+      name: minmax_mat_pp_$viewport_height
+      type: minmax
+    - expression: '`mat_pp_$viewport_width`'
+      granularity: "1"
+      name: minmax_mat_pp_$viewport_width
+      type: minmax
+    - expression: mat_pp_Email
+      granularity: "1"
+      name: minmax_mat_pp_Email
+      type: minmax
+    - expression: mat_pp_Name
+      granularity: "1"
+      name: minmax_mat_pp_Name
+      type: minmax
+    - expression: mat_pp_UserName
+      granularity: "1"
+      name: minmax_mat_pp_UserName
+      type: minmax
+    - expression: mat_pp_Username
+      granularity: "1"
+      name: minmax_mat_pp_Username
+      type: minmax
+    - expression: mat_pp__kx
+      granularity: "1"
+      name: minmax_mat_pp__kx
+      type: minmax
+    - expression: mat_pp_dclid
+      granularity: "1"
+      name: minmax_mat_pp_dclid
+      type: minmax
+    - expression: mat_pp_email
+      granularity: "1"
+      name: minmax_mat_pp_email
+      type: minmax
+    - expression: mat_pp_epik
+      granularity: "1"
+      name: minmax_mat_pp_epik
+      type: minmax
+    - expression: mat_pp_fbclid
+      granularity: "1"
+      name: minmax_mat_pp_fbclid
+      type: minmax
+    - expression: mat_pp_gad_source
+      granularity: "1"
+      name: minmax_mat_pp_gad_source
+      type: minmax
+    - expression: mat_pp_gbraid
+      granularity: "1"
+      name: minmax_mat_pp_gbraid
+      type: minmax
+    - expression: mat_pp_gclid
+      granularity: "1"
+      name: minmax_mat_pp_gclid
+      type: minmax
+    - expression: mat_pp_gclsrc
+      granularity: "1"
+      name: minmax_mat_pp_gclsrc
+      type: minmax
+    - expression: mat_pp_igshid
+      granularity: "1"
+      name: minmax_mat_pp_igshid
+      type: minmax
+    - expression: mat_pp_irclid
+      granularity: "1"
+      name: minmax_mat_pp_irclid
+      type: minmax
+    - expression: mat_pp_li_fat_id
+      granularity: "1"
+      name: minmax_mat_pp_li_fat_id
+      type: minmax
+    - expression: mat_pp_mc_cid
+      granularity: "1"
+      name: minmax_mat_pp_mc_cid
+      type: minmax
+    - expression: mat_pp_msclkid
+      granularity: "1"
+      name: minmax_mat_pp_msclkid
+      type: minmax
+    - expression: mat_pp_name
+      granularity: "1"
+      name: minmax_mat_pp_name
+      type: minmax
+    - expression: mat_pp_qclid
+      granularity: "1"
+      name: minmax_mat_pp_qclid
+      type: minmax
+    - expression: mat_pp_rdt_cid
+      granularity: "1"
+      name: minmax_mat_pp_rdt_cid
+      type: minmax
+    - expression: mat_pp_sccid
+      granularity: "1"
+      name: minmax_mat_pp_sccid
+      type: minmax
+    - expression: mat_pp_ttclid
+      granularity: "1"
+      name: minmax_mat_pp_ttclid
+      type: minmax
+    - expression: mat_pp_twclid
+      granularity: "1"
+      name: minmax_mat_pp_twclid
+      type: minmax
+    - expression: mat_pp_username
+      granularity: "1"
+      name: minmax_mat_pp_username
+      type: minmax
+    - expression: mat_pp_utm_campaign
+      granularity: "1"
+      name: minmax_mat_pp_utm_campaign
+      type: minmax
+    - expression: mat_pp_utm_content
+      granularity: "1"
+      name: minmax_mat_pp_utm_content
+      type: minmax
+    - expression: mat_pp_utm_medium
+      granularity: "1"
+      name: minmax_mat_pp_utm_medium
+      type: minmax
+    - expression: mat_pp_utm_source
+      granularity: "1"
+      name: minmax_mat_pp_utm_source
+      type: minmax
+    - expression: mat_pp_utm_term
+      granularity: "1"
+      name: minmax_mat_pp_utm_term
+      type: minmax
+    - expression: mat_pp_wbraid
+      granularity: "1"
+      name: minmax_mat_pp_wbraid
+      type: minmax
+    - expression: mat_qclid
+      granularity: "1"
+      name: minmax_mat_qclid
+      type: minmax
+    - expression: mat_rdt_cid
+      granularity: "1"
+      name: minmax_mat_rdt_cid
+      type: minmax
+    - expression: mat_sccid
+      granularity: "1"
+      name: minmax_mat_sccid
+      type: minmax
+    - expression: mat_ttclid
+      granularity: "1"
+      name: minmax_mat_ttclid
+      type: minmax
+    - expression: mat_twclid
+      granularity: "1"
+      name: minmax_mat_twclid
+      type: minmax
+    - expression: mat_utm_campaign
+      granularity: "1"
+      name: minmax_mat_utm_campaign
+      type: minmax
+    - expression: mat_utm_content
+      granularity: "1"
+      name: minmax_mat_utm_content
+      type: minmax
+    - expression: mat_utm_medium
+      granularity: "1"
+      name: minmax_mat_utm_medium
+      type: minmax
+    - expression: mat_utm_source
+      granularity: "1"
+      name: minmax_mat_utm_source
+      type: minmax
+    - expression: mat_utm_term
+      granularity: "1"
+      name: minmax_mat_utm_term
+      type: minmax
+    - expression: mat_wbraid
+      granularity: "1"
+      name: minmax_mat_wbraid
+      type: minmax
+    - expression: mapKeys(person_properties_map_custom)
+      granularity: "1"
+      name: person_properties_map_custom_keys_bf
+      type: bloom_filter
+    - expression: mapValues(person_properties_map_custom)
+      granularity: "1"
+      name: person_properties_map_custom_values_bf
+      type: bloom_filter
+    - expression: mapKeys(properties_group_ai)
+      granularity: "1"
+      name: properties_group_ai_keys_bf
+      type: bloom_filter
+    - expression: mapValues(properties_group_ai)
+      granularity: "1"
+      name: properties_group_ai_values_bf
+      type: bloom_filter
+    - expression: mapKeys(properties_group_custom)
+      granularity: "1"
+      name: properties_group_custom_keys_bf
+      type: bloom_filter
+    - expression: mapValues(properties_group_custom)
+      granularity: "1"
+      name: properties_group_custom_values_bf
+      type: bloom_filter
+    - expression: mapKeys(properties_group_feature_flags)
+      granularity: "1"
+      name: properties_group_feature_flags_keys_bf
+      type: bloom_filter
+    - expression: mapValues(properties_group_feature_flags)
+      granularity: "1"
+      name: properties_group_feature_flags_values_bf
+      type: bloom_filter
+name: sharded_events
+orderBy:
+    - team_id
+    - toDate(timestamp)
+    - event
+    - cityHash64(distinct_id)
+    - cityHash64(uuid)
+partitionBy: toYYYYMM(timestamp)
