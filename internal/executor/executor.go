@@ -4,11 +4,10 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/posthog/chschema/internal/diff"
 	"github.com/posthog/chschema/internal/sqlgen"
 	"github.com/rs/zerolog/log"
-
-	"github.com/ClickHouse/clickhouse-go/v2"
 )
 
 // Executor is responsible for applying a plan to the database.
