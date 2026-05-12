@@ -1,0 +1,358 @@
+package hcl
+
+import (
+	"fmt"
+	"regexp"
+	"sort"
+	"strings"
+)
+
+// GeneratedSQL holds the result of GenerateSQL: the safe DDL statements ready
+// to execute, plus a list of unsafe changes (engine, order_by, partition_by,
+// sample_by) that ClickHouse cannot apply in place and require manual table
+// recreation.
+type GeneratedSQL struct {
+	Statements []string
+	Unsafe     []UnsafeChange
+}
+
+// UnsafeChange describes a diff entry that can't be expressed as an ALTER.
+// Database and Table identify the target; Reason is a human-readable
+// explanation of what would need to change.
+type UnsafeChange struct {
+	Database string
+	Table    string
+	Reason   string
+}
+
+// GenerateSQL turns a ChangeSet into ClickHouse DDL. Statements are ordered:
+// CREATE TABLE first, then ALTER TABLE, then DROP TABLE. Unsafe changes
+// (engine swap, ORDER BY change, etc.) are collected into Unsafe; the
+// generator does not synthesize a recreate-and-swap procedure.
+func GenerateSQL(cs ChangeSet) GeneratedSQL {
+	var out GeneratedSQL
+	for _, dc := range cs.Databases {
+		for _, t := range dc.AddTables {
+			out.Statements = append(out.Statements, createTableSQL(dc.Database, t))
+		}
+	}
+	for _, dc := range cs.Databases {
+		for _, td := range dc.AlterTables {
+			if td.IsUnsafe() {
+				out.Unsafe = append(out.Unsafe, unsafeReasons(dc.Database, td)...)
+			}
+			if stmt := alterTableSQL(dc.Database, td); stmt != "" {
+				out.Statements = append(out.Statements, stmt)
+			}
+		}
+	}
+	for _, dc := range cs.Databases {
+		for _, name := range dc.DropTables {
+			out.Statements = append(out.Statements, dropTableSQL(dc.Database, name))
+		}
+	}
+	return out
+}
+
+func createTableSQL(database string, t TableSpec) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "CREATE TABLE %s.%s", database, t.Name)
+	if t.Cluster != nil {
+		fmt.Fprintf(&b, " ON CLUSTER %s", *t.Cluster)
+	}
+	b.WriteString(" (\n")
+
+	var parts []string
+	for _, c := range t.Columns {
+		parts = append(parts, "  "+columnDefSQL(c))
+	}
+	for _, con := range t.Constraints {
+		parts = append(parts, "  "+constraintClause(con))
+	}
+	for _, idx := range t.Indexes {
+		parts = append(parts, fmt.Sprintf("  INDEX %s", indexClause(idx)))
+	}
+	b.WriteString(strings.Join(parts, ",\n"))
+	b.WriteString("\n)")
+
+	clause, extraSettings := engineSQL(engineOf(t))
+	fmt.Fprintf(&b, " ENGINE = %s", clause)
+
+	if len(t.PrimaryKey) > 0 {
+		fmt.Fprintf(&b, " PRIMARY KEY (%s)", strings.Join(t.PrimaryKey, ", "))
+	}
+	if len(t.OrderBy) > 0 {
+		fmt.Fprintf(&b, " ORDER BY (%s)", strings.Join(t.OrderBy, ", "))
+	}
+	if t.PartitionBy != nil {
+		fmt.Fprintf(&b, " PARTITION BY %s", *t.PartitionBy)
+	}
+	if t.SampleBy != nil {
+		fmt.Fprintf(&b, " SAMPLE BY %s", *t.SampleBy)
+	}
+	if t.TTL != nil {
+		fmt.Fprintf(&b, " TTL %s", *t.TTL)
+	}
+
+	settings := mergeSettings(t.Settings, extraSettings)
+	if len(settings) > 0 {
+		fmt.Fprintf(&b, " SETTINGS %s", formatSettingsList(settings))
+	}
+
+	// COMMENT must come after all storage clauses (per docs).
+	if t.Comment != nil {
+		fmt.Fprintf(&b, " COMMENT %s", quoteString(*t.Comment))
+	}
+	return b.String()
+}
+
+func constraintClause(c ConstraintSpec) string {
+	if c.Check != nil {
+		return fmt.Sprintf("CONSTRAINT %s CHECK %s", c.Name, *c.Check)
+	}
+	if c.Assume != nil {
+		return fmt.Sprintf("CONSTRAINT %s ASSUME %s", c.Name, *c.Assume)
+	}
+	return fmt.Sprintf("CONSTRAINT %s", c.Name) // shouldn't happen post-validation
+}
+
+func dropTableSQL(database, table string) string {
+	return fmt.Sprintf("DROP TABLE %s.%s", database, table)
+}
+
+func alterTableSQL(database string, td TableDiff) string {
+	var ops []string
+	for _, r := range td.RenameColumns {
+		ops = append(ops, fmt.Sprintf("RENAME COLUMN %s TO %s", r.Old, r.New))
+	}
+	for _, c := range td.AddColumns {
+		ops = append(ops, fmt.Sprintf("ADD COLUMN %s %s", c.Name, c.Type))
+	}
+	for _, n := range td.DropColumns {
+		ops = append(ops, fmt.Sprintf("DROP COLUMN %s", n))
+	}
+	for _, c := range td.ModifyColumns {
+		ops = append(ops, fmt.Sprintf("MODIFY COLUMN %s %s", c.Name, c.NewType))
+	}
+	for _, n := range td.DropIndexes {
+		ops = append(ops, fmt.Sprintf("DROP INDEX %s", n))
+	}
+	for _, idx := range td.AddIndexes {
+		ops = append(ops, fmt.Sprintf("ADD INDEX %s", indexClause(idx)))
+	}
+	for _, k := range sortedKeys(td.SettingsAdded) {
+		ops = append(ops, fmt.Sprintf("MODIFY SETTING %s = %s", k, formatSettingValue(td.SettingsAdded[k])))
+	}
+	for _, c := range td.SettingsChanged {
+		ops = append(ops, fmt.Sprintf("MODIFY SETTING %s = %s", c.Key, formatSettingValue(c.NewValue)))
+	}
+	for _, k := range td.SettingsRemoved {
+		ops = append(ops, fmt.Sprintf("RESET SETTING %s", k))
+	}
+	if td.TTLChange != nil {
+		if td.TTLChange.New != nil {
+			ops = append(ops, fmt.Sprintf("MODIFY TTL %s", *td.TTLChange.New))
+		} else {
+			ops = append(ops, "REMOVE TTL")
+		}
+	}
+	if len(ops) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("ALTER TABLE %s.%s %s", database, td.Table, strings.Join(ops, ", "))
+}
+
+// columnDefSQL renders one column definition in the order ClickHouse
+// documents:
+//
+//	name type [NULL|NOT NULL] [DEFAULT|MATERIALIZED|EPHEMERAL|ALIAS expr]
+//	  [COMMENT 'text'] [CODEC(...)] [TTL expr]
+//
+// Nullable expansion happens here: `nullable = true` wraps the type in
+// Nullable(...), unless the type is already a Nullable(...).
+func columnDefSQL(c ColumnSpec) string {
+	var sb strings.Builder
+	sb.WriteString(c.Name)
+	sb.WriteByte(' ')
+	sb.WriteString(effectiveType(c))
+
+	switch {
+	case c.Default != nil:
+		fmt.Fprintf(&sb, " DEFAULT %s", *c.Default)
+	case c.Materialized != nil:
+		fmt.Fprintf(&sb, " MATERIALIZED %s", *c.Materialized)
+	case c.Ephemeral != nil:
+		if *c.Ephemeral == "" {
+			sb.WriteString(" EPHEMERAL")
+		} else {
+			fmt.Fprintf(&sb, " EPHEMERAL %s", *c.Ephemeral)
+		}
+	case c.Alias != nil:
+		fmt.Fprintf(&sb, " ALIAS %s", *c.Alias)
+	}
+
+	if c.Comment != nil {
+		fmt.Fprintf(&sb, " COMMENT %s", quoteString(*c.Comment))
+	}
+	if c.Codec != nil {
+		fmt.Fprintf(&sb, " CODEC(%s)", *c.Codec)
+	}
+	if c.TTL != nil {
+		fmt.Fprintf(&sb, " TTL %s", *c.TTL)
+	}
+	return sb.String()
+}
+
+// effectiveType returns Type wrapped in Nullable(...) when c.Nullable is set
+// and Type isn't already Nullable. The conflict case (nullable = true with a
+// pre-wrapped Type) is rejected by the resolver, not here.
+func effectiveType(c ColumnSpec) string {
+	if c.Nullable && !strings.HasPrefix(c.Type, "Nullable(") {
+		return "Nullable(" + c.Type + ")"
+	}
+	return c.Type
+}
+
+func quoteString(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "\\'") + "'"
+}
+
+func indexClause(idx IndexSpec) string {
+	if idx.Granularity > 0 {
+		return fmt.Sprintf("%s %s TYPE %s GRANULARITY %d", idx.Name, idx.Expr, idx.Type, idx.Granularity)
+	}
+	return fmt.Sprintf("%s %s TYPE %s", idx.Name, idx.Expr, idx.Type)
+}
+
+// engineOf returns the decoded Engine value from a TableSpec, or nil if the
+// table has no engine (only abstract tables should ever satisfy that, and
+// they don't reach SQL generation).
+func engineOf(t TableSpec) Engine {
+	if t.Engine == nil {
+		return nil
+	}
+	return t.Engine.Decoded
+}
+
+// engineSQL renders an Engine as a ClickHouse engine clause. The second
+// return is any extra SETTINGS that should be folded into the CREATE TABLE
+// SETTINGS clause (used by Kafka, which expresses its arguments via SETTINGS
+// rather than constructor args).
+func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
+	switch v := e.(type) {
+	case EngineMergeTree:
+		return "MergeTree()", nil
+	case EngineReplicatedMergeTree:
+		return fmt.Sprintf("ReplicatedMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+	case EngineReplacingMergeTree:
+		if v.VersionColumn != nil {
+			return fmt.Sprintf("ReplacingMergeTree(%s)", *v.VersionColumn), nil
+		}
+		return "ReplacingMergeTree()", nil
+	case EngineReplicatedReplacingMergeTree:
+		if v.VersionColumn != nil {
+			return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s', %s)", v.ZooPath, v.ReplicaName, *v.VersionColumn), nil
+		}
+		return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+	case EngineSummingMergeTree:
+		if len(v.SumColumns) > 0 {
+			return fmt.Sprintf("SummingMergeTree((%s))", strings.Join(v.SumColumns, ", ")), nil
+		}
+		return "SummingMergeTree()", nil
+	case EngineCollapsingMergeTree:
+		return fmt.Sprintf("CollapsingMergeTree(%s)", v.SignColumn), nil
+	case EngineReplicatedCollapsingMergeTree:
+		return fmt.Sprintf("ReplicatedCollapsingMergeTree('%s', '%s', %s)", v.ZooPath, v.ReplicaName, v.SignColumn), nil
+	case EngineAggregatingMergeTree:
+		return "AggregatingMergeTree()", nil
+	case EngineReplicatedAggregatingMergeTree:
+		return fmt.Sprintf("ReplicatedAggregatingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+	case EngineDistributed:
+		if v.ShardingKey != nil {
+			return fmt.Sprintf("Distributed('%s', '%s', '%s', %s)", v.ClusterName, v.RemoteDatabase, v.RemoteTable, *v.ShardingKey), nil
+		}
+		return fmt.Sprintf("Distributed('%s', '%s', '%s')", v.ClusterName, v.RemoteDatabase, v.RemoteTable), nil
+	case EngineLog:
+		return "Log()", nil
+	case EngineKafka:
+		return "Kafka()", map[string]string{
+			"kafka_broker_list": strings.Join(v.BrokerList, ","),
+			"kafka_topic_list":  v.Topic,
+			"kafka_group_name":  v.ConsumerGroup,
+			"kafka_format":      v.Format,
+		}
+	}
+	return "", nil
+}
+
+func mergeSettings(user, extra map[string]string) map[string]string {
+	if len(user) == 0 && len(extra) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(user)+len(extra))
+	for k, v := range extra {
+		out[k] = v
+	}
+	for k, v := range user {
+		out[k] = v
+	}
+	return out
+}
+
+func formatSettingsList(settings map[string]string) string {
+	keys := make([]string, 0, len(settings))
+	for k := range settings {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("%s = %s", k, formatSettingValue(settings[k]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+var numericRe = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
+
+func formatSettingValue(v string) string {
+	if numericRe.MatchString(v) {
+		return v
+	}
+	return "'" + strings.ReplaceAll(v, "'", "\\'") + "'"
+}
+
+func unsafeReasons(database string, td TableDiff) []UnsafeChange {
+	var out []UnsafeChange
+	if td.EngineChange != nil {
+		fromKind, toKind := "(none)", "(none)"
+		if td.EngineChange.Old != nil {
+			fromKind = td.EngineChange.Old.Kind()
+		}
+		if td.EngineChange.New != nil {
+			toKind = td.EngineChange.New.Kind()
+		}
+		out = append(out, UnsafeChange{
+			Database: database, Table: td.Table,
+			Reason: fmt.Sprintf("engine change from %s to %s requires recreating the table", fromKind, toKind),
+		})
+	}
+	if td.OrderByChange != nil {
+		out = append(out, UnsafeChange{
+			Database: database, Table: td.Table,
+			Reason: "ORDER BY change requires recreating the table",
+		})
+	}
+	if td.PartitionByChange != nil {
+		out = append(out, UnsafeChange{
+			Database: database, Table: td.Table,
+			Reason: "PARTITION BY change requires recreating the table",
+		})
+	}
+	if td.SampleByChange != nil {
+		out = append(out, UnsafeChange{
+			Database: database, Table: td.Table,
+			Reason: "SAMPLE BY change requires recreating the table",
+		})
+	}
+	return out
+}

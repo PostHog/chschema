@@ -1,6 +1,9 @@
 package hcl
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Resolve walks each database, applies patch_table additions, resolves
 // extend chains, drops abstract tables, and validates that every remaining
@@ -74,9 +77,70 @@ func resolveDatabase(db *DatabaseSpec) error {
 	}
 	db.Tables = kept
 
+	// Cascade the database-level cluster default into each table that
+	// hasn't set its own. Done after abstracts are dropped so we never
+	// touch tables that won't be emitted.
+	if db.Cluster != nil {
+		for i := range db.Tables {
+			if db.Tables[i].Cluster == nil {
+				v := *db.Cluster
+				db.Tables[i].Cluster = &v
+			}
+		}
+	}
+
 	for _, t := range db.Tables {
 		if t.Engine == nil || t.Engine.Decoded == nil {
 			return fmt.Errorf("%s.%s: non-abstract table requires an engine", db.Name, t.Name)
+		}
+		if err := validateColumns(db.Name, t); err != nil {
+			return err
+		}
+		if err := validateConstraints(db.Name, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateConstraints(db string, t TableSpec) error {
+	for _, c := range t.Constraints {
+		set := 0
+		if c.Check != nil {
+			set++
+		}
+		if c.Assume != nil {
+			set++
+		}
+		if set != 1 {
+			return fmt.Errorf("%s.%s.constraint[%s]: exactly one of check, assume must be set", db, t.Name, c.Name)
+		}
+	}
+	return nil
+}
+
+// validateColumns checks mutually-exclusive default-value attributes and
+// rejects the Nullable + nullable=true combination per ClickHouse's rule.
+func validateColumns(db string, t TableSpec) error {
+	for _, c := range t.Columns {
+		set := 0
+		if c.Default != nil {
+			set++
+		}
+		if c.Materialized != nil {
+			set++
+		}
+		if c.Ephemeral != nil {
+			set++
+		}
+		if c.Alias != nil {
+			set++
+		}
+		if set > 1 {
+			return fmt.Errorf("%s.%s.%s: at most one of default, materialized, ephemeral, alias may be set", db, t.Name, c.Name)
+		}
+		if c.Nullable && strings.HasPrefix(c.Type, "Nullable(") {
+			return fmt.Errorf("%s.%s.%s: cannot combine nullable = true with a Nullable(...) type", db, t.Name, c.Name)
 		}
 	}
 	return nil

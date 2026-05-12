@@ -3,7 +3,14 @@ package hcl
 import "github.com/hashicorp/hcl/v2"
 
 type DatabaseSpec struct {
-	Name    string           `hcl:"name,label"`
+	Name string `hcl:"name,label"`
+
+	// Cluster is the default ON CLUSTER target for every table declared in
+	// this database. Tables can override via TableSpec.Cluster. Inheritance
+	// happens during resolution; after Resolve, every TableSpec.Cluster
+	// reflects the effective value.
+	Cluster *string `hcl:"cluster,optional"`
+
 	Tables  []TableSpec      `hcl:"table,block"`
 	Patches []PatchTableSpec `hcl:"patch_table,block" diff:"-"`
 }
@@ -25,20 +32,60 @@ type TableSpec struct {
 	Abstract bool    `hcl:"abstract,optional" diff:"-"`
 	Override bool    `hcl:"override,optional" diff:"-"`
 
+	PrimaryKey  []string          `hcl:"primary_key,optional"`
 	OrderBy     []string          `hcl:"order_by,optional"`
 	PartitionBy *string           `hcl:"partition_by,optional"`
 	SampleBy    *string           `hcl:"sample_by,optional"`
 	TTL         *string           `hcl:"ttl,optional"`
 	Settings    map[string]string `hcl:"settings,optional"`
+	Comment     *string           `hcl:"comment,optional"`
 
-	Columns []ColumnSpec `hcl:"column,block"`
-	Indexes []IndexSpec  `hcl:"index,block"`
-	Engine  *EngineSpec  `hcl:"engine,block"`
+	// Cluster is the ON CLUSTER target. May be set on the table itself, or
+	// inherited from DatabaseSpec.Cluster during resolution.
+	Cluster *string `hcl:"cluster,optional"`
+
+	Columns     []ColumnSpec     `hcl:"column,block"`
+	Indexes     []IndexSpec      `hcl:"index,block"`
+	Constraints []ConstraintSpec `hcl:"constraint,block"`
+	Engine      *EngineSpec      `hcl:"engine,block"`
+}
+
+// ConstraintSpec is a table-level constraint. Either Check or Assume must be
+// set, but not both. Check enforces a row-level boolean predicate on INSERT;
+// Assume is an optimizer hint (the constraint is presumed true).
+type ConstraintSpec struct {
+	Name   string  `hcl:"name,label"`
+	Check  *string `hcl:"check,optional"`
+	Assume *string `hcl:"assume,optional"`
 }
 
 type ColumnSpec struct {
 	Name string `hcl:"name,label"`
 	Type string `hcl:"type"`
+
+	// Nullable wraps Type in Nullable(...) at SQL gen time. Combining
+	// Nullable = true with a Type that already starts with "Nullable("
+	// is rejected, matching ClickHouse's own behavior.
+	Nullable bool `hcl:"nullable,optional"`
+
+	// Default / Materialized / Ephemeral / Alias are mutually exclusive
+	// default-value expressions, matching ClickHouse's
+	// DEFAULT|MATERIALIZED|EPHEMERAL|ALIAS clauses. Ephemeral can be the
+	// empty string, meaning a bare EPHEMERAL with no expression.
+	Default      *string `hcl:"default,optional"`
+	Materialized *string `hcl:"materialized,optional"`
+	Ephemeral    *string `hcl:"ephemeral,optional"`
+	Alias        *string `hcl:"alias,optional"`
+
+	Comment *string `hcl:"comment,optional"`
+	Codec   *string `hcl:"codec,optional"`
+	TTL     *string `hcl:"ttl,optional"`
+
+	// RenamedFrom declares that this column previously existed under another
+	// name. The diff engine uses it to emit RENAME COLUMN instead of DROP +
+	// ADD. Tagged diff:"-" because it's transient metadata, not part of the
+	// schema being compared.
+	RenamedFrom *string `hcl:"renamed_from,optional" diff:"-"`
 }
 
 type IndexSpec struct {
