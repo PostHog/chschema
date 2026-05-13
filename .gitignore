@@ -14,3 +14,4 @@
 # IDE settings
 .idea/
 /schema-dump/
+/clickhouse-docs

@@ -31,7 +31,7 @@ func TestCHLive_Introspect(t *testing.T) {
 
 	for _, tc := range createTableCases {
 		tc := tc
-		if tc.skipLive {
+		if tc.skipLive || tc.skipIntrospect {
 			continue
 		}
 		t.Run(tc.name, func(t *testing.T) {
@@ -67,6 +67,8 @@ func TestCHLive_Introspect(t *testing.T) {
 			normalizeForCompare(got)
 			alignEphemeralDefaults(&expected, got)
 			alignCodecDefaults(&expected, got)
+			alignColumnTTLs(&expected, got)
+			alignSettings(&expected, got)
 			assert.Equal(t, expected, *got)
 		})
 	}
@@ -88,6 +90,54 @@ func parseSource(t *testing.T, src string) ([]DatabaseSpec, error) {
 	tmp := t.TempDir() + "/spec.hcl"
 	require.NoError(t, os.WriteFile(tmp, []byte(src), 0o644))
 	return ParseFile(tmp)
+}
+
+// alignColumnTTLs copies the introspected per-column TTL onto expected when
+// expected has a TTL set. ClickHouse rewrites interval expressions (e.g.
+// `INTERVAL 1 MONTH` → `toIntervalMonth(1)`), so the textual form differs
+// from the HCL fixture even though the meaning is identical. Presence is
+// what the introspection round-trip asserts.
+func alignColumnTTLs(expected, got *TableSpec) {
+	byName := make(map[string]*ColumnSpec, len(got.Columns))
+	for i := range got.Columns {
+		byName[got.Columns[i].Name] = &got.Columns[i]
+	}
+	for i := range expected.Columns {
+		ec := &expected.Columns[i]
+		if ec.TTL == nil {
+			continue
+		}
+		if gc, ok := byName[ec.Name]; ok && gc.TTL != nil {
+			v := *gc.TTL
+			ec.TTL = &v
+		}
+	}
+	// Table-level TTL: same interval-canonicalization issue.
+	if expected.TTL != nil && got.TTL != nil {
+		v := *got.TTL
+		expected.TTL = &v
+	}
+}
+
+// alignSettings filters the introspected Settings map down to the keys
+// expected actually declared. ClickHouse always emits server defaults like
+// `index_granularity = 8192` in engine_full even when the user didn't write
+// them; this filter keeps the assertion focused on what the HCL specifies.
+func alignSettings(expected, got *TableSpec) {
+	if got.Settings == nil {
+		return
+	}
+	if len(expected.Settings) == 0 {
+		got.Settings = nil
+		return
+	}
+	filtered := make(map[string]string, len(expected.Settings))
+	for k, v := range got.Settings {
+		if _, ok := expected.Settings[k]; ok {
+			filtered[k] = v
+		}
+	}
+	got.Settings = filtered
 }
 
 // alignCodecDefaults copies the introspected codec onto the expected side
@@ -139,11 +189,8 @@ func alignEphemeralDefaults(expected, got *TableSpec) {
 func normalizeForCompare(t *TableSpec) {
 	t.Constraints = nil // not introspected (no system table)
 	t.Cluster = nil     // not introspected (cluster topology lives in server config)
-	t.TTL = nil         // table-level TTL not yet introspected
-	t.Settings = nil    // settings introspection still TODO
 	for i := range t.Columns {
 		c := &t.Columns[i]
-		c.TTL = nil // per-column TTL not yet introspected
 		// nullable = true is stored by CH inside the type itself; canonicalize.
 		if c.Nullable && !strings.HasPrefix(c.Type, "Nullable(") {
 			c.Type = "Nullable(" + c.Type + ")"

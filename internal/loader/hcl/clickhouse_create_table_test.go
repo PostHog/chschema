@@ -38,6 +38,11 @@ type createTableCase struct {
 	hcl          string
 	wantContains []string
 	skipLive     bool
+	// skipIntrospect skips the case in the round-trip introspection test
+	// when the upstream ClickHouse SQL parser (AfterShip/clickhouse-sql-parser
+	// v0.5.1) can't parse the create_table_query CH produces. Currently:
+	// bare EPHEMERAL (no expression) and CONSTRAINT … ASSUME.
+	skipIntrospect bool
 }
 
 // createTableCases is the shared test table used by both the static unit
@@ -116,7 +121,8 @@ var createTableCases = []createTableCase{
     order_by = ["id"]
   }
 }`,
-		wantContains: []string{"unhexed String EPHEMERAL"},
+		wantContains:   []string{"unhexed String EPHEMERAL"},
+		skipIntrospect: true, // parser library rejects bare EPHEMERAL
 	},
 
 	// Docs: "ALIAS".
@@ -275,7 +281,8 @@ var createTableCases = []createTableCase{
     order_by = ["name_len", "name"]
   }
 }`,
-		wantContains: []string{"CONSTRAINT name_len_consistent ASSUME length(name) = name_len"},
+		wantContains:   []string{"CONSTRAINT name_len_consistent ASSUME length(name) = name_len"},
+		skipIntrospect: true, // parser library has no ASSUME constraint support yet
 	},
 
 	// Docs: "COMMENT Clause" — table-level comment.
@@ -290,6 +297,31 @@ var createTableCases = []createTableCase{
   }
 }`,
 		wantContains: []string{"COMMENT 'The temporary table'"},
+	},
+
+	// Table-level TTL and explicit SETTINGS — both are stored in
+	// system.tables.engine_full and must be recovered by introspection.
+	{
+		name: "Table_TTLAndSettings",
+		hcl: `database "db" {
+  table "t" {
+    column "id" { type = "UInt64" }
+    column "ts" { type = "DateTime" }
+
+    engine "merge_tree" {}
+    order_by = ["id"]
+    ttl      = "ts + INTERVAL 6 MONTH"
+    settings = {
+      ttl_only_drop_parts = "1"
+      merge_with_ttl_timeout = "3600"
+    }
+  }
+}`,
+		wantContains: []string{
+			"TTL ts + INTERVAL 6 MONTH",
+			"ttl_only_drop_parts = 1",
+			"merge_with_ttl_timeout = 3600",
+		},
 	},
 
 	// Docs: opening syntax form mentions `ON CLUSTER cluster`.

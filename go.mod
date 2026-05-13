@@ -16,6 +16,7 @@ require (
 )
 
 require (
+	github.com/AfterShip/clickhouse-sql-parser v0.5.1 // indirect
 	github.com/ClickHouse/ch-go v0.68.0 // indirect
 	github.com/agext/levenshtein v1.2.1 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
