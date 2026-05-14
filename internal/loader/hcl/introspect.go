@@ -47,7 +47,10 @@ func Introspect(ctx context.Context, conn driver.Conn, database string) (*Databa
 	if err := processIntrospectRows(db, database, rows); err != nil {
 		return nil, err
 	}
-	return db, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration error: %w", err)
+	}
+	return db, nil
 }
 
 // processIntrospectRows fills db with tables and materialized views parsed
@@ -199,8 +202,11 @@ func buildMaterializedViewFromCreateMV(mv *chparser.CreateMaterializedView) (Mat
 	if mv.Refresh != nil {
 		return MaterializedViewSpec{}, errors.New("unsupported: refreshable materialized view")
 	}
-	if mv.Engine != nil || mv.Destination == nil || mv.Destination.TableIdentifier == nil {
+	if mv.Engine != nil {
 		return MaterializedViewSpec{}, errors.New("unsupported: inner-engine materialized view (only the TO <table> form is supported)")
+	}
+	if mv.Destination == nil || mv.Destination.TableIdentifier == nil {
+		return MaterializedViewSpec{}, errors.New("unsupported: materialized view has no TO clause")
 	}
 
 	out := MaterializedViewSpec{
