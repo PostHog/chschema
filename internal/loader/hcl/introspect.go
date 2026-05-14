@@ -216,7 +216,16 @@ func buildMaterializedViewFromCreateMV(mv *chparser.CreateMaterializedView) (Mat
 	if mv.Destination.TableSchema != nil {
 		for _, col := range mv.Destination.TableSchema.Columns {
 			if cd, ok := col.(*chparser.ColumnDef); ok {
-				out.Columns = append(out.Columns, columnFromAST(cd))
+				// MV destination columns are introspected as name+type only,
+				// matching what the HCL dumper emits (writeMaterializedView
+				// only writes Name and Type). Using columnFromAST here would
+				// populate Default/Codec/Comment/TTL fields that the dumper
+				// silently drops, causing spurious Recreate diffs on live-vs-dumped
+				// comparisons. TO-form MV column lists are bare name+type in practice.
+				out.Columns = append(out.Columns, ColumnSpec{
+					Name: identName(cd.Name),
+					Type: formatNode(cd.Type),
+				})
 			}
 		}
 	}

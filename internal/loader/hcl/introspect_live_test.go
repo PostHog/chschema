@@ -88,11 +88,12 @@ func TestCHLive_IntrospectMaterializedView(t *testing.T) {
 	ctx := context.Background()
 
 	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
-		"CREATE TABLE %s.metrics (team_id Int64, cnt UInt64) ENGINE = MergeTree ORDER BY team_id", dbName)))
+		"CREATE TABLE %s.metrics (`team_id` Int64, `cnt` UInt64) ENGINE = MergeTree ORDER BY team_id", dbName)))
 	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
 		"CREATE TABLE %s.events (team_id Int64) ENGINE = MergeTree ORDER BY team_id", dbName)))
+	// Use a TO-form MV with an explicit column list so that mv.Columns round-trips.
 	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
-		"CREATE MATERIALIZED VIEW %s.metrics_mv TO %s.metrics "+
+		"CREATE MATERIALIZED VIEW %s.metrics_mv TO %s.metrics (`team_id` Int64, `cnt` UInt64) "+
 			"AS SELECT team_id, count() AS cnt FROM %s.events GROUP BY team_id",
 		dbName, dbName, dbName)))
 
@@ -105,6 +106,11 @@ func TestCHLive_IntrospectMaterializedView(t *testing.T) {
 	assert.Equal(t, dbName+".metrics", mv.ToTable)
 	assert.Contains(t, mv.Query, "team_id")
 	assert.Contains(t, mv.Query, "events")
+	// Assert that explicit MV destination columns round-trip as name+type only.
+	assert.Equal(t, []ColumnSpec{
+		{Name: "team_id", Type: "Int64"},
+		{Name: "cnt", Type: "UInt64"},
+	}, mv.Columns)
 
 	// The destination and source tables still introspect alongside the MV.
 	var tableNames []string
