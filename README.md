@@ -222,17 +222,15 @@ attributes:
 
 ### Materialized views
 
-A `materialized_view` block sits alongside `table` blocks in a `database`.
-Only the **`TO <table>` form** is supported — the view reads from the source
-referenced in `query` and writes rows into an existing destination table.
+A `materialized_view` block declares a **TO-form** materialized view — it
+continuously transforms inserts and writes the result into a separate
+destination table.
 
 ```hcl
 database "posthog" {
   materialized_view "app_metrics_mv" {
-    to_table = "default.sharded_app_metrics"
-    query    = "SELECT team_id, category FROM default.kafka_app_metrics"
-    cluster  = "posthog"           # optional, ON CLUSTER
-    comment  = "rolls metrics up"  # optional
+    to_table = "posthog.sharded_app_metrics"
+    query    = "SELECT team_id, category FROM posthog.kafka_app_metrics"
 
     column "team_id"  { type = "Int64" }
     column "category" { type = "LowCardinality(String)" }
@@ -240,22 +238,25 @@ database "posthog" {
 }
 ```
 
-- `to_table` (required) — destination table, optionally `db.`-qualified
-- `query` (required) — the `AS SELECT ...` body
-- `column` blocks — explicit column list (optional; `type` only)
-- A changed `query` diffs to `ALTER TABLE ... MODIFY QUERY`; a changed
-  `to_table` or column list is flagged **unsafe** (requires recreating the
-  view).
-- Materialized views do **not** participate in table inheritance
-  (`extend` / `abstract` / `patch_table`).
+| Attribute  | Required | Meaning |
+|------------|----------|---------|
+| `to_table` | yes      | destination table the MV writes into (`TO <db.>table`) |
+| `query`    | yes      | the `AS SELECT ...` body |
+| `column`   | yes      | the destination column list (name + type) |
+| `cluster`  | no       | `ON CLUSTER` target |
+| `comment`  | no       | view comment |
 
-**Out of scope** — these are rejected with a clear error during
-introspection rather than silently mishandled:
+`hclexp diff` reports a changed `query` as an in-place `ALTER TABLE ...
+MODIFY QUERY`; a changed `to_table` or column list is flagged unsafe
+because it needs the view dropped and recreated.
+
+**Not supported.** These fail introspection with a clear error rather than
+being silently mishandled:
 
 - inner-engine materialized views (`CREATE MATERIALIZED VIEW ... ENGINE = ...`)
 - refreshable materialized views (`REFRESH EVERY|AFTER ...`)
 - window views
-- plain (non-materialized) views — skipped during introspection
+- plain (non-materialized) views — skipped during introspection for now
 
 ## Layering & inheritance
 
