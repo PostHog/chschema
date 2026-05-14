@@ -240,6 +240,101 @@ SETTINGS kafka_broker_list = 'kafka:9092', kafka_topic_list = 'events', kafka_gr
 	}, got.Settings)
 }
 
+func TestBuildMaterializedViewFromCreateSQL_ToForm(t *testing.T) {
+	src := `CREATE MATERIALIZED VIEW db.app_metrics_mv TO db.sharded_app_metrics ` +
+		"(`team_id` Int64, `category` LowCardinality(String)) " +
+		`AS SELECT team_id, category FROM db.kafka_app_metrics`
+
+	got, err := buildMaterializedViewFromCreateSQL(src)
+	require.NoError(t, err)
+
+	assert.Equal(t, "db.sharded_app_metrics", got.ToTable)
+	assert.Equal(t, []ColumnSpec{
+		{Name: "team_id", Type: "Int64"},
+		{Name: "category", Type: "LowCardinality(String)"},
+	}, got.Columns)
+	assert.Contains(t, got.Query, "team_id")
+	assert.Contains(t, got.Query, "kafka_app_metrics")
+	assert.Nil(t, got.Cluster)
+}
+
+func TestBuildMaterializedViewFromCreateSQL_InnerEngineUnsupported(t *testing.T) {
+	src := `CREATE MATERIALIZED VIEW db.mv ENGINE = MergeTree ORDER BY id ` +
+		`AS SELECT id FROM db.src`
+	_, err := buildMaterializedViewFromCreateSQL(src)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported")
+	assert.Contains(t, err.Error(), "inner-engine")
+}
+
+func TestBuildMaterializedViewFromCreateSQL_RefreshableUnsupported(t *testing.T) {
+	src := `CREATE MATERIALIZED VIEW db.mv REFRESH EVERY 1 HOUR TO db.target ` +
+		`AS SELECT id FROM db.src`
+	_, err := buildMaterializedViewFromCreateSQL(src)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported")
+	assert.Contains(t, err.Error(), "refreshable")
+}
+
+// fakeRows is a minimal rowScanner backed by a slice of (name, createSQL)
+// pairs, used to test processIntrospectRows without a live ClickHouse.
+type fakeRows struct {
+	rows []struct{ name, sql string }
+	pos  int
+}
+
+func (r *fakeRows) Next() bool {
+	r.pos++
+	return r.pos <= len(r.rows)
+}
+
+func (r *fakeRows) Scan(dest ...any) error {
+	row := r.rows[r.pos-1]
+	*dest[0].(*string) = row.name
+	*dest[1].(*string) = row.sql
+	return nil
+}
+
+func (r *fakeRows) Err() error { return nil }
+
+// TestProcessIntrospectRows_Dispatch exercises the statement-type dispatch in
+// processIntrospectRows: a CREATE TABLE, a CREATE MATERIALIZED VIEW (TO form),
+// and a plain CREATE VIEW must all be processed in one call without error, and
+// each must land in the correct collection (or be silently skipped for views).
+func TestProcessIntrospectRows_Dispatch(t *testing.T) {
+	rows := &fakeRows{rows: []struct{ name, sql string }{
+		{
+			name: "events",
+			sql: `CREATE TABLE db.events (` +
+				"`id` UInt64" +
+				`) ENGINE = MergeTree ORDER BY id`,
+		},
+		{
+			name: "metrics_mv",
+			sql: `CREATE MATERIALIZED VIEW db.metrics_mv TO db.metrics ` +
+				"(`team_id` Int64) " +
+				`AS SELECT team_id FROM db.events`,
+		},
+		{
+			name: "events_view",
+			sql:  `CREATE VIEW db.events_view AS SELECT id FROM db.events`,
+		},
+	}}
+
+	db := &DatabaseSpec{Name: "db"}
+	err := processIntrospectRows(db, "db", rows)
+	require.NoError(t, err)
+
+	// One table, one MV; the plain view is silently skipped.
+	require.Len(t, db.Tables, 1, "expected exactly one table")
+	assert.Equal(t, "events", db.Tables[0].Name)
+
+	require.Len(t, db.MaterializedViews, 1, "expected exactly one materialized view")
+	assert.Equal(t, "metrics_mv", db.MaterializedViews[0].Name)
+	assert.Equal(t, "db.metrics", db.MaterializedViews[0].ToTable)
+	assert.Contains(t, db.MaterializedViews[0].Query, "team_id")
+}
+
 func TestParseCodecExpression(t *testing.T) {
 	ptr := func(s string) *string { return &s }
 	cases := []struct {
