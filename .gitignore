@@ -15,3 +15,6 @@
 .idea/
 /schema-dump/
 /clickhouse-docs
+
+# Test-run scratch output
+test/dump/dumper_test*/
