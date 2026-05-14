@@ -17,6 +17,30 @@ type DatabaseChange struct {
 	AddTables   []TableSpec // emitted via CREATE TABLE
 	DropTables  []string    // emitted via DROP TABLE
 	AlterTables []TableDiff
+
+	AddMaterializedViews   []MaterializedViewSpec // emitted via CREATE MATERIALIZED VIEW
+	DropMaterializedViews  []string               // emitted via DROP VIEW
+	AlterMaterializedViews []MaterializedViewDiff
+}
+
+// MaterializedViewDiff is the set of mutations to a single existing
+// materialized view. A query-only change is applied in place via
+// ALTER TABLE ... MODIFY QUERY; any structural change (to_table or the
+// column list) requires recreating the view and is flagged unsafe.
+type MaterializedViewDiff struct {
+	Name        string
+	QueryChange *StringChange // the AS SELECT body changed
+	Recreate    bool          // to_table or the column list changed
+}
+
+func (mvd MaterializedViewDiff) IsEmpty() bool {
+	return mvd.QueryChange == nil && !mvd.Recreate
+}
+
+// IsUnsafe reports whether the diff requires recreating the view (ClickHouse
+// can't change a materialized view's destination or columns in place).
+func (mvd MaterializedViewDiff) IsUnsafe() bool {
+	return mvd.Recreate
 }
 
 // TableDiff is the set of mutations to a single existing table. Any unset
@@ -91,7 +115,9 @@ func (cs ChangeSet) IsEmpty() bool {
 }
 
 func (dc DatabaseChange) IsEmpty() bool {
-	return len(dc.AddTables) == 0 && len(dc.DropTables) == 0 && len(dc.AlterTables) == 0
+	return len(dc.AddTables) == 0 && len(dc.DropTables) == 0 && len(dc.AlterTables) == 0 &&
+		len(dc.AddMaterializedViews) == 0 && len(dc.DropMaterializedViews) == 0 &&
+		len(dc.AlterMaterializedViews) == 0
 }
 
 func (td TableDiff) IsEmpty() bool {
@@ -127,11 +153,18 @@ func Diff(from, to []DatabaseSpec) ChangeSet {
 		var dc DatabaseChange
 		switch {
 		case !fOK:
-			dc = DatabaseChange{Database: name, AddTables: append([]TableSpec(nil), t.Tables...)}
+			dc = DatabaseChange{
+				Database:             name,
+				AddTables:            append([]TableSpec(nil), t.Tables...),
+				AddMaterializedViews: append([]MaterializedViewSpec(nil), t.MaterializedViews...),
+			}
 		case !tOK:
 			dc = DatabaseChange{Database: name}
 			for _, tbl := range f.Tables {
 				dc.DropTables = append(dc.DropTables, tbl.Name)
+			}
+			for _, mv := range f.MaterializedViews {
+				dc.DropMaterializedViews = append(dc.DropMaterializedViews, mv.Name)
 			}
 		default:
 			dc = diffDatabase(name, f, t)
@@ -195,7 +228,56 @@ func diffDatabase(name string, from, to *DatabaseSpec) DatabaseChange {
 			dc.AlterTables = append(dc.AlterTables, td)
 		}
 	}
+
+	fromMVs := indexMaterializedViews(from.MaterializedViews)
+	toMVs := indexMaterializedViews(to.MaterializedViews)
+	for _, n := range sortedKeys(toMVs) {
+		if _, ok := fromMVs[n]; !ok {
+			dc.AddMaterializedViews = append(dc.AddMaterializedViews, *toMVs[n])
+		}
+	}
+	for _, n := range sortedKeys(fromMVs) {
+		if _, ok := toMVs[n]; !ok {
+			dc.DropMaterializedViews = append(dc.DropMaterializedViews, n)
+		}
+	}
+	for _, n := range sortedKeys(fromMVs) {
+		t, ok := toMVs[n]
+		if !ok {
+			continue
+		}
+		mvd := diffMaterializedView(fromMVs[n], t)
+		if !mvd.IsEmpty() {
+			dc.AlterMaterializedViews = append(dc.AlterMaterializedViews, mvd)
+		}
+	}
 	return dc
+}
+
+func indexMaterializedViews(mvs []MaterializedViewSpec) map[string]*MaterializedViewSpec {
+	out := make(map[string]*MaterializedViewSpec, len(mvs))
+	for i := range mvs {
+		out[mvs[i].Name] = &mvs[i]
+	}
+	return out
+}
+
+// diffMaterializedView compares two materialized views with the same name. A
+// changed to_table or column list can't be applied in place, so it sets
+// Recreate; an otherwise-identical view with a changed query yields a
+// QueryChange that maps to ALTER TABLE ... MODIFY QUERY. Recreate supersedes
+// QueryChange — the two are mutually exclusive.
+func diffMaterializedView(from, to *MaterializedViewSpec) MaterializedViewDiff {
+	mvd := MaterializedViewDiff{Name: to.Name}
+	if from.ToTable != to.ToTable || !reflect.DeepEqual(from.Columns, to.Columns) {
+		mvd.Recreate = true
+		return mvd
+	}
+	if from.Query != to.Query {
+		q1, q2 := from.Query, to.Query
+		mvd.QueryChange = &StringChange{Old: &q1, New: &q2}
+	}
+	return mvd
 }
 
 func indexTables(tables []TableSpec) map[string]*TableSpec {
@@ -392,4 +474,11 @@ func sortDatabaseChange(dc *DatabaseChange) {
 	sort.Slice(dc.AddTables, func(i, j int) bool { return dc.AddTables[i].Name < dc.AddTables[j].Name })
 	sort.Strings(dc.DropTables)
 	sort.Slice(dc.AlterTables, func(i, j int) bool { return dc.AlterTables[i].Table < dc.AlterTables[j].Table })
+	sort.Slice(dc.AddMaterializedViews, func(i, j int) bool {
+		return dc.AddMaterializedViews[i].Name < dc.AddMaterializedViews[j].Name
+	})
+	sort.Strings(dc.DropMaterializedViews)
+	sort.Slice(dc.AlterMaterializedViews, func(i, j int) bool {
+		return dc.AlterMaterializedViews[i].Name < dc.AlterMaterializedViews[j].Name
+	})
 }
