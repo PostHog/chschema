@@ -1,9 +1,11 @@
 package hcl
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestSQLGen_EmptyChangeSet(t *testing.T) {
@@ -95,7 +97,7 @@ func TestSQLGen_CreateKafkaFoldsSettings(t *testing.T) {
 
 func TestSQLGen_DropTable(t *testing.T) {
 	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
-		{Database: "posthog", DropTables: []string{"old_events"}},
+		{Database: "posthog", DropTables: []TableSpec{{Name: "old_events"}}},
 	}})
 	assert.Equal(t, []string{"DROP TABLE posthog.old_events"}, out.Statements)
 }
@@ -185,7 +187,7 @@ func TestSQLGen_StatementOrderingCreateAlterDrop(t *testing.T) {
 			Database:    "posthog",
 			AddTables:   []TableSpec{createTbl},
 			AlterTables: []TableDiff{td},
-			DropTables:  []string{"drop_me"},
+			DropTables:  []TableSpec{{Name: "drop_me"}},
 		},
 	}})
 
@@ -292,7 +294,7 @@ func TestSQLGen_StatementOrderingWithMaterializedViews(t *testing.T) {
 				{Name: "alter_mv", QueryChange: &StringChange{New: ptr("SELECT 1")}},
 			},
 			DropMaterializedViews: []string{"drop_mv"},
-			DropTables:            []string{"drop_table"},
+			DropTables:            []TableSpec{{Name: "drop_table"}},
 		},
 	}})
 	require := assert.New(t)
@@ -317,4 +319,69 @@ func TestSQLGen_EndToEndDiffToSQL(t *testing.T) {
 	out := GenerateSQL(cs)
 
 	assert.Equal(t, []string{"ALTER TABLE posthog.events ADD COLUMN ts DateTime"}, out.Statements)
+}
+
+// stmtIndex returns the index of the first statement containing substr, or -1.
+func stmtIndex(stmts []string, substr string) int {
+	for i, s := range stmts {
+		if strings.Contains(s, substr) {
+			return i
+		}
+	}
+	return -1
+}
+
+func TestSQLGen_CreateOrdersDistributedAfterRemote(t *testing.T) {
+	// The Distributed table is listed first; GenerateSQL must still emit the
+	// local table it forwards to before it.
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		AddTables: []TableSpec{
+			mkDistTable("events_dist", "posthog", "events_local"),
+			mkTable("events_local", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"}),
+		},
+	}}})
+
+	local := stmtIndex(out.Statements, "CREATE TABLE posthog.events_local")
+	dist := stmtIndex(out.Statements, "CREATE TABLE posthog.events_dist")
+	require.NotEqual(t, -1, local)
+	require.NotEqual(t, -1, dist)
+	assert.Less(t, local, dist, "remote table must be created before the Distributed table")
+}
+
+func TestSQLGen_DropOrdersDistributedBeforeRemote(t *testing.T) {
+	// The local table is listed first; GenerateSQL must still drop the
+	// Distributed table that forwards to it before dropping the local table.
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		DropTables: []TableSpec{
+			mkTable("events_local", EngineMergeTree{}),
+			mkDistTable("events_dist", "posthog", "events_local"),
+		},
+	}}})
+
+	dist := stmtIndex(out.Statements, "DROP TABLE posthog.events_dist")
+	local := stmtIndex(out.Statements, "DROP TABLE posthog.events_local")
+	require.NotEqual(t, -1, dist)
+	require.NotEqual(t, -1, local)
+	assert.Less(t, dist, local, "Distributed table must be dropped before its remote table")
+}
+
+func TestSQLGen_OrderingAcrossDatabases(t *testing.T) {
+	// A Distributed table can forward to a table in another database; the
+	// ordering must hold across the whole ChangeSet, not just per-database.
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{
+			Database:  "edge",
+			AddTables: []TableSpec{mkDistTable("events_dist", "core", "events_local")},
+		},
+		{
+			Database:  "core",
+			AddTables: []TableSpec{mkTable("events_local", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"})},
+		},
+	}})
+
+	local := stmtIndex(out.Statements, "CREATE TABLE core.events_local")
+	dist := stmtIndex(out.Statements, "CREATE TABLE edge.events_dist")
+	assert.Less(t, local, dist)
 }

@@ -26,9 +26,47 @@ func main() {
 		case "diff":
 			runDiff(os.Args[2:])
 			return
+		case "validate":
+			runValidate(os.Args[2:])
+			return
 		}
 	}
 	runLoad(os.Args[1:])
+}
+
+// runValidate loads an HCL config (single file or layers), resolves it, and
+// checks that every materialized view's source/destination tables and every
+// Distributed table's remote table are declared in the loaded schema. It
+// exits non-zero when any dependency is unsatisfied. The -skip-validation
+// flag takes a comma-separated list of dependent object names (or "*" for
+// all) whose dependency checks should be skipped.
+func runValidate(args []string) {
+	fs := flag.NewFlagSet("hclexp validate", flag.ExitOnError)
+	configFlag := fs.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
+	layersFlag := fs.String("layer", "", "comma-separated list of layer directories (loaded in order)")
+	skipFlag := fs.String("skip-validation", "", "comma-separated dependent object names to skip, or \"*\" for all")
+	_ = fs.Parse(args)
+
+	dbs, err := load(*configFlag, *layersFlag)
+	if err != nil {
+		slog.Error("failed to load config", "err", err)
+		os.Exit(1)
+	}
+	if err := hclload.Resolve(dbs); err != nil {
+		slog.Error("failed to resolve schema", "err", err)
+		os.Exit(1)
+	}
+
+	errs := hclload.Validate(dbs, hclload.ParseSkipSet(*skipFlag))
+	if len(errs) > 0 {
+		for _, e := range errs {
+			fmt.Fprintf(os.Stderr, "validation error: %s\n", e.Error())
+		}
+		slog.Error("schema validation failed", "errors", len(errs))
+		os.Exit(1)
+	}
+
+	slog.Info("schema validation passed", "databases", len(dbs))
 }
 
 // runLoad loads an HCL config (single file or layers), resolves it, and
@@ -281,8 +319,8 @@ func renderChangeSet(w io.Writer, cs hclload.ChangeSet) {
 		for _, t := range dc.AddTables {
 			fmt.Fprintf(w, "  + table %s\n", t.Name)
 		}
-		for _, name := range dc.DropTables {
-			fmt.Fprintf(w, "  - table %s\n", name)
+		for _, t := range dc.DropTables {
+			fmt.Fprintf(w, "  - table %s\n", t.Name)
 		}
 		for _, td := range dc.AlterTables {
 			fmt.Fprintf(w, "  ~ table %s\n", td.Table)

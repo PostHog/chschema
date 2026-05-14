@@ -15,7 +15,7 @@ type ChangeSet struct {
 type DatabaseChange struct {
 	Database    string
 	AddTables   []TableSpec // emitted via CREATE TABLE
-	DropTables  []string    // emitted via DROP TABLE
+	DropTables  []TableSpec // emitted via DROP TABLE
 	AlterTables []TableDiff
 
 	AddMaterializedViews   []MaterializedViewSpec // emitted via CREATE MATERIALIZED VIEW
@@ -161,7 +161,7 @@ func Diff(from, to []DatabaseSpec) ChangeSet {
 		case !tOK:
 			dc = DatabaseChange{Database: name}
 			for _, tbl := range f.Tables {
-				dc.DropTables = append(dc.DropTables, tbl.Name)
+				dc.DropTables = append(dc.DropTables, tbl)
 			}
 			for _, mv := range f.MaterializedViews {
 				dc.DropMaterializedViews = append(dc.DropMaterializedViews, mv.Name)
@@ -215,7 +215,7 @@ func diffDatabase(name string, from, to *DatabaseSpec) DatabaseChange {
 	}
 	for _, n := range sortedKeys(fromTables) {
 		if _, ok := toTables[n]; !ok {
-			dc.DropTables = append(dc.DropTables, n)
+			dc.DropTables = append(dc.DropTables, *fromTables[n])
 		}
 	}
 	for _, n := range sortedKeys(fromTables) {
@@ -472,7 +472,7 @@ func diffSettings(from, to map[string]string) (added map[string]string, removed 
 
 func sortDatabaseChange(dc *DatabaseChange) {
 	sort.Slice(dc.AddTables, func(i, j int) bool { return dc.AddTables[i].Name < dc.AddTables[j].Name })
-	sort.Strings(dc.DropTables)
+	sort.Slice(dc.DropTables, func(i, j int) bool { return dc.DropTables[i].Name < dc.DropTables[j].Name })
 	sort.Slice(dc.AlterTables, func(i, j int) bool { return dc.AlterTables[i].Table < dc.AlterTables[j].Table })
 	sort.Slice(dc.AddMaterializedViews, func(i, j int) bool {
 		return dc.AddMaterializedViews[i].Name < dc.AddMaterializedViews[j].Name

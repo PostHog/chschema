@@ -28,15 +28,16 @@ type UnsafeChange struct {
 // GenerateSQL turns a ChangeSet into ClickHouse DDL. Statements are ordered:
 // CREATE TABLE, CREATE MATERIALIZED VIEW, ALTER TABLE, ALTER ... MODIFY QUERY,
 // DROP VIEW, DROP TABLE — so materialized views are created after their
-// destination table and dropped before it. Unsafe changes (engine swap,
-// ORDER BY change, materialized view recreation, etc.) are collected into
-// Unsafe; the generator does not synthesize a recreate-and-swap procedure.
+// destination table and dropped before it. Within the CREATE TABLE phase,
+// tables are ordered by dependency so a Distributed table comes after the
+// local table it forwards to; the DROP TABLE phase uses the reverse order.
+// Unsafe changes (engine swap, ORDER BY change, materialized view recreation,
+// etc.) are collected into Unsafe; the generator does not synthesize a
+// recreate-and-swap procedure.
 func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	var out GeneratedSQL
-	for _, dc := range cs.Databases {
-		for _, t := range dc.AddTables {
-			out.Statements = append(out.Statements, createTableSQL(dc.Database, t))
-		}
+	for _, dt := range orderTablesByDependency(gatherTables(cs, addTablesOf), false) {
+		out.Statements = append(out.Statements, createTableSQL(dt.Database, dt.Table))
 	}
 	for _, dc := range cs.Databases {
 		for _, mv := range dc.AddMaterializedViews {
@@ -72,9 +73,95 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 			out.Statements = append(out.Statements, dropViewSQL(dc.Database, name))
 		}
 	}
+	for _, dt := range orderTablesByDependency(gatherTables(cs, dropTablesOf), true) {
+		out.Statements = append(out.Statements, dropTableSQL(dt.Database, dt.Table.Name))
+	}
+	return out
+}
+
+// dbTable pairs a table with its database, so a flat slice can carry tables
+// drawn from every database in a ChangeSet.
+type dbTable struct {
+	Database string
+	Table    TableSpec
+}
+
+func addTablesOf(dc DatabaseChange) []TableSpec  { return dc.AddTables }
+func dropTablesOf(dc DatabaseChange) []TableSpec { return dc.DropTables }
+
+// gatherTables flattens one table collection (adds or drops) across every
+// database in the ChangeSet into a single ordered slice.
+func gatherTables(cs ChangeSet, pick func(DatabaseChange) []TableSpec) []dbTable {
+	var out []dbTable
 	for _, dc := range cs.Databases {
-		for _, name := range dc.DropTables {
-			out.Statements = append(out.Statements, dropTableSQL(dc.Database, name))
+		for _, t := range pick(dc) {
+			out = append(out, dbTable{Database: dc.Database, Table: t})
+		}
+	}
+	return out
+}
+
+// orderTablesByDependency orders tables so a Distributed table comes after the
+// local table it forwards to, when that table is part of the same set.
+// Dependencies on tables outside the set impose no constraint. When reverse is
+// true the order is flipped, so dependents come before their dependencies —
+// used for DROP statements. Tables in a dependency cycle keep their input
+// order. The sort is otherwise stable.
+func orderTablesByDependency(tables []dbTable, reverse bool) []dbTable {
+	index := make(map[ObjectRef]int, len(tables))
+	for i, dt := range tables {
+		index[ObjectRef{Database: dt.Database, Name: dt.Table.Name}] = i
+	}
+
+	indegree := make([]int, len(tables))     // count of unresolved dependencies
+	dependents := make([][]int, len(tables)) // dependents[j] = tables that depend on j
+	for i, dt := range tables {
+		if dt.Table.Engine == nil {
+			continue
+		}
+		dist, ok := dt.Table.Engine.Decoded.(EngineDistributed)
+		if !ok {
+			continue
+		}
+		remote := ObjectRef{Database: dist.RemoteDatabase, Name: dist.RemoteTable}
+		if j, ok := index[remote]; ok && j != i {
+			indegree[i]++
+			dependents[j] = append(dependents[j], i)
+		}
+	}
+
+	// Kahn's algorithm; ready nodes are emitted in input order for stability.
+	done := make([]bool, len(tables))
+	order := make([]int, 0, len(tables))
+	for len(order) < len(tables) {
+		progressed := false
+		for i := range tables {
+			if done[i] || indegree[i] != 0 {
+				continue
+			}
+			order = append(order, i)
+			done[i] = true
+			progressed = true
+			for _, d := range dependents[i] {
+				indegree[d]--
+			}
+		}
+		if !progressed { // dependency cycle: emit the rest in input order
+			for i := range tables {
+				if !done[i] {
+					order = append(order, i)
+					done[i] = true
+				}
+			}
+		}
+	}
+
+	out := make([]dbTable, len(tables))
+	for pos, i := range order {
+		if reverse {
+			out[len(out)-1-pos] = tables[i]
+		} else {
+			out[pos] = tables[i]
 		}
 	}
 	return out

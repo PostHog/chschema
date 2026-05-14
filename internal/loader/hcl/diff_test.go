@@ -50,7 +50,7 @@ func TestDiff_DropTable(t *testing.T) {
 	cs := Diff(from, to)
 	expected := ChangeSet{
 		Databases: []DatabaseChange{
-			{Database: "posthog", DropTables: []string{"events"}},
+			{Database: "posthog", DropTables: []TableSpec{mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"})}},
 		},
 	}
 	assert.Equal(t, expected, cs)
@@ -227,7 +227,10 @@ func TestDiff_DroppedDatabaseDropsAllTables(t *testing.T) {
 	cs := Diff(from, to)
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
-	assert.ElementsMatch(t, []string{"a", "b"}, cs.Databases[0].DropTables)
+	assert.ElementsMatch(t, []TableSpec{
+		mkTable("a", EngineMergeTree{}),
+		mkTable("b", EngineMergeTree{}),
+	}, cs.Databases[0].DropTables)
 }
 
 func TestDiff_RenameColumn(t *testing.T) {

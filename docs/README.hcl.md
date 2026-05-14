@@ -190,3 +190,31 @@ When the loader processes a layered set, this pipeline runs:
 | Two tables share most columns; different engines  | `extend` + `abstract` parent |
 | Add a column to the same table in one environment | `patch_table`  |
 | Replace a table entirely in one environment       | `override = true` |
+
+## Dependency validation — `hclexp validate`
+
+Some objects can only be created after the objects they reference exist:
+
+- A **`materialized_view`** reads from a source table (named in its `query`)
+  and writes into its `to_table` destination. Both must exist first.
+- A **`distributed`-engine table** forwards to the table named by
+  `remote_database` / `remote_table`, which must exist first.
+
+`hclexp validate -config <file>` (or `-layer <dirs>`) resolves the schema and
+checks every such dependency. A missing reference — or a reference into a
+database that wasn't loaded — fails with a non-zero exit code. The MV `query`
+is parsed to discover its source tables; `WITH ... AS` CTE names are not
+treated as table references.
+
+To bypass the check for specific objects, pass `-skip-validation` a
+comma-separated list of the **dependent** object names (the MV or Distributed
+table), or `*` to skip everything:
+
+```sh
+hclexp validate -config schema.hcl -skip-validation=events_mv,events_dist
+hclexp validate -config schema.hcl -skip-validation='*'
+```
+
+`hclexp diff -sql` applies the same dependency knowledge to ordering: within
+the generated DDL, a table is created before any Distributed table that
+forwards to it, and dropped after it.
