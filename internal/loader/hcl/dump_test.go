@@ -60,6 +60,38 @@ func TestWrite_RoundTrip_FullTable(t *testing.T) {
 	roundTrip(t, filepath.Join("testdata", "dump_round_trip_full.hcl"))
 }
 
+func TestWrite_RoundTrip_MaterializedView(t *testing.T) {
+	roundTrip(t, filepath.Join("testdata", "materialized_view.hcl"))
+}
+
+func TestWrite_MaterializedViewRoundTrip(t *testing.T) {
+	in := []DatabaseSpec{
+		{
+			Name: "posthog",
+			MaterializedViews: []MaterializedViewSpec{
+				{
+					Name:    "app_metrics_mv",
+					ToTable: "default.sharded_app_metrics",
+					Query:   "SELECT team_id, category FROM default.kafka_app_metrics",
+					Cluster: ptr("posthog"),
+					Comment: ptr("rolls metrics up"),
+					Columns: []ColumnSpec{
+						{Name: "team_id", Type: "Int64"},
+						{Name: "category", Type: "LowCardinality(String)"},
+					},
+				},
+			},
+		},
+	}
+	var buf bytes.Buffer
+	require.NoError(t, Write(&buf, in))
+	path := filepath.Join(t.TempDir(), "dump.hcl")
+	require.NoError(t, os.WriteFile(path, buf.Bytes(), 0o600))
+	out, err := ParseFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, in, out)
+}
+
 func TestWrite_OutputIsStable(t *testing.T) {
 	dbs, err := ParseFile(filepath.Join("testdata", "resolve_basic.hcl"))
 	require.NoError(t, err)
