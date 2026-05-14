@@ -107,6 +107,41 @@ database "posthog" {
 	require.True(t, hclload.Diff(leftDBs, leftDBs).IsEmpty())
 }
 
+func TestRunDiff_SelfDiffEmpty(t *testing.T) {
+	path := writeTemp(t, "schema.hcl", `
+database "posthog" {
+  table "events" {
+    order_by     = ["timestamp", "team_id"]
+    partition_by = "toYYYYMM(timestamp)"
+    settings = { index_granularity = "8192" }
+    column "timestamp" { type = "DateTime" }
+    column "team_id"   { type = "UInt64" }
+    column "event"     { type = "String" }
+    index "idx_team" {
+      expr        = "team_id"
+      type        = "minmax"
+      granularity = 4
+    }
+    engine "replicated_merge_tree" {
+      zoo_path     = "/clickhouse/tables/{shard}/events"
+      replica_name = "{replica}"
+    }
+  }
+}`)
+
+	left, err := loadSide(path)
+	require.NoError(t, err)
+	right, err := loadSide(path)
+	require.NoError(t, err)
+
+	cs := hclload.Diff(left, right)
+	require.True(t, cs.IsEmpty(), "diffing a file with itself must produce no changes")
+
+	var buf bytes.Buffer
+	renderChangeSet(&buf, cs)
+	require.Empty(t, buf.String())
+}
+
 func writeTemp(t *testing.T, name, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
