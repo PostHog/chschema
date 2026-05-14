@@ -142,9 +142,42 @@ database "posthog" {
 	require.Empty(t, buf.String())
 }
 
+func TestRenderChangeSet_MaterializedViews(t *testing.T) {
+	cs := hclload.ChangeSet{
+		Databases: []hclload.DatabaseChange{
+			{
+				Database: "posthog",
+				AddMaterializedViews: []hclload.MaterializedViewSpec{
+					{Name: "mv_events", ToTable: "events_agg"},
+				},
+				DropMaterializedViews: []string{"mv_old"},
+				AlterMaterializedViews: []hclload.MaterializedViewDiff{
+					{Name: "mv_rebuild", Recreate: true},
+					{Name: "mv_query_update", QueryChange: &hclload.StringChange{Old: ptrStr("SELECT 1"), New: ptrStr("SELECT 2")}},
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	renderChangeSet(&buf, cs)
+
+	want := `database "posthog"
+  + materialized_view mv_events -> events_agg
+  - materialized_view mv_old
+  ~ materialized_view mv_rebuild
+      ! requires recreation (to_table or columns changed)
+  ~ materialized_view mv_query_update
+      ~ query changed
+`
+	require.Equal(t, want, buf.String())
+}
+
 func writeTemp(t *testing.T, name, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
 	return path
 }
+
+func ptrStr(s string) *string { return &s }
