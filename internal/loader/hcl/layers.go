@@ -83,5 +83,17 @@ func mergeIntoDatabase(target *DatabaseSpec, incoming DatabaseSpec) error {
 		}
 	}
 	target.Patches = append(target.Patches, incoming.Patches...)
+
+	mvByName := make(map[string]bool, len(target.MaterializedViews))
+	for _, mv := range target.MaterializedViews {
+		mvByName[mv.Name] = true
+	}
+	for _, mv := range incoming.MaterializedViews {
+		if mvByName[mv.Name] {
+			return fmt.Errorf("materialized_view %q redeclared across layers", mv.Name)
+		}
+		mvByName[mv.Name] = true
+		target.MaterializedViews = append(target.MaterializedViews, mv)
+	}
 	return nil
 }

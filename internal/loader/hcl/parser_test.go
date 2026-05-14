@@ -94,3 +94,28 @@ func TestParseFile_UnknownAttribute(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "not_a_real_attr")
 }
+
+func TestParseFile_MaterializedView(t *testing.T) {
+	dbs, err := ParseFile(filepath.Join("testdata", "materialized_view.hcl"))
+	require.NoError(t, err)
+
+	expected := []DatabaseSpec{
+		{
+			Name: "posthog",
+			MaterializedViews: []MaterializedViewSpec{
+				{
+					Name:    "app_metrics_mv",
+					ToTable: "default.sharded_app_metrics",
+					Query:   "SELECT team_id, category FROM default.kafka_app_metrics",
+					Cluster: ptr("posthog"),
+					Comment: ptr("rolls metrics up"),
+					Columns: []ColumnSpec{
+						{Name: "team_id", Type: "Int64"},
+						{Name: "category", Type: "LowCardinality(String)"},
+					},
+				},
+			},
+		},
+	}
+	assert.Equal(t, expected, dbs)
+}
