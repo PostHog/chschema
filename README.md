@@ -220,6 +220,44 @@ attributes:
 | `log`                               | — |
 | `kafka`                             | `broker_list`, `topic`, `consumer_group`, `format` |
 
+### Materialized views
+
+A `materialized_view` block declares a **TO-form** materialized view — it
+continuously transforms inserts and writes the result into a separate
+destination table.
+
+```hcl
+database "posthog" {
+  materialized_view "app_metrics_mv" {
+    to_table = "posthog.sharded_app_metrics"
+    query    = "SELECT team_id, category FROM posthog.kafka_app_metrics"
+
+    column "team_id"  { type = "Int64" }
+    column "category" { type = "LowCardinality(String)" }
+  }
+}
+```
+
+| Attribute  | Required | Meaning |
+|------------|----------|---------|
+| `to_table` | yes      | destination table the MV writes into (`TO <db.>table`) |
+| `query`    | yes      | the `AS SELECT ...` body |
+| `column`   | yes      | the destination column list (name + type) |
+| `cluster`  | no       | `ON CLUSTER` target |
+| `comment`  | no       | view comment |
+
+`hclexp diff` reports a changed `query` as an in-place `ALTER TABLE ...
+MODIFY QUERY`; a changed `to_table` or column list is flagged unsafe
+because it needs the view dropped and recreated.
+
+**Not supported.** These fail introspection with a clear error rather than
+being silently mishandled:
+
+- inner-engine materialized views (`CREATE MATERIALIZED VIEW ... ENGINE = ...`)
+- refreshable materialized views (`REFRESH EVERY|AFTER ...`)
+- window views
+- plain (non-materialized) views — skipped during introspection for now
+
 ## Layering & inheritance
 
 Layers let a base schema be specialized per environment. `-layer a,b,c`

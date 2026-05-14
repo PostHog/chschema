@@ -321,6 +321,152 @@ func TestSQLGen_RenameColumn(t *testing.T) {
 	assert.Equal(t, []string{expected}, out.Statements)
 }
 
+func mkMV(name, toTable, query string) MaterializedViewSpec {
+	return MaterializedViewSpec{Name: name, ToTable: toTable, Query: query}
+}
+
+func mkDBWithMVs(name string, mvs ...MaterializedViewSpec) DatabaseSpec {
+	return DatabaseSpec{Name: name, MaterializedViews: mvs}
+}
+
+func TestDiff_AddMaterializedView(t *testing.T) {
+	from := []DatabaseSpec{mkDB("posthog")}
+	mv := mkMV("metrics_mv", "default.metrics", "SELECT id FROM default.src")
+	to := []DatabaseSpec{mkDBWithMVs("posthog", mv)}
+
+	cs := Diff(from, to)
+	expected := ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", AddMaterializedViews: []MaterializedViewSpec{mv}},
+	}}
+	assert.Equal(t, expected, cs)
+}
+
+func TestDiff_DropMaterializedView(t *testing.T) {
+	from := []DatabaseSpec{mkDBWithMVs("posthog", mkMV("metrics_mv", "default.metrics", "SELECT id FROM default.src"))}
+	to := []DatabaseSpec{mkDB("posthog")}
+
+	cs := Diff(from, to)
+	expected := ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", DropMaterializedViews: []string{"metrics_mv"}},
+	}}
+	assert.Equal(t, expected, cs)
+}
+
+func TestDiff_AlterMaterializedViewQueryOnly(t *testing.T) {
+	from := []DatabaseSpec{mkDBWithMVs("posthog", mkMV("metrics_mv", "default.metrics", "SELECT id FROM default.src"))}
+	to := []DatabaseSpec{mkDBWithMVs("posthog", mkMV("metrics_mv", "default.metrics", "SELECT id, ts FROM default.src"))}
+
+	cs := Diff(from, to)
+	require := assert.New(t)
+	require.Len(cs.Databases, 1)
+	require.Len(cs.Databases[0].AlterMaterializedViews, 1)
+	mvd := cs.Databases[0].AlterMaterializedViews[0]
+	assert.Equal(t, "metrics_mv", mvd.Name)
+	assert.False(t, mvd.Recreate)
+	assert.False(t, mvd.IsUnsafe())
+	assert.Equal(t, &StringChange{
+		Old: ptr("SELECT id FROM default.src"),
+		New: ptr("SELECT id, ts FROM default.src"),
+	}, mvd.QueryChange)
+}
+
+func TestDiff_AlterMaterializedViewToTableRecreate(t *testing.T) {
+	from := []DatabaseSpec{mkDBWithMVs("posthog", mkMV("metrics_mv", "default.metrics_a", "SELECT id FROM default.src"))}
+	to := []DatabaseSpec{mkDBWithMVs("posthog", mkMV("metrics_mv", "default.metrics_b", "SELECT id FROM default.src"))}
+
+	cs := Diff(from, to)
+	require := assert.New(t)
+	require.Len(cs.Databases, 1)
+	require.Len(cs.Databases[0].AlterMaterializedViews, 1)
+	mvd := cs.Databases[0].AlterMaterializedViews[0]
+	assert.True(t, mvd.Recreate)
+	assert.True(t, mvd.IsUnsafe())
+	assert.Nil(t, mvd.QueryChange)
+}
+
+func TestDiff_IdenticalMaterializedViewsEmpty(t *testing.T) {
+	mv := mkMV("metrics_mv", "default.metrics", "SELECT id FROM default.src")
+	cs := Diff(
+		[]DatabaseSpec{mkDBWithMVs("posthog", mv)},
+		[]DatabaseSpec{mkDBWithMVs("posthog", mv)},
+	)
+	assert.True(t, cs.IsEmpty())
+}
+
+func TestMaterializedViewDiff_IsEmptyIsUnsafe(t *testing.T) {
+	// Empty diff: no change at all.
+	empty := MaterializedViewDiff{Name: "mv"}
+	assert.True(t, empty.IsEmpty())
+	assert.False(t, empty.IsUnsafe())
+
+	// Query-only diff: not empty, not unsafe.
+	qOnly := MaterializedViewDiff{
+		Name:        "mv",
+		QueryChange: &StringChange{Old: ptr("SELECT 1"), New: ptr("SELECT 2")},
+	}
+	assert.False(t, qOnly.IsEmpty())
+	assert.False(t, qOnly.IsUnsafe())
+
+	// Recreate diff: not empty, unsafe.
+	recreate := MaterializedViewDiff{Name: "mv", Recreate: true}
+	assert.False(t, recreate.IsEmpty())
+	assert.True(t, recreate.IsUnsafe())
+}
+
+func TestDatabaseChange_IsEmptyWithMVs(t *testing.T) {
+	// A DatabaseChange with only AddMaterializedViews is not empty.
+	dc := DatabaseChange{
+		Database:             "posthog",
+		AddMaterializedViews: []MaterializedViewSpec{mkMV("mv", "dst", "SELECT 1")},
+	}
+	assert.False(t, dc.IsEmpty())
+}
+
+func TestDiff_AlterMaterializedViewColumnListRecreate(t *testing.T) {
+	fromMV := MaterializedViewSpec{
+		Name:    "metrics_mv",
+		ToTable: "default.metrics",
+		Query:   "SELECT id FROM default.src",
+		Columns: []ColumnSpec{{Name: "id", Type: "UInt64"}},
+	}
+	toMV := MaterializedViewSpec{
+		Name:    "metrics_mv",
+		ToTable: "default.metrics",
+		Query:   "SELECT id FROM default.src",
+		Columns: []ColumnSpec{{Name: "id", Type: "UInt64"}, {Name: "ts", Type: "DateTime"}},
+	}
+
+	cs := Diff(
+		[]DatabaseSpec{{Name: "posthog", MaterializedViews: []MaterializedViewSpec{fromMV}}},
+		[]DatabaseSpec{{Name: "posthog", MaterializedViews: []MaterializedViewSpec{toMV}}},
+	)
+	require := assert.New(t)
+	require.Len(cs.Databases, 1)
+	require.Len(cs.Databases[0].AlterMaterializedViews, 1)
+	mvd := cs.Databases[0].AlterMaterializedViews[0]
+	assert.True(t, mvd.Recreate)
+	assert.True(t, mvd.IsUnsafe())
+	assert.Nil(t, mvd.QueryChange)
+}
+
+func TestDiff_AlterMaterializedViewBothToTableAndQueryRecreateOnly(t *testing.T) {
+	// When both to_table and query change, Recreate supersedes QueryChange.
+	from := []DatabaseSpec{mkDBWithMVs("posthog",
+		mkMV("metrics_mv", "default.metrics_a", "SELECT id FROM default.src"),
+	)}
+	to := []DatabaseSpec{mkDBWithMVs("posthog",
+		mkMV("metrics_mv", "default.metrics_b", "SELECT id, ts FROM default.src"),
+	)}
+
+	cs := Diff(from, to)
+	require := assert.New(t)
+	require.Len(cs.Databases, 1)
+	require.Len(cs.Databases[0].AlterMaterializedViews, 1)
+	mvd := cs.Databases[0].AlterMaterializedViews[0]
+	assert.True(t, mvd.Recreate)
+	assert.Nil(t, mvd.QueryChange, "QueryChange must be nil when Recreate is set")
+}
+
 func TestDiff_TableDiffIsUnsafe(t *testing.T) {
 	// Engine change → unsafe.
 	td := TableDiff{EngineChange: &EngineChange{Old: EngineMergeTree{}, New: EngineLog{}}}

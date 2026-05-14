@@ -11,6 +11,15 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
+// rowScanner is the minimal subset of driver.Rows used by the introspection
+// loop. Extracted so that processIntrospectRows can be tested without a live
+// ClickHouse connection.
+type rowScanner interface {
+	Next() bool
+	Scan(dest ...any) error
+	Err() error
+}
+
 // Introspect builds a DatabaseSpec from a live ClickHouse database.
 // The returned spec is "flat" — no extend/abstract/patch_table — and every
 // TableSpec has its Engine.Decoded populated. Tables and column order match
@@ -35,40 +44,85 @@ func Introspect(ctx context.Context, conn driver.Conn, database string) (*Databa
 	}
 	defer rows.Close()
 
+	if err := processIntrospectRows(db, database, rows); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows iteration error: %w", err)
+	}
+	return db, nil
+}
+
+// processIntrospectRows fills db with tables and materialized views parsed
+// from rows produced by a system.tables query. Each row must yield (name,
+// create_table_query) via Scan. Plain views (CREATE VIEW) are silently
+// skipped; inner-engine and refreshable MVs return an error.
+func processIntrospectRows(db *DatabaseSpec, database string, rows rowScanner) error {
 	for rows.Next() {
 		var name, createSQL string
 		if err := rows.Scan(&name, &createSQL); err != nil {
-			return nil, fmt.Errorf("scan system.tables: %w", err)
+			return fmt.Errorf("scan system.tables: %w", err)
 		}
-		ts, err := buildTableFromCreateSQL(createSQL)
+		stmt, err := parseCreateStatement(createSQL)
 		if err != nil {
-			return nil, fmt.Errorf("parse create_table_query for %s.%s: %w", database, name, err)
+			return fmt.Errorf("parse create_table_query for %s.%s: %w", database, name, err)
 		}
-		ts.Name = name
-		db.Tables = append(db.Tables, ts)
+		switch s := stmt.(type) {
+		case *chparser.CreateTable:
+			ts, err := buildTableFromCreateTable(s)
+			if err != nil {
+				return fmt.Errorf("introspect table %s.%s: %w", database, name, err)
+			}
+			ts.Name = name
+			db.Tables = append(db.Tables, ts)
+		case *chparser.CreateMaterializedView:
+			mv, err := buildMaterializedViewFromCreateMV(s)
+			if err != nil {
+				return fmt.Errorf("introspect materialized view %s.%s: %w", database, name, err)
+			}
+			mv.Name = name
+			db.MaterializedViews = append(db.MaterializedViews, mv)
+		case *chparser.CreateView:
+			// Plain (non-materialized) views are out of scope; skip them
+			// rather than failing the whole introspection.
+			continue
+		default:
+			return fmt.Errorf("introspect %s.%s: unsupported statement type %T", database, name, stmt)
+		}
 	}
-	return db, rows.Err()
+	return nil
+}
+
+// parseCreateStatement parses a single DDL statement (the value of
+// system.tables.create_table_query) and returns the first statement node.
+func parseCreateStatement(createSQL string) (chparser.Expr, error) {
+	p := chparser.NewParser(createSQL)
+	stmts, err := p.ParseStmts()
+	if err != nil {
+		return nil, fmt.Errorf("parser: %w", err)
+	}
+	if len(stmts) == 0 {
+		return nil, errors.New("no statement found in create_table_query")
+	}
+	return stmts[0], nil
 }
 
 // buildTableFromCreateSQL turns a CREATE TABLE statement into a TableSpec by
 // parsing it with the ClickHouse SQL parser and walking the AST.
 func buildTableFromCreateSQL(createSQL string) (TableSpec, error) {
-	p := chparser.NewParser(createSQL)
-	stmts, err := p.ParseStmts()
+	stmt, err := parseCreateStatement(createSQL)
 	if err != nil {
-		return TableSpec{}, fmt.Errorf("parser: %w", err)
+		return TableSpec{}, err
 	}
-	var ct *chparser.CreateTable
-	for _, s := range stmts {
-		if v, ok := s.(*chparser.CreateTable); ok {
-			ct = v
-			break
-		}
-	}
-	if ct == nil {
+	ct, ok := stmt.(*chparser.CreateTable)
+	if !ok {
 		return TableSpec{}, errors.New("no CREATE TABLE statement found in create_table_query")
 	}
+	return buildTableFromCreateTable(ct)
+}
 
+// buildTableFromCreateTable walks an already-parsed CREATE TABLE AST.
+func buildTableFromCreateTable(ct *chparser.CreateTable) (TableSpec, error) {
 	t := TableSpec{}
 
 	if ct.TableSchema != nil {
@@ -125,6 +179,79 @@ func buildTableFromCreateSQL(createSQL string) (TableSpec, error) {
 	}
 
 	return t, nil
+}
+
+// buildMaterializedViewFromCreateSQL turns a CREATE MATERIALIZED VIEW
+// statement into a MaterializedViewSpec by parsing it and walking the AST.
+func buildMaterializedViewFromCreateSQL(createSQL string) (MaterializedViewSpec, error) {
+	stmt, err := parseCreateStatement(createSQL)
+	if err != nil {
+		return MaterializedViewSpec{}, err
+	}
+	mv, ok := stmt.(*chparser.CreateMaterializedView)
+	if !ok {
+		return MaterializedViewSpec{}, errors.New("no CREATE MATERIALIZED VIEW statement found")
+	}
+	return buildMaterializedViewFromCreateMV(mv)
+}
+
+// buildMaterializedViewFromCreateMV walks an already-parsed CREATE
+// MATERIALIZED VIEW AST. Only the `TO <table>` form is supported;
+// inner-engine and refreshable MVs are rejected with a clear error.
+func buildMaterializedViewFromCreateMV(mv *chparser.CreateMaterializedView) (MaterializedViewSpec, error) {
+	if mv.Refresh != nil {
+		return MaterializedViewSpec{}, errors.New("unsupported: refreshable materialized view")
+	}
+	if mv.Engine != nil {
+		return MaterializedViewSpec{}, errors.New("unsupported: inner-engine materialized view (only the TO <table> form is supported)")
+	}
+	if mv.Destination == nil || mv.Destination.TableIdentifier == nil {
+		return MaterializedViewSpec{}, errors.New("unsupported: materialized view has no TO clause")
+	}
+
+	out := MaterializedViewSpec{
+		ToTable: tableIdentName(mv.Destination.TableIdentifier),
+	}
+
+	if mv.Destination.TableSchema != nil {
+		for _, col := range mv.Destination.TableSchema.Columns {
+			if cd, ok := col.(*chparser.ColumnDef); ok {
+				// MV destination columns are introspected as name+type only,
+				// matching what the HCL dumper emits (writeMaterializedView
+				// only writes Name and Type). Using columnFromAST here would
+				// populate Default/Codec/Comment/TTL fields that the dumper
+				// silently drops, causing spurious Recreate diffs on live-vs-dumped
+				// comparisons. TO-form MV column lists are bare name+type in practice.
+				out.Columns = append(out.Columns, ColumnSpec{
+					Name: identName(cd.Name),
+					Type: formatNode(cd.Type),
+				})
+			}
+		}
+	}
+
+	if mv.SubQuery != nil && mv.SubQuery.Select != nil {
+		out.Query = formatNode(mv.SubQuery.Select)
+	}
+
+	if mv.OnCluster != nil && mv.OnCluster.Expr != nil {
+		out.Cluster = strPtr(formatNode(mv.OnCluster.Expr))
+	}
+	if mv.Comment != nil {
+		out.Comment = strPtr(unquoteString(mv.Comment.Literal))
+	}
+
+	return out, nil
+}
+
+// tableIdentName renders a TableIdentifier as `db.table` (or `table`),
+// stripping ClickHouse's backtick quoting so the value matches how it would
+// be written in HCL.
+func tableIdentName(t *chparser.TableIdentifier) string {
+	if t == nil {
+		return ""
+	}
+	return strings.ReplaceAll(formatNode(t), "`", "")
 }
 
 // formatNode renders an AST node back to compact SQL text. The fork's

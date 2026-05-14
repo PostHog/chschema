@@ -43,6 +43,33 @@ func writeDatabase(body *hclwrite.Body, db DatabaseSpec) {
 		tblBlock := body.AppendNewBlock("table", []string{tbl.Name})
 		writeTable(tblBlock.Body(), tbl)
 	}
+
+	mvs := append([]MaterializedViewSpec(nil), db.MaterializedViews...)
+	sort.Slice(mvs, func(i, j int) bool {
+		return mvs[i].Name < mvs[j].Name
+	})
+	for i, mv := range mvs {
+		if len(tables) > 0 || i > 0 {
+			body.AppendNewline()
+		}
+		mvBlock := body.AppendNewBlock("materialized_view", []string{mv.Name})
+		writeMaterializedView(mvBlock.Body(), mv)
+	}
+}
+
+func writeMaterializedView(body *hclwrite.Body, mv MaterializedViewSpec) {
+	body.SetAttributeValue("to_table", cty.StringVal(mv.ToTable))
+	body.SetAttributeValue("query", cty.StringVal(mv.Query))
+	if mv.Cluster != nil {
+		body.SetAttributeValue("cluster", cty.StringVal(*mv.Cluster))
+	}
+	if mv.Comment != nil {
+		body.SetAttributeValue("comment", cty.StringVal(*mv.Comment))
+	}
+	for _, c := range mv.Columns {
+		colBlock := body.AppendNewBlock("column", []string{c.Name})
+		colBlock.Body().SetAttributeValue("type", cty.StringVal(c.Type))
+	}
 }
 
 func writeTable(body *hclwrite.Body, t TableSpec) {

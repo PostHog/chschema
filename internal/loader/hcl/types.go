@@ -13,6 +13,25 @@ type DatabaseSpec struct {
 
 	Tables  []TableSpec      `hcl:"table,block"`
 	Patches []PatchTableSpec `hcl:"patch_table,block" diff:"-"`
+
+	// MaterializedViews are a sibling collection to Tables, not a flavored
+	// TableSpec. MVs do not participate in the table inheritance system
+	// (extend / abstract / patch_table).
+	MaterializedViews []MaterializedViewSpec `hcl:"materialized_view,block"`
+}
+
+// MaterializedViewSpec models a ClickHouse materialized view in its
+// `TO <table>` form: the MV reads from its source (referenced in Query) and
+// writes rows into an existing destination table. Inner-engine MVs
+// (ENGINE = ...), refreshable MVs (REFRESH ...), and window views are not
+// supported and are rejected with a clear error during introspection.
+type MaterializedViewSpec struct {
+	Name    string       `hcl:"name,label"`
+	ToTable string       `hcl:"to_table"`         // TO <db.>table target (required)
+	Columns []ColumnSpec `hcl:"column,block"`     // explicit column list (may be empty)
+	Query   string       `hcl:"query"`            // the AS SELECT ... body
+	Cluster *string      `hcl:"cluster,optional"` // ON CLUSTER
+	Comment *string      `hcl:"comment,optional"`
 }
 
 // PatchTableSpec is a strictly additive cross-layer modification of a table.

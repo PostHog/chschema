@@ -196,6 +196,114 @@ func TestSQLGen_StatementOrderingCreateAlterDrop(t *testing.T) {
 	assert.Contains(t, out.Statements[2], "DROP TABLE")
 }
 
+func TestSQLGen_CreateMaterializedView(t *testing.T) {
+	mv := MaterializedViewSpec{
+		Name:    "metrics_mv",
+		ToTable: "default.metrics",
+		Query:   "SELECT team_id, count() FROM default.events GROUP BY team_id",
+		Columns: []ColumnSpec{
+			{Name: "team_id", Type: "Int64"},
+			{Name: "cnt", Type: "UInt64"},
+		},
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", AddMaterializedViews: []MaterializedViewSpec{mv}},
+	}})
+	expected := "CREATE MATERIALIZED VIEW posthog.metrics_mv TO default.metrics " +
+		"(team_id Int64, cnt UInt64) AS SELECT team_id, count() FROM default.events GROUP BY team_id"
+	assert.Equal(t, []string{expected}, out.Statements)
+	assert.Empty(t, out.Unsafe)
+}
+
+func TestSQLGen_CreateMaterializedViewNoColumns(t *testing.T) {
+	mv := MaterializedViewSpec{
+		Name:    "metrics_mv",
+		ToTable: "default.metrics",
+		Query:   "SELECT id FROM default.src",
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", AddMaterializedViews: []MaterializedViewSpec{mv}},
+	}})
+	assert.Equal(t, []string{
+		"CREATE MATERIALIZED VIEW posthog.metrics_mv TO default.metrics AS SELECT id FROM default.src",
+	}, out.Statements)
+}
+
+func TestSQLGen_CreateMaterializedViewWithClusterAndComment(t *testing.T) {
+	pt := func(s string) *string { return &s }
+	mv := MaterializedViewSpec{
+		Name:    "metrics_mv",
+		ToTable: "default.metrics",
+		Query:   "SELECT id FROM default.src",
+		Cluster: pt("posthog"),
+		Comment: pt("rolls metrics up"),
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", AddMaterializedViews: []MaterializedViewSpec{mv}},
+	}})
+	expected := "CREATE MATERIALIZED VIEW posthog.metrics_mv ON CLUSTER posthog " +
+		"TO default.metrics AS SELECT id FROM default.src COMMENT 'rolls metrics up'"
+	assert.Equal(t, []string{expected}, out.Statements)
+}
+
+func TestSQLGen_ModifyQuery(t *testing.T) {
+	mvd := MaterializedViewDiff{
+		Name:        "metrics_mv",
+		QueryChange: &StringChange{Old: ptr("SELECT id FROM default.src"), New: ptr("SELECT id, ts FROM default.src")},
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", AlterMaterializedViews: []MaterializedViewDiff{mvd}},
+	}})
+	assert.Equal(t, []string{
+		"ALTER TABLE posthog.metrics_mv MODIFY QUERY SELECT id, ts FROM default.src",
+	}, out.Statements)
+	assert.Empty(t, out.Unsafe)
+}
+
+func TestSQLGen_DropView(t *testing.T) {
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", DropMaterializedViews: []string{"metrics_mv"}},
+	}})
+	assert.Equal(t, []string{"DROP VIEW posthog.metrics_mv"}, out.Statements)
+}
+
+func TestSQLGen_MaterializedViewRecreateUnsafe(t *testing.T) {
+	mvd := MaterializedViewDiff{Name: "metrics_mv", Recreate: true}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", AlterMaterializedViews: []MaterializedViewDiff{mvd}},
+	}})
+	assert.Empty(t, out.Statements)
+	require := assert.New(t)
+	require.Len(out.Unsafe, 1)
+	assert.Equal(t, "posthog", out.Unsafe[0].Database)
+	assert.Equal(t, "metrics_mv", out.Unsafe[0].Table)
+	assert.Contains(t, out.Unsafe[0].Reason, "recreating")
+}
+
+func TestSQLGen_StatementOrderingWithMaterializedViews(t *testing.T) {
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{
+			Database:  "posthog",
+			AddTables: []TableSpec{mkTable("new_table", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"})},
+			AddMaterializedViews: []MaterializedViewSpec{
+				{Name: "new_mv", ToTable: "posthog.new_table", Query: "SELECT id FROM posthog.src"},
+			},
+			AlterMaterializedViews: []MaterializedViewDiff{
+				{Name: "alter_mv", QueryChange: &StringChange{New: ptr("SELECT 1")}},
+			},
+			DropMaterializedViews: []string{"drop_mv"},
+			DropTables:            []string{"drop_table"},
+		},
+	}})
+	require := assert.New(t)
+	require.Len(out.Statements, 5)
+	assert.Contains(t, out.Statements[0], "CREATE TABLE")
+	assert.Contains(t, out.Statements[1], "CREATE MATERIALIZED VIEW")
+	assert.Contains(t, out.Statements[2], "MODIFY QUERY")
+	assert.Contains(t, out.Statements[3], "DROP VIEW")
+	assert.Contains(t, out.Statements[4], "DROP TABLE")
+}
+
 func TestSQLGen_EndToEndDiffToSQL(t *testing.T) {
 	// from: one table with one column.
 	from := []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"}))}
