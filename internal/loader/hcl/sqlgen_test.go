@@ -229,6 +229,23 @@ func TestSQLGen_CreateMaterializedViewNoColumns(t *testing.T) {
 	}, out.Statements)
 }
 
+func TestSQLGen_CreateMaterializedViewWithClusterAndComment(t *testing.T) {
+	pt := func(s string) *string { return &s }
+	mv := MaterializedViewSpec{
+		Name:    "metrics_mv",
+		ToTable: "default.metrics",
+		Query:   "SELECT id FROM default.src",
+		Cluster: pt("posthog"),
+		Comment: pt("rolls metrics up"),
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", AddMaterializedViews: []MaterializedViewSpec{mv}},
+	}})
+	expected := "CREATE MATERIALIZED VIEW posthog.metrics_mv ON CLUSTER posthog " +
+		"TO default.metrics AS SELECT id FROM default.src COMMENT 'rolls metrics up'"
+	assert.Equal(t, []string{expected}, out.Statements)
+}
+
 func TestSQLGen_ModifyQuery(t *testing.T) {
 	mvd := MaterializedViewDiff{
 		Name:        "metrics_mv",

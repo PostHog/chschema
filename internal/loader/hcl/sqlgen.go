@@ -98,6 +98,10 @@ func createMaterializedViewSQL(database string, mv MaterializedViewSpec) string 
 		fmt.Fprintf(&b, " (%s)", strings.Join(parts, ", "))
 	}
 	fmt.Fprintf(&b, " AS %s", mv.Query)
+	// COMMENT comes last, after AS SELECT, per the CREATE MATERIALIZED VIEW grammar.
+	if mv.Comment != nil {
+		fmt.Fprintf(&b, " COMMENT %s", quoteString(*mv.Comment))
+	}
 	return b.String()
 }
 

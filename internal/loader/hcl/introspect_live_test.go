@@ -74,6 +74,46 @@ func TestCHLive_Introspect(t *testing.T) {
 	}
 }
 
+// TestCHLive_IntrospectMaterializedView creates a destination table, a source
+// table, and a TO-form materialized view on a live ClickHouse instance, then
+// introspects the database and asserts the MV round-trips. It also exercises
+// the original bug: introspecting a database that contains a materialized
+// view must not fail.
+func TestCHLive_IntrospectMaterializedView(t *testing.T) {
+	if !*clickhouseLive {
+		t.Skip("pass -clickhouse to run against a live ClickHouse")
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	ctx := context.Background()
+
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
+		"CREATE TABLE %s.metrics (team_id Int64, cnt UInt64) ENGINE = MergeTree ORDER BY team_id", dbName)))
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
+		"CREATE TABLE %s.events (team_id Int64) ENGINE = MergeTree ORDER BY team_id", dbName)))
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
+		"CREATE MATERIALIZED VIEW %s.metrics_mv TO %s.metrics "+
+			"AS SELECT team_id, count() AS cnt FROM %s.events GROUP BY team_id",
+		dbName, dbName, dbName)))
+
+	db, err := Introspect(ctx, conn, dbName)
+	require.NoError(t, err, "introspecting a database with a materialized view must not fail")
+
+	require.Len(t, db.MaterializedViews, 1)
+	mv := db.MaterializedViews[0]
+	assert.Equal(t, "metrics_mv", mv.Name)
+	assert.Equal(t, dbName+".metrics", mv.ToTable)
+	assert.Contains(t, mv.Query, "team_id")
+	assert.Contains(t, mv.Query, "events")
+
+	// The destination and source tables still introspect alongside the MV.
+	var tableNames []string
+	for _, tbl := range db.Tables {
+		tableNames = append(tableNames, tbl.Name)
+	}
+	assert.ElementsMatch(t, []string{"metrics", "events"}, tableNames)
+}
+
 // mustParseResolve parses HCL source from a literal string by writing it to
 // a temp file, then runs Resolve, returning the single DatabaseSpec.
 func mustParseResolve(t *testing.T, src string) *DatabaseSpec {

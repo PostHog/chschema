@@ -119,7 +119,8 @@ func runIntrospect(args []string) {
 			slog.Error("failed to introspect database", "database", name, "err", err)
 			os.Exit(1)
 		}
-		slog.Info("introspected database", "name", spec.Name, "tables", len(spec.Tables))
+		slog.Info("introspected database", "name", spec.Name,
+			"tables", len(spec.Tables), "materialized_views", len(spec.MaterializedViews))
 		dbs = append(dbs, *spec)
 	}
 
@@ -286,6 +287,21 @@ func renderChangeSet(w io.Writer, cs hclload.ChangeSet) {
 		for _, td := range dc.AlterTables {
 			fmt.Fprintf(w, "  ~ table %s\n", td.Table)
 			renderTableDiff(w, td)
+		}
+		for _, mv := range dc.AddMaterializedViews {
+			fmt.Fprintf(w, "  + materialized_view %s -> %s\n", mv.Name, mv.ToTable)
+		}
+		for _, name := range dc.DropMaterializedViews {
+			fmt.Fprintf(w, "  - materialized_view %s\n", name)
+		}
+		for _, mvd := range dc.AlterMaterializedViews {
+			fmt.Fprintf(w, "  ~ materialized_view %s\n", mvd.Name)
+			if mvd.Recreate {
+				fmt.Fprintf(w, "      ! requires recreation (to_table or columns changed)\n")
+			}
+			if mvd.QueryChange != nil {
+				fmt.Fprintf(w, "      ~ query changed\n")
+			}
 		}
 	}
 }
