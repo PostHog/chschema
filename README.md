@@ -1,452 +1,240 @@
-# chschema - Declarative ClickHouse Schema Management
+# chschema — Declarative ClickHouse Schema Management
 
-A declarative Infrastructure-as-Code (IaC) tool for managing ClickHouse schemas using Go and Protobuf. Inspired by Terraform and Kubernetes, `chschema` abandons traditional sequential migrations in favor of state reconciliation.
+A declarative tool for managing ClickHouse schemas. Schemas are written in
+HCL, layered for multi-environment setups, resolved into a flat desired
+state, and round-tripped against a live cluster.
 
-## Features
+> **Project direction:** `hclexp` is the future of this project. The HCL
+> loader/resolver and `hclexp` CLI are where active development happens.
+> The legacy `chschema` binary, its protobuf contracts, and the YAML
+> schema format are **deprecated and will be removed**. New work should
+> target `hclexp`. (`hclexp` itself may be renamed once it stabilizes.)
 
-- **Declarative Configuration**: Define your schema in YAML files as the single source of truth
-- **Bidirectional Operations**: Both apply schemas to databases AND extract schemas from databases
-- **State Reconciliation**: Compares desired vs current state and generates execution plans
-- **Dry-Run Mode**: Preview changes before applying them
-- **GitOps Ready**: Version-controlled schemas with CI/CD integration
-- **Cluster-Native**: Built for ClickHouse's distributed architecture with `ON CLUSTER` support
+## What hclexp does
 
-## Installation
+`hclexp` has two modes:
 
-### Build from Source
+1. **Introspect** — connect to a live ClickHouse instance and dump its
+   tables as HCL (to stdout, a file, or a directory).
+2. **Load & resolve** — read an HCL schema (a single file or a stack of
+   layer directories), apply inheritance/patching, and emit the resolved,
+   flat schema as canonical HCL.
 
-```bash
-go install github.com/posthog/chschema@latest
-```
-
-## Quick Start
-
-### 1. Extract Existing Schema
-
-Start by dumping your current ClickHouse schema:
+## Build
 
 ```bash
-# Dump all tables to YAML files
-./chschema dump --output-dir ./schema
-
-# Or dump only tables (skip clusters/views)
-./chschema dump --tables-only --output-dir ./schema
+go build -o hclexp ./cmd/hclexp
 ```
 
-This creates a directory structure:
-```
-schema/
-├── tables/              # Table definitions
-│   ├── users.yaml
-│   ├── events.yaml
-│   └── ...
-├── materialized_views/  # Materialized view definitions
-│   ├── users_mv.yaml
-│   └── ...
-├── views/              # Regular view definitions
-│   ├── active_users.yaml
-│   └── ...
-├── dictionaries/       # Dictionary definitions
-│   ├── user_dict.yaml
-│   └── ...
-└── clusters/           # Cluster configurations (future)
-    └── production.yaml
-```
+ClickHouse connection defaults come from environment variables and can be
+overridden by flags:
 
-The dump shows statistics about what was exported:
-```
---- Introspection Statistics ---
+| Variable             | Default          |
+|----------------------|------------------|
+| `CLICKHOUSE_HOST`    | `localhost`      |
+| `CLICKHOUSE_PORT`    | `9000`           |
+| `CLICKHOUSE_DB`      | `migration_test` |
+| `CLICKHOUSE_USER`    | `user1`          |
+| `CLICKHOUSE_PASSWORD`| `pass1`          |
 
-Dumped engines:
-  ✓ ReplicatedReplacingMergeTree: 38
-  ✓ Distributed: 51
-  ✓ MaterializedView: 33
-  ✓ Dictionary: 9
-  ✓ Kafka: 27
-
-Skipped engines:
-  (none)
---------------------------------
-```
-
-### 2. Review and Modify Schema
-
-Edit the generated YAML files to match your desired schema:
-
-**Example: `schema/tables/users.yaml`**
-```yaml
-name: users
-database: myapp
-order_by: [user_id, created_at]
-partition_by: toYYYYMM(created_at)
-engine:
-  merge_tree: {}
-columns:
-  - name: user_id
-    type: UInt64
-    comment: "Unique user identifier"
-  - name: email
-    type: String
-  - name: metadata
-    type: String
-    codec: "CODEC(ZSTD(3))"
-  - name: created_at
-    type: DateTime
-    defaultexpression: now()
-```
-
-### 3. Plan Changes
-
-Preview what changes will be applied:
+## Introspect a live database
 
 ```bash
-# Show execution plan
-./chschema --dry-run
+# Dump a database to stdout as HCL
+hclexp introspect -database posthog
 
-# Save plan to file
-./chschema --dry-run --output plan.txt
+# Dump several databases, one <db>.hcl file per database, into a directory
+hclexp introspect -database posthog,system -out ./schema/
+
+# Dump to a single file
+hclexp introspect -database posthog -out posthog.hcl
+
+# Override connection details
+hclexp introspect -host ch.example.com -port 9000 -user ro -password secret \
+  -database posthog -out ./schema/
 ```
 
-### 4. Apply Changes
+**Flags:**
 
-Apply the schema changes:
+- `-database` — comma-separated list of databases to introspect (required)
+- `-host`, `-port`, `-user`, `-password` — connection overrides
+- `-out` — output target:
+  - omitted → write HCL to stdout
+  - a directory → write one `<database>.hcl` per database
+  - any other path → write all databases to that single file
+
+Introspection reads each table's `create_table_query` and parses it with
+the ClickHouse SQL parser, so columns (types, defaults, codecs, comments,
+`MATERIALIZED`/`ALIAS`), indexes, constraints, engine + parameters,
+`ORDER BY`, `PARTITION BY`, `SAMPLE BY`, `PRIMARY KEY`, `TTL`, and
+`SETTINGS` all come back populated.
+
+## Load & resolve an HCL schema
 
 ```bash
-# Apply changes (requires confirmation)
-./chschema --auto-approve
+# Load a single HCL file, resolve it, print a summary
+hclexp -config ./schema/posthog.hcl
+
+# Load a stack of layer directories (applied left to right)
+hclexp -layer ./schema/base,./schema/env_us
+
+# Write the resolved schema out as canonical HCL
+hclexp -config ./schema/posthog.hcl -out ./resolved.hcl
 ```
 
-## Command Reference
+**Flags:**
 
-### Main Commands
+- `-config` — path to a single HCL file (default `./cmd/hclexp/node.conf`)
+- `-layer` — comma-separated list of layer directories, loaded in order
+  (mutually exclusive with `-config`)
+- `-out` — if set, write the resolved schema as canonical HCL to this path
 
-```bash
-# Show execution plan (default behavior)
-chschema [--dry-run]
+## HCL schema format
 
-# Apply changes automatically
-chschema --auto-approve
+A schema is one or more `database` blocks, each containing `table` blocks.
 
-# Export database schema to YAML
-chschema dump [options]
+```hcl
+database "posthog" {
+  table "events" {
+    order_by     = ["timestamp", "team_id"]
+    partition_by = "toYYYYMM(timestamp)"
+    sample_by    = "team_id"
+    ttl          = "timestamp + INTERVAL 2 YEARS"
+    settings = {
+      index_granularity = "8192"
+    }
 
-# Show version
-chschema version
+    column "timestamp" { type = "DateTime" }
+    column "team_id"   { type = "UInt64" }
+    column "event"     { type = "String" }
+
+    column "payload" {
+      type    = "String"
+      codec   = "ZSTD(3)"
+      comment = "raw event body"
+    }
+
+    index "idx_team" {
+      expr        = "team_id"
+      type        = "minmax"
+      granularity = 4
+    }
+
+    constraint "team_positive" {
+      check = "team_id > 0"
+    }
+
+    engine "replicated_merge_tree" {
+      zoo_path     = "/clickhouse/tables/{shard}/events"
+      replica_name = "{replica}"
+    }
+  }
+}
 ```
 
-### Global Flags
+### Column attributes
 
-- `--config`, `-c`: Directory containing schema files (default: `schema`)
-- `--connect`: ClickHouse connection string (default: `localhost:9000`)
-- `--output`, `-o`: Write execution plan to file
+`type` is required; everything else is optional:
 
-### Dump Command
+- `nullable` — wrap `type` in `Nullable(...)`
+- `default`, `materialized`, `ephemeral`, `alias` — mutually exclusive
+  default-value expressions (`DEFAULT` / `MATERIALIZED` / `EPHEMERAL` /
+  `ALIAS`)
+- `codec` — compression codec, e.g. `"ZSTD(3)"`
+- `ttl` — per-column TTL expression
+- `comment` — column comment
+- `renamed_from` — previous column name; the diff engine emits
+  `RENAME COLUMN` instead of drop + add
 
-Extract database schema to YAML files:
+### Engine blocks
 
-```bash
-# Basic usage
-chschema dump
-
-# Advanced options
-chschema dump \
-  --output-dir ./my-schema \
-  --database myapp \
-  --tables-only \
-  --overwrite
-```
-
-**Dump Flags:**
-- `--output-dir`, `-o`: Target directory (default: `./schema-dump`)
-- `--database`, `-d`: Specific database to dump
-- `--tables-only`: Only dump tables, skip clusters/views
-- `--overwrite`: Overwrite existing files
-
-## Configuration
-
-### Connection
-
-Specify ClickHouse connection:
-
-```bash
-# Default local connection
-chschema --connect localhost:9000
-
-# Remote connection
-chschema --connect clickhouse.example.com:9000
-```
-
-### Schema Directory Structure
-
-Organize your schema files:
-
-```
-schema/
-├── tables/              # Table definitions
-│   ├── users.yaml
-│   └── events.yaml
-├── materialized_views/  # Materialized view definitions
-│   ├── users_mv.yaml
-│   └── events_mv.yaml
-├── views/              # Regular view definitions
-│   └── active_users.yaml
-├── dictionaries/       # Dictionary definitions
-│   └── user_dict.yaml
-└── clusters/           # Cluster configurations (future)
-    └── production.yaml
-```
-
-## Supported Engines
-
-### Table Engines
-- ✅ MergeTree
-- ✅ ReplicatedMergeTree
-- ✅ ReplacingMergeTree
-- ✅ ReplicatedReplacingMergeTree
-- ✅ SummingMergeTree
-- ✅ CollapsingMergeTree
-- ✅ ReplicatedCollapsingMergeTree
-- ✅ AggregatingMergeTree
-- ✅ ReplicatedAggregatingMergeTree
-- ✅ Distributed
-- ✅ Log
-- ✅ Kafka
-
-### Views
-- ✅ MaterializedView
-- ✅ View
-
-### Dictionaries
-- ✅ Dictionary
-
-## YAML Schema Format
-
-### Table Definition
-
-```yaml
-name: table_name
-database: database_name        # optional
-order_by: [col1, col2]        # ORDER BY clause
-partition_by: toYYYYMM(date)  # PARTITION BY clause
-engine:
-  merge_tree: {}               # or replicated_merge_tree, replacing_merge_tree, etc.
-columns:
-  - name: id
-    type: UInt64
-    comment: "Unique identifier"  # optional, column comment
-  - name: name
-    type: String
-    defaultexpression: ''         # optional, DEFAULT expression
-  - name: data
-    type: String
-    codec: "CODEC(ZSTD(3))"      # optional, compression codec
-  - name: created_at
-    type: DateTime
-    defaultexpression: now()
-```
-
-### Materialized View Definition
-
-```yaml
-name: users_mv
-database: myapp
-destinationTable: users_aggregated  # optional, uses .inner if not specified
-selectQuery: SELECT user_id, count() as cnt FROM users GROUP BY user_id
-```
-
-### View Definition
-
-```yaml
-name: active_users
-database: myapp
-selectQuery: SELECT user_id, email FROM users WHERE active = 1
-```
-
-### Dictionary Definition
-
-```yaml
-name: user_dict
-database: myapp
-primaryKey:
-  - user_id
-source:
-  sourceType: clickhouse
-  sourceConfig: "SELECT user_id, email FROM users"
-layout:
-  layoutType: flat
-lifetime:
-  minSeconds: 300
-  maxSeconds: 360
+The engine block label is the engine kind. Supported kinds and their
 attributes:
-  - name: user_id
-    type: UInt64
-    isKey: true
-  - name: email
-    type: String
-    isKey: false
+
+| Kind                                | Attributes |
+|-------------------------------------|------------|
+| `merge_tree`                        | — |
+| `replicated_merge_tree`             | `zoo_path`, `replica_name` |
+| `replacing_merge_tree`              | `version_column`, `is_deleted_column` |
+| `replicated_replacing_merge_tree`   | `zoo_path`, `replica_name`, `version_column`, `is_deleted_column` |
+| `summing_merge_tree`                | `sum_columns` |
+| `collapsing_merge_tree`             | `sign_column` |
+| `replicated_collapsing_merge_tree`  | `zoo_path`, `replica_name`, `sign_column` |
+| `aggregating_merge_tree`            | — |
+| `replicated_aggregating_merge_tree` | `zoo_path`, `replica_name` |
+| `distributed`                       | `cluster_name`, `remote_database`, `remote_table`, `sharding_key` |
+| `log`                               | — |
+| `kafka`                             | `broker_list`, `topic`, `consumer_group`, `format` |
+
+## Layering & inheritance
+
+Layers let a base schema be specialized per environment. `-layer a,b,c`
+loads every `.hcl` file under each directory in order; later layers merge
+on top of earlier ones.
+
+**Table inheritance** within a database:
+
+- `abstract = true` — a template table that is not emitted itself
+- `extend = "other_table"` — inherit columns/engine/settings from another
+  table, then add or override
+- `override = true` — required for a later layer to replace a table that
+  an earlier layer already defined
+
+```hcl
+database "posthog" {
+  table "_event_base" {
+    abstract = true
+    column "timestamp" { type = "DateTime" }
+    column "team_id"   { type = "UInt64" }
+  }
+
+  table "events_local" {
+    extend   = "_event_base"
+    order_by = ["timestamp", "team_id"]
+    column "event" { type = "String" }
+    engine "merge_tree" {}
+  }
+}
 ```
 
-### Kafka Table Definition
+**Patching** — a `patch_table` block is a strictly additive cross-layer
+modification. Only column additions are allowed; it is the safe way for an
+environment layer to add columns to a base table:
 
-```yaml
-name: kafka_events
-database: myapp
-columns:
-  - name: event_id
-    type: UUID
-  - name: event_data
-    type: String
-  - name: timestamp
-    type: DateTime
-engine:
-  kafka:
-    broker_list:
-      - "localhost:9092"
-      - "broker2:9092"
-    topic: "events"
-    consumer_group: "consumer_group1"
-    format: "JSONEachRow"
+```hcl
+# env_us/events_patch.hcl
+database "posthog" {
+  patch_table "events_local" {
+    column "us_session_id" { type = "String" }
+  }
+}
 ```
 
-### Cluster Definition
+After resolution, `extend` / `abstract` / `patch_table` are all consumed
+and every table is flat with its effective columns, engine, and settings.
 
-```yaml
-name: production
-nodes:
-  - host: clickhouse-1.example.com
-    port: 9000
-    shard: 1
-    replica: 1
-    database: myapp           # optional
-  - host: clickhouse-2.example.com
-    port: 9000
-    shard: 1
-    replica: 2
-```
-
-## Workflow Examples
-
-### Development Workflow
-
-1. **Extract Current Schema**:
-   ```bash
-   chschema dump --output-dir ./schema
-   ```
-
-2. **Make Changes**: Edit YAML files
-
-3. **Preview Changes**:
-   ```bash
-   chschema --dry-run
-   ```
-
-4. **Apply Changes**:
-   ```bash
-   chschema --auto-approve
-   ```
-
-### CI/CD Integration
-
-```yaml
-# .github/workflows/schema.yml
-name: Schema Management
-on:
-  pull_request:
-    paths: ['schema/**']
-
-jobs:
-  plan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v2
-      - name: Plan Schema Changes
-        run: |
-          ./chschema --dry-run --output plan.txt
-          # Post plan as PR comment
-
-  apply:
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    steps:
-      - uses: actions/checkout@v2
-      - name: Apply Schema Changes
-        run: ./chschema --auto-approve
-```
-
-### Migration from Existing Setup
-
-1. **Dump Current Schema**:
-   ```bash
-   chschema dump --overwrite
-   ```
-
-2. **Review Generated Files**: Check that all tables are captured correctly
-
-3. **Commit to Git**:
-   ```bash
-   git add schema/
-   git commit -m "Initial schema dump"
-   ```
-
-4. **Test Round-Trip**: Ensure dumped schema can be applied cleanly
-
-## Best Practices
-
-### Schema Organization
-
-- **One file per table**: Keep table definitions in separate files
-- **Consistent naming**: Use clear, descriptive names
-- **Version control**: Always commit schema changes
-- **Environment separation**: Use different directories for different environments
-
-### Safety
-
-- **Always dry-run first**: Review changes before applying
-- **Backup before changes**: Take database backups before major changes
-- **Test in staging**: Validate changes in non-production environments
-- **Monitor deployments**: Watch for errors during schema application
-
-### Team Workflow
-
-- **Code reviews**: Review schema changes like code
-- **Documentation**: Comment complex schema decisions
-- **Breaking changes**: Plan and communicate schema breaking changes
-- **Rollback plan**: Have a rollback strategy for schema changes
-
-## Troubleshooting
-
-### Common Issues
-
-**Connection Failed**:
-```bash
-# Check ClickHouse is running
-clickhouse client --query "SELECT 1"
-
-# Verify connection string
-chschema --connect your-host:9000 version
-```
-
-**Permission Denied**:
-- Ensure user has DDL permissions
-- Check cluster permissions for distributed operations
-
-**Schema Conflicts**:
-- Run `chschema --dry-run` to see conflicts
-- Manually resolve differences in YAML files
-
-### Getting Help
+## Development
 
 ```bash
-# Show help
-chschema --help
+# Build
+go build -o hclexp ./cmd/hclexp
 
-# Show command-specific help
-chschema dump --help
+# Unit + snapshot tests
+just test
+
+# Live ClickHouse integration tests (needs: docker compose up -d)
+just test-live
 ```
 
-## Contributing
+See `CLAUDE.md` for repository conventions and `justfile` for the full
+list of recipes.
 
-See [PROJECT.md](PROJECT.md) for development information and project structure.
+## Legacy: chschema
+
+The original `chschema` binary (YAML schema files, protobuf contracts,
+`dump` / `--dry-run` / `--auto-approve`) still builds but is
+**deprecated**. It will be removed in favor of `hclexp`. Do not build new
+functionality on top of the `proto/`, `gen/`, or `cmd/chschema/` paths.
 
 ## License
 
