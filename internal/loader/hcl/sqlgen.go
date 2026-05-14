@@ -26,14 +26,21 @@ type UnsafeChange struct {
 }
 
 // GenerateSQL turns a ChangeSet into ClickHouse DDL. Statements are ordered:
-// CREATE TABLE first, then ALTER TABLE, then DROP TABLE. Unsafe changes
-// (engine swap, ORDER BY change, etc.) are collected into Unsafe; the
-// generator does not synthesize a recreate-and-swap procedure.
+// CREATE TABLE, CREATE MATERIALIZED VIEW, ALTER TABLE, ALTER ... MODIFY QUERY,
+// DROP VIEW, DROP TABLE — so materialized views are created after their
+// destination table and dropped before it. Unsafe changes (engine swap,
+// ORDER BY change, materialized view recreation, etc.) are collected into
+// Unsafe; the generator does not synthesize a recreate-and-swap procedure.
 func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	var out GeneratedSQL
 	for _, dc := range cs.Databases {
 		for _, t := range dc.AddTables {
 			out.Statements = append(out.Statements, createTableSQL(dc.Database, t))
+		}
+	}
+	for _, dc := range cs.Databases {
+		for _, mv := range dc.AddMaterializedViews {
+			out.Statements = append(out.Statements, createMaterializedViewSQL(dc.Database, mv))
 		}
 	}
 	for _, dc := range cs.Databases {
@@ -47,11 +54,60 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 		}
 	}
 	for _, dc := range cs.Databases {
+		for _, mvd := range dc.AlterMaterializedViews {
+			if mvd.Recreate {
+				out.Unsafe = append(out.Unsafe, UnsafeChange{
+					Database: dc.Database, Table: mvd.Name,
+					Reason: "materialized view to_table or column list change requires recreating the view",
+				})
+				continue
+			}
+			if mvd.QueryChange != nil && mvd.QueryChange.New != nil {
+				out.Statements = append(out.Statements, modifyQuerySQL(dc.Database, mvd.Name, *mvd.QueryChange.New))
+			}
+		}
+	}
+	for _, dc := range cs.Databases {
+		for _, name := range dc.DropMaterializedViews {
+			out.Statements = append(out.Statements, dropViewSQL(dc.Database, name))
+		}
+	}
+	for _, dc := range cs.Databases {
 		for _, name := range dc.DropTables {
 			out.Statements = append(out.Statements, dropTableSQL(dc.Database, name))
 		}
 	}
 	return out
+}
+
+// createMaterializedViewSQL renders a CREATE MATERIALIZED VIEW in its
+// `TO <table>` form. The column list, when present, is emitted between the
+// destination table and AS — matching ClickHouse's accepted syntax.
+func createMaterializedViewSQL(database string, mv MaterializedViewSpec) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "CREATE MATERIALIZED VIEW %s.%s", database, mv.Name)
+	if mv.Cluster != nil {
+		fmt.Fprintf(&b, " ON CLUSTER %s", *mv.Cluster)
+	}
+	fmt.Fprintf(&b, " TO %s", mv.ToTable)
+	if len(mv.Columns) > 0 {
+		parts := make([]string, len(mv.Columns))
+		for i, c := range mv.Columns {
+			parts[i] = columnDefSQL(c)
+		}
+		fmt.Fprintf(&b, " (%s)", strings.Join(parts, ", "))
+	}
+	fmt.Fprintf(&b, " AS %s", mv.Query)
+	return b.String()
+}
+
+// modifyQuerySQL renders an in-place query update for a materialized view.
+func modifyQuerySQL(database, name, query string) string {
+	return fmt.Sprintf("ALTER TABLE %s.%s MODIFY QUERY %s", database, name, query)
+}
+
+func dropViewSQL(database, name string) string {
+	return fmt.Sprintf("DROP VIEW %s.%s", database, name)
 }
 
 func createTableSQL(database string, t TableSpec) string {
