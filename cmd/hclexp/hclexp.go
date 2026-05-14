@@ -3,9 +3,14 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
+	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/posthog/chschema/config"
@@ -13,9 +18,15 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "introspect" {
-		runIntrospect(os.Args[2:])
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "introspect":
+			runIntrospect(os.Args[2:])
+			return
+		case "diff":
+			runDiff(os.Args[2:])
+			return
+		}
 	}
 	runLoad(os.Args[1:])
 }
@@ -118,6 +129,222 @@ func runIntrospect(args []string) {
 	}
 }
 
+// runDiff loads a left and a right schema and reports the changes needed to
+// turn the left side into the right side. Each side is either an HCL source
+// (a file, or comma-separated layer directories) or a live ClickHouse
+// instance addressed as clickhouse://user:password@host:port/db1,db2.
+func runDiff(args []string) {
+	fs := flag.NewFlagSet("hclexp diff", flag.ExitOnError)
+	leftFlag := fs.String("left", "", "left side: HCL file, comma-separated layer dirs, or clickhouse://user:pass@host:port/db")
+	rightFlag := fs.String("right", "", "right side: same forms as -left")
+	asSQL := fs.Bool("sql", false, "emit migration DDL (left -> right) instead of a change summary")
+	_ = fs.Parse(args)
+
+	if *leftFlag == "" || *rightFlag == "" {
+		slog.Error("both -left and -right are required")
+		os.Exit(2)
+	}
+
+	left, err := loadSide(*leftFlag)
+	if err != nil {
+		slog.Error("failed to load left side", "spec", *leftFlag, "err", err)
+		os.Exit(1)
+	}
+	right, err := loadSide(*rightFlag)
+	if err != nil {
+		slog.Error("failed to load right side", "spec", *rightFlag, "err", err)
+		os.Exit(1)
+	}
+
+	cs := hclload.Diff(left, right)
+
+	if *asSQL {
+		gen := hclload.GenerateSQL(cs)
+		for _, u := range gen.Unsafe {
+			fmt.Printf("-- UNSAFE: %s.%s: %s\n", u.Database, u.Table, u.Reason)
+		}
+		for _, stmt := range gen.Statements {
+			fmt.Println(stmt + ";")
+		}
+		if len(gen.Statements) == 0 {
+			fmt.Println("-- no changes")
+		}
+		return
+	}
+
+	if cs.IsEmpty() {
+		fmt.Println("no differences")
+		return
+	}
+	renderChangeSet(os.Stdout, cs)
+}
+
+// loadSide loads one diff operand. A spec starting with clickhouse:// is
+// introspected from a live instance; anything else is treated as a
+// filesystem HCL source (a single file, or comma-separated layer dirs) and
+// resolved.
+func loadSide(spec string) ([]hclload.DatabaseSpec, error) {
+	if strings.HasPrefix(spec, "clickhouse://") {
+		return loadFromClickHouse(spec)
+	}
+
+	paths := splitList(spec)
+	var (
+		dbs []hclload.DatabaseSpec
+		err error
+	)
+	if len(paths) == 1 {
+		if info, statErr := os.Stat(paths[0]); statErr == nil && !info.IsDir() {
+			dbs, err = hclload.ParseFile(paths[0])
+		} else {
+			dbs, err = hclload.LoadLayers(paths)
+		}
+	} else {
+		dbs, err = hclload.LoadLayers(paths)
+	}
+	if err != nil {
+		return nil, err
+	}
+	if err := hclload.Resolve(dbs); err != nil {
+		return nil, fmt.Errorf("resolve: %w", err)
+	}
+	return dbs, nil
+}
+
+// loadFromClickHouse connects to and introspects the databases named in a
+// clickhouse:// URI.
+func loadFromClickHouse(uri string) ([]hclload.DatabaseSpec, error) {
+	cfg, databases, err := parseClickHouseURI(uri)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := config.NewConnection(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("connect %s:%d: %w", cfg.Host, cfg.Port, err)
+	}
+	defer conn.Close()
+
+	ctx := context.Background()
+	var dbs []hclload.DatabaseSpec
+	for _, name := range databases {
+		spec, err := hclload.Introspect(ctx, conn, name)
+		if err != nil {
+			return nil, fmt.Errorf("introspect %s: %w", name, err)
+		}
+		dbs = append(dbs, *spec)
+	}
+	return dbs, nil
+}
+
+// parseClickHouseURI turns clickhouse://user:password@host:port/db1,db2 into
+// a connection config and the list of databases to introspect. Missing
+// pieces fall back to the environment-driven defaults.
+func parseClickHouseURI(uri string) (config.ClickHouseConfig, []string, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return config.ClickHouseConfig{}, nil, fmt.Errorf("invalid clickhouse URI: %w", err)
+	}
+
+	cfg := config.GetDefaultConfig()
+	if h := u.Hostname(); h != "" {
+		cfg.Host = h
+	}
+	if p := u.Port(); p != "" {
+		n, err := strconv.Atoi(p)
+		if err != nil {
+			return config.ClickHouseConfig{}, nil, fmt.Errorf("invalid port %q: %w", p, err)
+		}
+		cfg.Port = n
+	}
+	if u.User != nil {
+		if name := u.User.Username(); name != "" {
+			cfg.User = name
+		}
+		if pw, ok := u.User.Password(); ok {
+			cfg.Password = pw
+		}
+	}
+
+	databases := splitList(strings.TrimPrefix(u.Path, "/"))
+	if len(databases) == 0 {
+		databases = []string{cfg.Database}
+	}
+	cfg.Database = databases[0] // connection requires a database to bind to
+	return cfg, databases, nil
+}
+
+// renderChangeSet prints a ChangeSet as an indented, +/-/~ marked summary.
+func renderChangeSet(w io.Writer, cs hclload.ChangeSet) {
+	for _, dc := range cs.Databases {
+		fmt.Fprintf(w, "database %q\n", dc.Database)
+		for _, t := range dc.AddTables {
+			fmt.Fprintf(w, "  + table %s\n", t.Name)
+		}
+		for _, name := range dc.DropTables {
+			fmt.Fprintf(w, "  - table %s\n", name)
+		}
+		for _, td := range dc.AlterTables {
+			fmt.Fprintf(w, "  ~ table %s\n", td.Table)
+			renderTableDiff(w, td)
+		}
+	}
+}
+
+func renderTableDiff(w io.Writer, td hclload.TableDiff) {
+	for _, r := range td.RenameColumns {
+		fmt.Fprintf(w, "      ~ column %s (renamed from %s)\n", r.New, r.Old)
+	}
+	for _, c := range td.AddColumns {
+		fmt.Fprintf(w, "      + column %s %s\n", c.Name, c.Type)
+	}
+	for _, name := range td.DropColumns {
+		fmt.Fprintf(w, "      - column %s\n", name)
+	}
+	for _, c := range td.ModifyColumns {
+		fmt.Fprintf(w, "      ~ column %s: %s -> %s\n", c.Name, c.OldType, c.NewType)
+	}
+	for _, idx := range td.AddIndexes {
+		fmt.Fprintf(w, "      + index %s\n", idx.Name)
+	}
+	for _, name := range td.DropIndexes {
+		fmt.Fprintf(w, "      - index %s\n", name)
+	}
+	if td.EngineChange != nil {
+		fmt.Fprintf(w, "      ~ engine: %s -> %s\n", engineKindName(td.EngineChange.Old), engineKindName(td.EngineChange.New))
+	}
+	if c := td.OrderByChange; c != nil {
+		fmt.Fprintf(w, "      ~ order_by: %v -> %v\n", c.Old, c.New)
+	}
+	if c := td.PartitionByChange; c != nil {
+		fmt.Fprintf(w, "      ~ partition_by: %s -> %s\n", strOrNone(c.Old), strOrNone(c.New))
+	}
+	if c := td.SampleByChange; c != nil {
+		fmt.Fprintf(w, "      ~ sample_by: %s -> %s\n", strOrNone(c.Old), strOrNone(c.New))
+	}
+	if c := td.TTLChange; c != nil {
+		fmt.Fprintf(w, "      ~ ttl: %s -> %s\n", strOrNone(c.Old), strOrNone(c.New))
+	}
+	for _, k := range sortedMapKeys(td.SettingsAdded) {
+		fmt.Fprintf(w, "      + setting %s = %s\n", k, td.SettingsAdded[k])
+	}
+	for _, k := range td.SettingsRemoved {
+		fmt.Fprintf(w, "      - setting %s\n", k)
+	}
+	for _, c := range td.SettingsChanged {
+		fmt.Fprintf(w, "      ~ setting %s: %s -> %s\n", c.Key, c.OldValue, c.NewValue)
+	}
+}
+
+func load(configFlag, layersFlag string) ([]hclload.DatabaseSpec, error) {
+	if layersFlag != "" {
+		layers := strings.Split(layersFlag, ",")
+		slog.Debug("loading layers", "layers", layers)
+		return hclload.LoadLayers(layers)
+	}
+	slog.Debug("loading single file", "path", configFlag)
+	return hclload.ParseFile(configFlag)
+}
+
 // writeIntrospected dumps the introspected databases. An empty target writes
 // to stdout; a directory target writes one <db>.hcl file per database;
 // anything else is treated as a single output file holding all databases.
@@ -153,16 +380,6 @@ func writeFile(path string, dbs []hclload.DatabaseSpec) error {
 	return hclload.Write(f, dbs)
 }
 
-func load(configFlag, layersFlag string) ([]hclload.DatabaseSpec, error) {
-	if layersFlag != "" {
-		layers := strings.Split(layersFlag, ",")
-		slog.Debug("loading layers", "layers", layers)
-		return hclload.LoadLayers(layers)
-	}
-	slog.Debug("loading single file", "path", configFlag)
-	return hclload.ParseFile(configFlag)
-}
-
 func splitList(s string) []string {
 	var out []string
 	for _, p := range strings.Split(s, ",") {
@@ -173,9 +390,32 @@ func splitList(s string) []string {
 	return out
 }
 
+func sortedMapKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func strOrNone(s *string) string {
+	if s == nil {
+		return "(none)"
+	}
+	return *s
+}
+
 func engineKind(e *hclload.EngineSpec) string {
 	if e == nil {
 		return "(none)"
 	}
 	return e.Kind
+}
+
+func engineKindName(e hclload.Engine) string {
+	if e == nil {
+		return "(none)"
+	}
+	return e.Kind()
 }

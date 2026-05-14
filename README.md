@@ -12,13 +12,16 @@ state, and round-tripped against a live cluster.
 
 ## What hclexp does
 
-`hclexp` has two modes:
+`hclexp` has three modes:
 
 1. **Introspect** — connect to a live ClickHouse instance and dump its
    tables as HCL (to stdout, a file, or a directory).
 2. **Load & resolve** — read an HCL schema (a single file or a stack of
    layer directories), apply inheritance/patching, and emit the resolved,
    flat schema as canonical HCL.
+3. **Diff** — compare two schemas (HCL sources or live clusters, in any
+   combination) and report the changes — or the migration DDL — between
+   them.
 
 ## Build
 
@@ -88,6 +91,57 @@ hclexp -config ./schema/posthog.hcl -out ./resolved.hcl
 - `-layer` — comma-separated list of layer directories, loaded in order
   (mutually exclusive with `-config`)
 - `-out` — if set, write the resolved schema as canonical HCL to this path
+
+## Diff two schemas
+
+`hclexp diff` reports the changes needed to turn a **left** schema into a
+**right** schema. Either side can be an HCL source *or* a live ClickHouse
+instance, so you can diff config-vs-config, config-vs-cluster, or
+cluster-vs-cluster.
+
+```bash
+# Local HCL file vs. a live cluster
+hclexp diff -left ./schema/posthog.hcl \
+            -right clickhouse://user:pass@ch.example.com:9000/posthog
+
+# Layered config vs. a single resolved file
+hclexp diff -left ./schema/base,./schema/env_us -right ./resolved.hcl
+
+# Two clusters
+hclexp diff -left  clickhouse://localhost:9000/posthog \
+            -right clickhouse://staging:9000/posthog
+
+# Emit migration DDL (left -> right) instead of a summary
+hclexp diff -left ./schema/posthog.hcl \
+            -right clickhouse://localhost:9000/posthog -sql
+```
+
+**Side specs** (`-left` / `-right`): each is one of
+
+- a single `.hcl` file
+- comma-separated layer directories (loaded + resolved in order)
+- `clickhouse://[user[:password]@]host:port/db1[,db2]` — introspected
+  live; missing connection pieces fall back to the `CLICKHOUSE_*` defaults
+
+**Flags:**
+
+- `-left`, `-right` — the two schemas to compare (both required)
+- `-sql` — emit the migration DDL (`CREATE` / `ALTER` / `DROP`) that turns
+  the left side into the right side, instead of the change summary.
+  Changes ClickHouse can't apply in place (engine swap, `ORDER BY`,
+  `PARTITION BY`, `SAMPLE BY`) are flagged with `-- UNSAFE` comments.
+
+The default output is an indented `+`/`-`/`~` summary:
+
+```
+database "posthog"
+  + table new_table
+  - table old_table
+  ~ table events
+      + column event String
+      ~ column team_id: UInt32 -> UInt64
+      + setting index_granularity = 8192
+```
 
 ## HCL schema format
 
