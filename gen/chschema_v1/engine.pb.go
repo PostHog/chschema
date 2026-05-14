@@ -352,10 +352,11 @@ func (x *ReplicatedMergeTree) GetReplicaName() string {
 }
 
 type ReplacingMergeTree struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	VersionColumn *string                `protobuf:"bytes,1,opt,name=version_column,json=versionColumn,proto3,oneof" json:"version_column,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	VersionColumn   *string                `protobuf:"bytes,1,opt,name=version_column,json=versionColumn,proto3,oneof" json:"version_column,omitempty"`
+	IsDeletedColumn *string                `protobuf:"bytes,2,opt,name=is_deleted_column,json=isDeletedColumn,proto3,oneof" json:"is_deleted_column,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ReplacingMergeTree) Reset() {
@@ -395,13 +396,21 @@ func (x *ReplacingMergeTree) GetVersionColumn() string {
 	return ""
 }
 
+func (x *ReplacingMergeTree) GetIsDeletedColumn() string {
+	if x != nil && x.IsDeletedColumn != nil {
+		return *x.IsDeletedColumn
+	}
+	return ""
+}
+
 type ReplicatedReplacingMergeTree struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ZooPath       string                 `protobuf:"bytes,1,opt,name=zoo_path,json=zooPath,proto3" json:"zoo_path,omitempty"`
-	ReplicaName   string                 `protobuf:"bytes,2,opt,name=replica_name,json=replicaName,proto3" json:"replica_name,omitempty"`
-	VersionColumn *string                `protobuf:"bytes,3,opt,name=version_column,json=versionColumn,proto3,oneof" json:"version_column,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	ZooPath         string                 `protobuf:"bytes,1,opt,name=zoo_path,json=zooPath,proto3" json:"zoo_path,omitempty"`
+	ReplicaName     string                 `protobuf:"bytes,2,opt,name=replica_name,json=replicaName,proto3" json:"replica_name,omitempty"`
+	VersionColumn   *string                `protobuf:"bytes,3,opt,name=version_column,json=versionColumn,proto3,oneof" json:"version_column,omitempty"`
+	IsDeletedColumn *string                `protobuf:"bytes,4,opt,name=is_deleted_column,json=isDeletedColumn,proto3,oneof" json:"is_deleted_column,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ReplicatedReplacingMergeTree) Reset() {
@@ -451,6 +460,13 @@ func (x *ReplicatedReplacingMergeTree) GetReplicaName() string {
 func (x *ReplicatedReplacingMergeTree) GetVersionColumn() string {
 	if x != nil && x.VersionColumn != nil {
 		return *x.VersionColumn
+	}
+	return ""
+}
+
+func (x *ReplicatedReplacingMergeTree) GetIsDeletedColumn() string {
+	if x != nil && x.IsDeletedColumn != nil {
+		return *x.IsDeletedColumn
 	}
 	return ""
 }
@@ -886,15 +902,19 @@ const file_proto_engine_proto_rawDesc = "" +
 	"\tMergeTree\"S\n" +
 	"\x13ReplicatedMergeTree\x12\x19\n" +
 	"\bzoo_path\x18\x01 \x01(\tR\azooPath\x12!\n" +
-	"\freplica_name\x18\x02 \x01(\tR\vreplicaName\"S\n" +
+	"\freplica_name\x18\x02 \x01(\tR\vreplicaName\"\x9a\x01\n" +
 	"\x12ReplacingMergeTree\x12*\n" +
-	"\x0eversion_column\x18\x01 \x01(\tH\x00R\rversionColumn\x88\x01\x01B\x11\n" +
-	"\x0f_version_column\"\x9b\x01\n" +
+	"\x0eversion_column\x18\x01 \x01(\tH\x00R\rversionColumn\x88\x01\x01\x12/\n" +
+	"\x11is_deleted_column\x18\x02 \x01(\tH\x01R\x0fisDeletedColumn\x88\x01\x01B\x11\n" +
+	"\x0f_version_columnB\x14\n" +
+	"\x12_is_deleted_column\"\xe2\x01\n" +
 	"\x1cReplicatedReplacingMergeTree\x12\x19\n" +
 	"\bzoo_path\x18\x01 \x01(\tR\azooPath\x12!\n" +
 	"\freplica_name\x18\x02 \x01(\tR\vreplicaName\x12*\n" +
-	"\x0eversion_column\x18\x03 \x01(\tH\x00R\rversionColumn\x88\x01\x01B\x11\n" +
-	"\x0f_version_column\"3\n" +
+	"\x0eversion_column\x18\x03 \x01(\tH\x00R\rversionColumn\x88\x01\x01\x12/\n" +
+	"\x11is_deleted_column\x18\x04 \x01(\tH\x01R\x0fisDeletedColumn\x88\x01\x01B\x11\n" +
+	"\x0f_version_columnB\x14\n" +
+	"\x12_is_deleted_column\"3\n" +
 	"\x10SummingMergeTree\x12\x1f\n" +
 	"\vsum_columns\x18\x01 \x03(\tR\n" +
 	"sumColumns\"6\n" +

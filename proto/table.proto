@@ -19,4 +19,5 @@ message Table {
   optional string ttl = 8;
   map<string, string> settings = 9;
   repeated Index indexes = 10;
+  repeated string primary_key = 11;
 }

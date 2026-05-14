@@ -33,6 +33,7 @@ type Table struct {
 	Ttl           *string                `protobuf:"bytes,8,opt,name=ttl,proto3,oneof" json:"ttl,omitempty"`
 	Settings      map[string]string      `protobuf:"bytes,9,rep,name=settings,proto3" json:"settings,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	Indexes       []*Index               `protobuf:"bytes,10,rep,name=indexes,proto3" json:"indexes,omitempty"`
+	PrimaryKey    []string               `protobuf:"bytes,11,rep,name=primary_key,json=primaryKey,proto3" json:"primary_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -137,11 +138,18 @@ func (x *Table) GetIndexes() []*Index {
 	return nil
 }
 
+func (x *Table) GetPrimaryKey() []string {
+	if x != nil {
+		return x.PrimaryKey
+	}
+	return nil
+}
+
 var File_proto_table_proto protoreflect.FileDescriptor
 
 const file_proto_table_proto_rawDesc = "" +
 	"\n" +
-	"\x11proto/table.proto\x12\x11clickhouse.iac.v1\x1a\x12proto/column.proto\x1a\x12proto/engine.proto\x1a\x11proto/index.proto\"\x89\x04\n" +
+	"\x11proto/table.proto\x12\x11clickhouse.iac.v1\x1a\x12proto/column.proto\x1a\x12proto/engine.proto\x1a\x11proto/index.proto\"\xaa\x04\n" +
 	"\x05Table\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x1f\n" +
 	"\bdatabase\x18\x02 \x01(\tH\x00R\bdatabase\x88\x01\x01\x123\n" +
@@ -153,7 +161,9 @@ const file_proto_table_proto_rawDesc = "" +
 	"\x03ttl\x18\b \x01(\tH\x03R\x03ttl\x88\x01\x01\x12B\n" +
 	"\bsettings\x18\t \x03(\v2&.clickhouse.iac.v1.Table.SettingsEntryR\bsettings\x122\n" +
 	"\aindexes\x18\n" +
-	" \x03(\v2\x18.clickhouse.iac.v1.IndexR\aindexes\x1a;\n" +
+	" \x03(\v2\x18.clickhouse.iac.v1.IndexR\aindexes\x12\x1f\n" +
+	"\vprimary_key\x18\v \x03(\tR\n" +
+	"primaryKey\x1a;\n" +
 	"\rSettingsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01B\v\n" +

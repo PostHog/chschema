@@ -29,8 +29,12 @@ type Column struct {
 	Codec             *string                `protobuf:"bytes,4,opt,name=codec,proto3,oneof" json:"codec,omitempty"`
 	Ttl               *string                `protobuf:"bytes,5,opt,name=ttl,proto3,oneof" json:"ttl,omitempty"`
 	Comment           *string                `protobuf:"bytes,6,opt,name=comment,proto3,oneof" json:"comment,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// default_kind is the ClickHouse column default kind: DEFAULT,
+	// MATERIALIZED, ALIAS or EPHEMERAL. Empty means a plain DEFAULT (or no
+	// default expression at all).
+	DefaultKind   *string `protobuf:"bytes,7,opt,name=default_kind,json=defaultKind,proto3,oneof" json:"default_kind,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Column) Reset() {
@@ -105,23 +109,32 @@ func (x *Column) GetComment() string {
 	return ""
 }
 
+func (x *Column) GetDefaultKind() string {
+	if x != nil && x.DefaultKind != nil {
+		return *x.DefaultKind
+	}
+	return ""
+}
+
 var File_proto_column_proto protoreflect.FileDescriptor
 
 const file_proto_column_proto_rawDesc = "" +
 	"\n" +
-	"\x12proto/column.proto\x12\x11clickhouse.iac.v1\"\xea\x01\n" +
+	"\x12proto/column.proto\x12\x11clickhouse.iac.v1\"\xa3\x02\n" +
 	"\x06Column\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x122\n" +
 	"\x12default_expression\x18\x03 \x01(\tH\x00R\x11defaultExpression\x88\x01\x01\x12\x19\n" +
 	"\x05codec\x18\x04 \x01(\tH\x01R\x05codec\x88\x01\x01\x12\x15\n" +
 	"\x03ttl\x18\x05 \x01(\tH\x02R\x03ttl\x88\x01\x01\x12\x1d\n" +
-	"\acomment\x18\x06 \x01(\tH\x03R\acomment\x88\x01\x01B\x15\n" +
+	"\acomment\x18\x06 \x01(\tH\x03R\acomment\x88\x01\x01\x12&\n" +
+	"\fdefault_kind\x18\a \x01(\tH\x04R\vdefaultKind\x88\x01\x01B\x15\n" +
 	"\x13_default_expressionB\b\n" +
 	"\x06_codecB\x06\n" +
 	"\x04_ttlB\n" +
 	"\n" +
-	"\b_commentB9Z7github.com/posthog/chschema/gen/chschema_v1;chschema_v1b\x06proto3"
+	"\b_commentB\x0f\n" +
+	"\r_default_kindB9Z7github.com/posthog/chschema/gen/chschema_v1;chschema_v1b\x06proto3"
 
 var (
 	file_proto_column_proto_rawDescOnce sync.Once

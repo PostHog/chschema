@@ -155,6 +155,7 @@ func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.
 			sorting_key,
 			partition_key,
 			primary_key,
+			create_table_query,
 			total_rows,
 			total_bytes
 		FROM system.tables
@@ -185,9 +186,9 @@ func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.
 	defer rows.Close()
 
 	for rows.Next() {
-		var db, name, engine, engineFull, sortingKey, partitionKey, primaryKey string
+		var db, name, engine, engineFull, sortingKey, partitionKey, primaryKey, createQuery string
 		var totalRows, totalBytes uint64
-		if err := rows.Scan(&db, &name, &engine, &engineFull, &sortingKey, &partitionKey, &primaryKey, &totalRows, &totalBytes); err != nil {
+		if err := rows.Scan(&db, &name, &engine, &engineFull, &sortingKey, &partitionKey, &primaryKey, &createQuery, &totalRows, &totalBytes); err != nil {
 			return fmt.Errorf("failed to scan table row: %w", err)
 		}
 
@@ -197,7 +198,7 @@ func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.
 		}
 
 		// Parse and set engine information
-		if err := i.parseTableEngine(table, engine, engineFull, sortingKey, partitionKey, primaryKey); err != nil {
+		if err := i.parseTableEngine(table, engine, engineFull, sortingKey, partitionKey, primaryKey, createQuery); err != nil {
 			return fmt.Errorf("failed to parse engine for table %s: %w", name, err)
 		}
 
@@ -230,7 +231,7 @@ func (i *Introspector) introspectTables(ctx context.Context, state *chschema_v1.
 
 func (i *Introspector) introspectColumns(ctx context.Context, table *chschema_v1.Table) error {
 	rows, err := i.conn.Query(ctx, `
-		SELECT name, type, default_expression, compression_codec, comment
+		SELECT name, type, default_kind, default_expression, compression_codec, comment
 		FROM system.columns
 		WHERE database = ? AND table = ?
 	`, table.Database, table.Name)
@@ -240,13 +241,20 @@ func (i *Introspector) introspectColumns(ctx context.Context, table *chschema_v1
 	defer rows.Close()
 
 	for rows.Next() {
-		var name, colType, defaultExprVal, codecVal, commentVal string
-		if err := rows.Scan(&name, &colType, &defaultExprVal, &codecVal, &commentVal); err != nil {
+		var name, colType, defaultKindVal, defaultExprVal, codecVal, commentVal string
+		if err := rows.Scan(&name, &colType, &defaultKindVal, &defaultExprVal, &codecVal, &commentVal); err != nil {
 			return fmt.Errorf("failed to scan column row: %w", err)
 		}
 		var defaultExpr *string
 		if defaultExprVal != "" {
 			defaultExpr = &defaultExprVal
+		}
+
+		// default_kind is DEFAULT / MATERIALIZED / ALIAS / EPHEMERAL. A plain
+		// DEFAULT is left unset — sqlgen treats the empty kind as DEFAULT.
+		var defaultKind *string
+		if defaultKindVal != "" && defaultKindVal != "DEFAULT" {
+			defaultKind = &defaultKindVal
 		}
 
 		var codec *string
@@ -263,6 +271,7 @@ func (i *Introspector) introspectColumns(ctx context.Context, table *chschema_v1
 			Name:              name,
 			Type:              colType,
 			DefaultExpression: defaultExpr,
+			DefaultKind:       defaultKind,
 			Codec:             codec,
 			Comment:           comment,
 		}
@@ -273,7 +282,7 @@ func (i *Introspector) introspectColumns(ctx context.Context, table *chschema_v1
 }
 
 // parseTableEngine parses engine information and sets table properties
-func (i *Introspector) parseTableEngine(table *chschema_v1.Table, engine, engineFull, sortingKey, partitionKey, primaryKey string) error {
+func (i *Introspector) parseTableEngine(table *chschema_v1.Table, engine, engineFull, sortingKey, partitionKey, primaryKey, createQuery string) error {
 	// Set ORDER BY clause
 	if sortingKey != "" {
 		table.OrderBy = strings.Split(sortingKey, ", ")
@@ -284,12 +293,38 @@ func (i *Introspector) parseTableEngine(table *chschema_v1.Table, engine, engine
 		table.PartitionBy = &partitionKey
 	}
 
+	// Set PRIMARY KEY when the CREATE statement spells it out. ClickHouse
+	// reports primary_key for every table (defaulting to the sorting key),
+	// so a differing value always means it's explicit; an equal value is
+	// only explicit if the create_table_query actually contains it.
+	if primaryKey != "" &&
+		(primaryKey != sortingKey || strings.Contains(strings.ToUpper(createQuery), " PRIMARY KEY ")) {
+		table.PrimaryKey = strings.Split(primaryKey, ", ")
+	}
+
+	// Set SAMPLE BY clause
+	if sampleBy := ParseEngineSampleBy(engineFull); sampleBy != "" {
+		table.SampleBy = &sampleBy
+	}
+
 	// Parse engine using the engine parser
 	parsedEngine, err := ParseEngine(engine, engineFull)
 	if err != nil {
 		return fmt.Errorf("failed to parse engine: %w", err)
 	}
 	table.Engine = parsedEngine
+
+	// Parse the SETTINGS clause from engine_full
+	settings, err := ParseEngineSettings(engineFull)
+	if err != nil {
+		return fmt.Errorf("failed to parse engine settings: %w", err)
+	}
+	table.Settings = settings
+
+	// Parse the TTL clause from engine_full
+	if ttl := ParseEngineTTL(engineFull); ttl != "" {
+		table.Ttl = &ttl
+	}
 
 	return nil
 }
@@ -312,11 +347,12 @@ func (i *Introspector) introspectTableSettings(ctx context.Context, table *chsch
 
 // introspectIndexes queries data skipping indexes from system.data_skipping_indices
 func (i *Introspector) introspectIndexes(ctx context.Context, table *chschema_v1.Table) error {
+	// No ORDER BY: system.data_skipping_indices returns indexes in
+	// declaration order, which is what create_table_query reflects too.
 	rows, err := i.conn.Query(ctx, `
 		SELECT name, type_full, expr, granularity
 		FROM system.data_skipping_indices
 		WHERE database = ? AND table = ?
-		ORDER BY name
 	`, table.Database, table.Name)
 	if err != nil {
 		return fmt.Errorf("failed to query system.data_skipping_indices for table %s: %w", table.Name, err)

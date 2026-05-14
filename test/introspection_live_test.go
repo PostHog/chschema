@@ -47,10 +47,12 @@ func TestLive_Introspection_Engine(t *testing.T) {
 		) ENGINE = MergeTree()
 		PARTITION BY toYYYYMM(created_at)
 		ORDER BY id
+		SETTINGS index_granularity = 8192
 	`,
 			table: &chschema_v1.Table{
 				Name:     "test_table",
 				Database: &dbName,
+				Settings: map[string]string{"index_granularity": "8192"},
 				Columns: []*chschema_v1.Column{
 					{Name: "id", Type: "UInt64"},
 					{Name: "name", Type: "String"},
@@ -78,10 +80,12 @@ func TestLive_Introspection_Engine(t *testing.T) {
 			status String
 		) ENGINE = MergeTree()
 		ORDER BY user_id
+		SETTINGS index_granularity = 8192
 	`,
 			table: &chschema_v1.Table{
 				Name:     "test_comments",
 				Database: &dbName,
+				Settings: map[string]string{"index_granularity": "8192"},
 				Columns: []*chschema_v1.Column{
 					{Name: "user_id", Type: "UInt64", Comment: utils.Ptr("The unique identifier for the user")},
 					{Name: "email", Type: "String", Comment: utils.Ptr("User email address")},
@@ -105,10 +109,12 @@ func TestLive_Introspection_Engine(t *testing.T) {
 			INDEX idx_timestamp_minmax timestamp TYPE minmax GRANULARITY 4
 		) ENGINE = MergeTree()
 		ORDER BY id
+		SETTINGS index_granularity = 8192
 	`,
 			table: &chschema_v1.Table{
 				Name:     "test_minmax_index",
 				Database: &dbName,
+				Settings: map[string]string{"index_granularity": "8192"},
 				Columns: []*chschema_v1.Column{
 					{Name: "id", Type: "UInt64"},
 					{Name: "timestamp", Type: "DateTime"},
@@ -135,10 +141,12 @@ func TestLive_Introspection_Engine(t *testing.T) {
 			INDEX idx_category_set category TYPE set(100) GRANULARITY 4
 		) ENGINE = MergeTree()
 		ORDER BY id
+		SETTINGS index_granularity = 8192
 	`,
 			table: &chschema_v1.Table{
 				Name:     "test_set_index",
 				Database: &dbName,
+				Settings: map[string]string{"index_granularity": "8192"},
 				Columns: []*chschema_v1.Column{
 					{Name: "id", Type: "UInt64"},
 					{Name: "category", Type: "String"},
@@ -165,10 +173,12 @@ func TestLive_Introspection_Engine(t *testing.T) {
 			INDEX idx_email_bloom email TYPE bloom_filter() GRANULARITY 1
 		) ENGINE = MergeTree()
 		ORDER BY id
+		SETTINGS index_granularity = 8192
 	`,
 			table: &chschema_v1.Table{
 				Name:     "test_bloom_index",
 				Database: &dbName,
+				Settings: map[string]string{"index_granularity": "8192"},
 				Columns: []*chschema_v1.Column{
 					{Name: "id", Type: "UInt64"},
 					{Name: "email", Type: "String"},
@@ -194,10 +204,12 @@ func TestLive_Introspection_Engine(t *testing.T) {
 			INDEX idx_description_tokenbf description TYPE tokenbf_v1(32768, 3, 0) GRANULARITY 2
 		) ENGINE = MergeTree()
 		ORDER BY id
+		SETTINGS index_granularity = 8192
 	`,
 			table: &chschema_v1.Table{
 				Name:     "test_tokenbf_index",
 				Database: &dbName,
+				Settings: map[string]string{"index_granularity": "8192"},
 				Columns: []*chschema_v1.Column{
 					{Name: "id", Type: "UInt64"},
 					{Name: "description", Type: "String"},
@@ -222,10 +234,12 @@ func TestLive_Introspection_Engine(t *testing.T) {
 			INDEX idx_search_ngrambf search_text TYPE ngrambf_v1(4, 32768, 3, 0) GRANULARITY 1
 		) ENGINE = MergeTree()
 		ORDER BY id
+		SETTINGS index_granularity = 8192
 	`,
 			table: &chschema_v1.Table{
 				Name:     "test_ngrambf_index",
 				Database: &dbName,
+				Settings: map[string]string{"index_granularity": "8192"},
 				Columns: []*chschema_v1.Column{
 					{Name: "id", Type: "UInt64"},
 					{Name: "search_text", Type: "String"},
@@ -254,10 +268,12 @@ func TestLive_Introspection_Engine(t *testing.T) {
 			INDEX idx_timestamp_minmax timestamp TYPE minmax GRANULARITY 4
 		) ENGINE = MergeTree()
 		ORDER BY id
+		SETTINGS index_granularity = 8192
 	`,
 			table: &chschema_v1.Table{
 				Name:     "test_multiple_indexes",
 				Database: &dbName,
+				Settings: map[string]string{"index_granularity": "8192"},
 				Columns: []*chschema_v1.Column{
 					{Name: "id", Type: "UInt64"},
 					{Name: "timestamp", Type: "DateTime"},
@@ -393,14 +409,24 @@ func TestLive_Introspection_AllStatements(t *testing.T) {
 	}
 }
 
-var whitespaces = regexp.MustCompile(`[\t\n\s]+`)
+var (
+	whitespaces  = regexp.MustCompile(`[\t\n\s]+`)
+	parenSpaceLn = regexp.MustCompile(`\(\s+`)
+	parenSpaceRn = regexp.MustCompile(`\s+\)`)
+)
 
 func simplify(stmt string) string {
 	// Remove backticks
 	stmt = strings.ReplaceAll(stmt, "`", "")
-	return whitespaces.ReplaceAllString(
+	stmt = whitespaces.ReplaceAllString(
 		strings.ToLower(
 			strings.TrimSpace(stmt)), " ")
+	// sqlgen formats column lists across multiple lines for readability;
+	// ClickHouse's create_table_query keeps them tight. Whitespace adjacent
+	// to parentheses is not semantically meaningful, so normalize it away.
+	stmt = parenSpaceLn.ReplaceAllString(stmt, "(")
+	stmt = parenSpaceRn.ReplaceAllString(stmt, ")")
+	return stmt
 }
 
 // getObjectName is a helper to extract the object name from a CREATE statement.

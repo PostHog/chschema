@@ -11,4 +11,8 @@ message Column {
   optional string codec = 4;
   optional string ttl = 5;
   optional string comment = 6;
+  // default_kind is the ClickHouse column default kind: DEFAULT,
+  // MATERIALIZED, ALIAS or EPHEMERAL. Empty means a plain DEFAULT (or no
+  // default expression at all).
+  optional string default_kind = 7;
 }

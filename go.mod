@@ -3,6 +3,7 @@ module github.com/posthog/chschema
 go 1.25
 
 require (
+	github.com/AfterShip/clickhouse-sql-parser v0.5.1
 	github.com/ClickHouse/clickhouse-go/v2 v2.40.3
 	github.com/google/go-cmp v0.7.0
 	github.com/hashicorp/hcl/v2 v2.24.0
@@ -16,7 +17,6 @@ require (
 )
 
 require (
-	github.com/AfterShip/clickhouse-sql-parser v0.5.1 // indirect
 	github.com/ClickHouse/ch-go v0.68.0 // indirect
 	github.com/agext/levenshtein v1.2.1 // indirect
 	github.com/andybalholm/brotli v1.2.0 // indirect
@@ -47,3 +47,5 @@ require (
 )
 
 replace github.com/hashicorp/hcl/v2 => /Users/orian/workspace/posthog/hcl
+
+replace github.com/AfterShip/clickhouse-sql-parser => github.com/orian/clickhouse-sql-parser v0.0.0-20260513200928-e96b723f4716

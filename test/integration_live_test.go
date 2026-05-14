@@ -144,23 +144,25 @@ func TestLive_EndToEnd_SchemaApply(t *testing.T) {
 }
 
 func cleanupSQL(t *testing.T, dbName, createSQL string) string {
-	// regexp.MustCompile(`(TABLE|VIEW) default\.`)
 	createSQL = strings.Replace(createSQL, "TABLE default.", "TABLE "+dbName+".", 1)
-	pattern := regexp.MustCompile(`'/clickhouse/tables/(noshard|\{shard\})/posthog.(.*?)'`)
-	dest := fmt.Sprintf(`'/clickhouse/tables/$1/%s.$2'`, dbName)
-	createSQL = pattern.ReplaceAllString(createSQL, dest)
+	// Make every ReplicatedMergeTree ZooKeeper path unique to this test
+	// database. The fixture paths come in several shapes
+	// (/clickhouse/tables/..., /clickhouse/prod/tables/...), and a fixed
+	// path would collide in ZooKeeper across repeated test runs.
+	zkPath := regexp.MustCompile(`'/clickhouse/`)
+	createSQL = zkPath.ReplaceAllString(createSQL, "'/clickhouse/"+dbName+"/")
 	return createSQL
 }
 
 func TestCleanupSQL(t *testing.T) {
 	createSQL := "CREATE TABLE default.query_log_archive (`hostname` LowCardinality(String),`user` LowCardinality(String),`query_id` String) ENGINE = ReplicatedMergeTree('/clickhouse/tables/noshard/posthog.query_log_archive_new', '{replica}-{shard}') PARTITION BY toYYYYMM(event_date) PRIMARY KEY (team_id, event_date, event_time, query_id) ORDER BY (team_id, event_date, event_time, query_id) SETTINGS index_granularity = 8192"
 	got := cleanupSQL(t, "my_test_database", createSQL)
-	want := "CREATE TABLE my_test_database.query_log_archive (`hostname` LowCardinality(String),`user` LowCardinality(String),`query_id` String) ENGINE = ReplicatedMergeTree('/clickhouse/tables/noshard/my_test_database.query_log_archive_new', '{replica}-{shard}') PARTITION BY toYYYYMM(event_date) PRIMARY KEY (team_id, event_date, event_time, query_id) ORDER BY (team_id, event_date, event_time, query_id) SETTINGS index_granularity = 8192"
+	want := "CREATE TABLE my_test_database.query_log_archive (`hostname` LowCardinality(String),`user` LowCardinality(String),`query_id` String) ENGINE = ReplicatedMergeTree('/clickhouse/my_test_database/tables/noshard/posthog.query_log_archive_new', '{replica}-{shard}') PARTITION BY toYYYYMM(event_date) PRIMARY KEY (team_id, event_date, event_time, query_id) ORDER BY (team_id, event_date, event_time, query_id) SETTINGS index_granularity = 8192"
 	require.Equal(t, want, got)
 
 	createSQL = "CREATE TABLE default.sharded_events (`uuid` UUID, `event` String, `properties` String CODEC(ZSTD(3)), `timestamp` DateTime64(6, 'UTC'), `team_id` Int64) ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/{shard}/posthog.events', '{replica}', _timestamp) PARTITION BY toYYYYMM(timestamp) ORDER BY (team_id, toDate(timestamp), event, cityHash64(distinct_id), cityHash64(uuid)) SAMPLE BY cityHash64(distinct_id) SETTINGS index_granularity = 8192"
 	got = cleanupSQL(t, "my_test_database", createSQL)
-	want = "CREATE TABLE my_test_database.sharded_events (`uuid` UUID, `event` String, `properties` String CODEC(ZSTD(3)), `timestamp` DateTime64(6, 'UTC'), `team_id` Int64) ENGINE = ReplicatedReplacingMergeTree('/clickhouse/tables/{shard}/my_test_database.events', '{replica}', _timestamp) PARTITION BY toYYYYMM(timestamp) ORDER BY (team_id, toDate(timestamp), event, cityHash64(distinct_id), cityHash64(uuid)) SAMPLE BY cityHash64(distinct_id) SETTINGS index_granularity = 8192"
+	want = "CREATE TABLE my_test_database.sharded_events (`uuid` UUID, `event` String, `properties` String CODEC(ZSTD(3)), `timestamp` DateTime64(6, 'UTC'), `team_id` Int64) ENGINE = ReplicatedReplacingMergeTree('/clickhouse/my_test_database/tables/{shard}/posthog.events', '{replica}', _timestamp) PARTITION BY toYYYYMM(timestamp) ORDER BY (team_id, toDate(timestamp), event, cityHash64(distinct_id), cityHash64(uuid)) SAMPLE BY cityHash64(distinct_id) SETTINGS index_granularity = 8192"
 	require.Equal(t, want, got)
 }
 

@@ -30,12 +30,14 @@ message ReplicatedMergeTree {
 
 message ReplacingMergeTree {
   optional string version_column = 1;
+  optional string is_deleted_column = 2;
 }
 
 message ReplicatedReplacingMergeTree {
   string zoo_path = 1;
   string replica_name = 2;
   optional string version_column = 3;
+  optional string is_deleted_column = 4;
 }
 
 message SummingMergeTree {

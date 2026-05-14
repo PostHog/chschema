@@ -90,7 +90,13 @@ func GenerateCreateTable(table *chschema_v1.Table) string {
 		// TODO move the column generation to a separate function
 		sb.WriteString(fmt.Sprintf("  `%s` %s", col.Name, col.Type))
 		if col.DefaultExpression != nil && *col.DefaultExpression != "" {
-			sb.WriteString(fmt.Sprintf(" DEFAULT %s", *col.DefaultExpression))
+			// default_kind is DEFAULT / MATERIALIZED / ALIAS / EPHEMERAL;
+			// an unset kind means a plain DEFAULT.
+			kind := "DEFAULT"
+			if col.DefaultKind != nil && *col.DefaultKind != "" {
+				kind = *col.DefaultKind
+			}
+			sb.WriteString(fmt.Sprintf(" %s %s", kind, *col.DefaultExpression))
 		}
 		if col.Codec != nil && *col.Codec != "" {
 			sb.WriteString(fmt.Sprintf(" %s", *col.Codec))
@@ -122,11 +128,23 @@ func GenerateCreateTable(table *chschema_v1.Table) string {
 		sb.WriteString(fmt.Sprintf(" PARTITION BY %s\n", *table.PartitionBy))
 	}
 
+	// Primary Key
+	if l := len(table.PrimaryKey); l == 1 {
+		sb.WriteString(fmt.Sprintf(" PRIMARY KEY %s\n", table.PrimaryKey[0]))
+	} else if l > 1 {
+		sb.WriteString(fmt.Sprintf(" PRIMARY KEY (%s)\n", strings.Join(table.PrimaryKey, ", ")))
+	}
+
 	// Order By
 	if l := len(table.OrderBy); l == 1 {
 		sb.WriteString(fmt.Sprintf(" ORDER BY %s\n", table.OrderBy[0]))
 	} else if l > 1 {
 		sb.WriteString(fmt.Sprintf(" ORDER BY (%s)\n", strings.Join(table.OrderBy, ", ")))
+	}
+
+	// Sample By
+	if table.SampleBy != nil && *table.SampleBy != "" {
+		sb.WriteString(fmt.Sprintf(" SAMPLE BY %s\n", *table.SampleBy))
 	}
 
 	// TTL
@@ -199,6 +217,9 @@ func GenerateEngineString(engine *chschema_v1.Engine) string {
 	}
 
 	if t := engine.GetReplacingMergeTree(); t != nil {
+		if t.VersionColumn != nil && t.IsDeletedColumn != nil {
+			return fmt.Sprintf("ReplacingMergeTree(%s, %s)", *t.VersionColumn, *t.IsDeletedColumn)
+		}
 		if t.VersionColumn != nil {
 			return fmt.Sprintf("ReplacingMergeTree(%s)", *t.VersionColumn)
 		}
@@ -206,6 +227,9 @@ func GenerateEngineString(engine *chschema_v1.Engine) string {
 	}
 
 	if t := engine.GetReplicatedReplacingMergeTree(); t != nil {
+		if t.VersionColumn != nil && t.IsDeletedColumn != nil {
+			return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s', %s, %s)", t.ZooPath, t.ReplicaName, *t.VersionColumn, *t.IsDeletedColumn)
+		}
 		if t.VersionColumn != nil {
 			return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s', %s)", t.ZooPath, t.ReplicaName, *t.VersionColumn)
 		}
@@ -237,10 +261,12 @@ func GenerateEngineString(engine *chschema_v1.Engine) string {
 
 	// Distributed
 	if t := engine.GetDistributed(); t != nil {
+		// cluster / database / table are string literals; the sharding key
+		// is an expression and must stay unquoted.
 		if t.ShardingKey != nil {
-			return fmt.Sprintf("Distributed(%s, %s, %s, %s)", t.ClusterName, t.RemoteDatabase, t.RemoteTable, *t.ShardingKey)
+			return fmt.Sprintf("Distributed('%s', '%s', '%s', %s)", t.ClusterName, t.RemoteDatabase, t.RemoteTable, *t.ShardingKey)
 		}
-		return fmt.Sprintf("Distributed(%s, %s, %s)", t.ClusterName, t.RemoteDatabase, t.RemoteTable)
+		return fmt.Sprintf("Distributed('%s', '%s', '%s')", t.ClusterName, t.RemoteDatabase, t.RemoteTable)
 	}
 
 	// Log

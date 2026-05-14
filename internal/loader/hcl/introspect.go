@@ -99,10 +99,10 @@ func buildTableFromCreateSQL(createSQL string) (TableSpec, error) {
 			}
 		}
 		if ct.Engine.PartitionBy != nil {
-			t.PartitionBy = strPtr(chparser.Format(ct.Engine.PartitionBy.Expr))
+			t.PartitionBy = strPtr(formatNode(ct.Engine.PartitionBy.Expr))
 		}
 		if ct.Engine.SampleBy != nil {
-			t.SampleBy = strPtr(chparser.Format(ct.Engine.SampleBy.Expr))
+			t.SampleBy = strPtr(formatNode(ct.Engine.SampleBy.Expr))
 		}
 		if ct.Engine.PrimaryKey != nil {
 			if pk := exprList(ct.Engine.PrimaryKey.Expr); !stringSliceEqual(pk, t.OrderBy) {
@@ -110,7 +110,7 @@ func buildTableFromCreateSQL(createSQL string) (TableSpec, error) {
 			}
 		}
 		if ct.Engine.TTL != nil && len(ct.Engine.TTL.Items) > 0 {
-			t.TTL = strPtr(chparser.Format(ct.Engine.TTL.Items[0].Expr))
+			t.TTL = strPtr(formatNode(ct.Engine.TTL.Items[0].Expr))
 		}
 		if len(settings) > 0 {
 			t.Settings = settings
@@ -118,7 +118,7 @@ func buildTableFromCreateSQL(createSQL string) (TableSpec, error) {
 	}
 
 	if ct.OnCluster != nil && ct.OnCluster.Expr != nil {
-		t.Cluster = strPtr(chparser.Format(ct.OnCluster.Expr))
+		t.Cluster = strPtr(formatNode(ct.OnCluster.Expr))
 	}
 	if ct.Comment != nil {
 		t.Comment = strPtr(unquoteString(ct.Comment.Literal))
@@ -127,25 +127,39 @@ func buildTableFromCreateSQL(createSQL string) (TableSpec, error) {
 	return t, nil
 }
 
+// formatNode renders an AST node back to compact SQL text. The fork's
+// refactor-visitor branch replaced the old chparser.Format helper with a
+// visitor-based API, so node rendering now goes through PrintVisitor.
+func formatNode(n chparser.Expr) string {
+	if n == nil {
+		return ""
+	}
+	v := chparser.NewPrintVisitor()
+	if err := n.Accept(v); err != nil {
+		return ""
+	}
+	return v.String()
+}
+
 func columnFromAST(c *chparser.ColumnDef) ColumnSpec {
-	out := ColumnSpec{Name: identName(c.Name), Type: chparser.Format(c.Type)}
+	out := ColumnSpec{Name: identName(c.Name), Type: formatNode(c.Type)}
 	if c.DefaultExpr != nil {
-		s := chparser.Format(c.DefaultExpr)
+		s := formatNode(c.DefaultExpr)
 		out.Default = &s
 	}
 	if c.MaterializedExpr != nil {
-		s := chparser.Format(c.MaterializedExpr)
+		s := formatNode(c.MaterializedExpr)
 		out.Materialized = &s
 	}
 	if c.AliasExpr != nil {
-		s := chparser.Format(c.AliasExpr)
+		s := formatNode(c.AliasExpr)
 		out.Alias = &s
 	}
 	if c.Codec != nil {
 		out.Codec = parseCompressionCodec(c.Codec)
 	}
 	if c.TTL != nil && len(c.TTL.Items) > 0 {
-		s := chparser.Format(c.TTL.Items[0].Expr)
+		s := formatNode(c.TTL.Items[0].Expr)
 		out.TTL = &s
 	}
 	if c.Comment != nil {
@@ -158,15 +172,15 @@ func columnFromAST(c *chparser.ColumnDef) ColumnSpec {
 func indexFromAST(i *chparser.TableIndex) IndexSpec {
 	out := IndexSpec{Name: identName(i.Name)}
 	if i.ColumnExpr != nil {
-		out.Expr = chparser.Format(i.ColumnExpr.Expr)
+		out.Expr = formatNode(i.ColumnExpr.Expr)
 	}
 	if i.ColumnType != nil {
-		out.Type = chparser.Format(i.ColumnType)
+		out.Type = formatNode(i.ColumnType)
 	}
 	if i.Granularity != nil {
 		// Granularity is a NumberLiteral; convert via Format then parse.
 		var n int
-		_, _ = fmt.Sscanf(chparser.Format(i.Granularity), "%d", &n)
+		_, _ = fmt.Sscanf(formatNode(i.Granularity), "%d", &n)
 		out.Granularity = n
 	}
 	return out
@@ -176,7 +190,7 @@ func constraintFromAST(c *chparser.ConstraintClause) *ConstraintSpec {
 	if c.Constraint == nil || c.Expr == nil {
 		return nil
 	}
-	expr := chparser.Format(c.Expr)
+	expr := formatNode(c.Expr)
 	// ClickHouse stores both CHECK and ASSUME under ConstraintClause; the
 	// upstream library doesn't preserve the kind in v0.5.1. Treat as CHECK
 	// by default — that's the common case.
@@ -280,7 +294,7 @@ func engineParamStrings(p *chparser.ParamExprList) []string {
 	}
 	out := make([]string, 0, len(p.Items.Items))
 	for _, it := range p.Items.Items {
-		out = append(out, unquoteString(chparser.Format(it)))
+		out = append(out, unquoteString(formatNode(it)))
 	}
 	return out
 }
@@ -291,7 +305,7 @@ func engineSettingsMap(s *chparser.SettingsClause) map[string]string {
 	}
 	out := make(map[string]string, len(s.Items))
 	for _, it := range s.Items {
-		out[it.Name.Name] = unquoteString(chparser.Format(it.Expr))
+		out[it.Name.Name] = unquoteString(formatNode(it.Expr))
 	}
 	return out
 }
@@ -301,7 +315,7 @@ func engineSettingsMap(s *chparser.SettingsClause) map[string]string {
 // Used to normalize `ORDER BY (a, b)` (one tuple item) and `ORDER BY a, b`
 // (two items) into the same `[a, b]` representation.
 func flattenTupleExpr(e chparser.Expr) []string {
-	s := strings.TrimSpace(chparser.Format(e))
+	s := strings.TrimSpace(formatNode(e))
 	if !strings.HasPrefix(s, "(") || !strings.HasSuffix(s, ")") {
 		return []string{s}
 	}
@@ -320,7 +334,7 @@ func exprList(e chparser.Expr) []string {
 	}
 	// A multi-key clause arrives as a tuple expression; single-key as a
 	// bare identifier. Format() handles both consistently; we then split.
-	s := chparser.Format(e)
+	s := formatNode(e)
 	s = strings.TrimSpace(s)
 	s = strings.TrimPrefix(s, "(")
 	s = strings.TrimSuffix(s, ")")
@@ -388,7 +402,7 @@ func identName(n *chparser.NestedIdentifier) string {
 	if n == nil {
 		return ""
 	}
-	s := chparser.Format(n)
+	s := formatNode(n)
 	// Strip ClickHouse's backtick quoting around bare identifiers so the
 	// stored column/index names match how a user would write them in HCL.
 	if len(s) >= 2 && s[0] == '`' && s[len(s)-1] == '`' {
@@ -401,7 +415,7 @@ func parseCompressionCodec(c *chparser.CompressionCodec) *string {
 	if c == nil {
 		return nil
 	}
-	s := chparser.Format(c)
+	s := formatNode(c)
 	if strings.HasPrefix(s, "CODEC(") && strings.HasSuffix(s, ")") {
 		inner := s[len("CODEC(") : len(s)-1]
 		return &inner
