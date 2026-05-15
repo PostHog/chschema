@@ -94,11 +94,20 @@ jobs:
     - name: Download dependencies
       run: go mod download
 
-    - name: Build binary
-      run: go build -o chschema ./cmd/chschema
+    - name: Build all packages
+      run: go build ./...
 
-    - name: Test binary version command
-      run: ./chschema version
+    - name: Build hclexp binary
+      run: go build -o hclexp ./cmd/hclexp
 
-    - name: Test binary help command
-      run: ./chschema --help
+    - name: Smoke-test hclexp help
+      run: ./hclexp -h
+
+    - name: Smoke-test hclexp diff help
+      run: ./hclexp diff -h
+
+    - name: Smoke-test hclexp introspect help
+      run: ./hclexp introspect -h
+
+    - name: Smoke-test hclexp validate help
+      run: ./hclexp validate -h
