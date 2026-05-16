@@ -1,0 +1,17 @@
+<clickhouse>
+    <!-- Grant test user (user1) the privileges needed by hclexp live tests:
+         - NAMED COLLECTION CONTROL: required to CREATE / ALTER / DROP named
+           collections, and to read their secret values via system.named_collections.
+         Without this, TestCHLive_NamedCollection_* and the Kafka+NC E2E test
+         fail with: code: 497, "Not enough privileges". -->
+    <users>
+        <user1>
+            <!-- Allows CREATE / ALTER / DROP NAMED COLLECTION. -->
+            <named_collection_control>1</named_collection_control>
+            <!-- Allows reading NC values from system.named_collections instead
+                 of '[HIDDEN]'. Required by the introspection round-trip tests.
+                 In production, leave this disabled. -->
+            <show_named_collections_secrets>1</show_named_collections_secrets>
+        </user1>
+    </users>
+</clickhouse>

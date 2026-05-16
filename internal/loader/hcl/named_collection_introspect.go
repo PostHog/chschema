@@ -9,11 +9,26 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 )
 
-// IntrospectNamedCollections returns every DDL-managed named collection
-// the live ClickHouse cluster knows about. Config-file collections
-// (source != 'DDL') are filtered out — they're not ours to manage.
+// IntrospectNamedCollections returns every named collection the live
+// ClickHouse cluster exposes via system.named_collections.
+//
+// The cluster's system.named_collections schema varies by ClickHouse
+// version. Newer versions expose `source` (DDL vs. config file) and
+// `create_query` (the full CREATE statement, parseable for ON CLUSTER,
+// comments, and OVERRIDABLE flags). Older versions expose only `name`
+// and `collection` (a Map of key→value pairs).
+//
+// This implementation reads only the columns guaranteed across versions
+// — `name` and `collection`. As a consequence:
+//   - Config-file (XML) collections are NOT filtered out at introspection;
+//     the operator-side `external = true` declaration is the way to keep
+//     hclexp from trying to manage them.
+//   - ON CLUSTER, comment, and OVERRIDABLE/NOT OVERRIDABLE flags are not
+//     captured (the `collection` map doesn't carry them). Round-tripping
+//     these requires a newer ClickHouse with `create_query` exposed —
+//     extending the introspection then is a follow-up.
 func IntrospectNamedCollections(ctx context.Context, conn driver.Conn) ([]NamedCollectionSpec, error) {
-	const q = `SELECT name, create_query FROM system.named_collections WHERE source = 'DDL' ORDER BY name`
+	const q = `SELECT name, collection FROM system.named_collections ORDER BY name`
 	rows, err := conn.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("query system.named_collections: %w", err)
@@ -22,20 +37,32 @@ func IntrospectNamedCollections(ctx context.Context, conn driver.Conn) ([]NamedC
 
 	var out []NamedCollectionSpec
 	for rows.Next() {
-		var name, createSQL string
-		if err := rows.Scan(&name, &createSQL); err != nil {
+		var name string
+		var collection map[string]string
+		if err := rows.Scan(&name, &collection); err != nil {
 			return nil, fmt.Errorf("scan system.named_collections: %w", err)
 		}
-		nc, err := buildNamedCollectionFromCreateSQL(createSQL)
-		if err != nil {
-			return nil, fmt.Errorf("parse create_query for %s: %w", name, err)
+		nc := NamedCollectionSpec{Name: name}
+		// Sort keys for stable output.
+		keys := make([]string, 0, len(collection))
+		for k := range collection {
+			keys = append(keys, k)
 		}
-		if nc.Name == "" {
-			nc.Name = name
+		sortStrings(keys)
+		for _, k := range keys {
+			nc.Params = append(nc.Params, NamedCollectionParam{Key: k, Value: collection[k]})
 		}
 		out = append(out, nc)
 	}
 	return out, rows.Err()
+}
+
+func sortStrings(ss []string) {
+	for i := 1; i < len(ss); i++ {
+		for j := i; j > 0 && ss[j-1] > ss[j]; j-- {
+			ss[j-1], ss[j] = ss[j], ss[j-1]
+		}
+	}
 }
 
 // buildNamedCollectionFromCreateSQL parses a CREATE NAMED COLLECTION
