@@ -64,6 +64,10 @@ func TestWrite_RoundTrip_MaterializedView(t *testing.T) {
 	roundTrip(t, filepath.Join("testdata", "materialized_view.hcl"))
 }
 
+func TestWrite_RoundTrip_Dictionary(t *testing.T) {
+	roundTrip(t, filepath.Join("testdata", "dictionary.hcl"))
+}
+
 func TestWrite_OutputIsStable(t *testing.T) {
 	dbs, err := ParseFile(filepath.Join("testdata", "resolve_basic.hcl"))
 	require.NoError(t, err)

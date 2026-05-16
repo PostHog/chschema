@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func mkTable(name string, engine Engine, cols ...ColumnSpec) TableSpec {
@@ -482,4 +483,85 @@ func TestDiff_TableDiffIsUnsafe(t *testing.T) {
 	// Column add only → safe.
 	td = TableDiff{AddColumns: []ColumnSpec{{Name: "x", Type: "UInt64"}}}
 	assert.False(t, td.IsUnsafe())
+}
+
+func mkDict(name string, source DictionarySource, layout DictionaryLayout, attrs ...DictionaryAttribute) DictionarySpec {
+	return DictionarySpec{
+		Name:       name,
+		PrimaryKey: []string{"k"},
+		Attributes: attrs,
+		Source:     &DictionarySourceSpec{Kind: source.Kind(), Decoded: source},
+		Layout:     &DictionaryLayoutSpec{Kind: layout.Kind(), Decoded: layout},
+	}
+}
+
+func TestDictionaryDiff_EmptyAndUnsafe(t *testing.T) {
+	var empty DictionaryDiff
+	assert.True(t, empty.IsEmpty())
+	assert.False(t, empty.IsUnsafe())
+
+	d := DictionaryDiff{Name: "d", Changed: []string{"query"}}
+	assert.False(t, d.IsEmpty())
+	assert.False(t, d.IsUnsafe())
+}
+
+func TestDatabaseChange_IsEmpty_CoversDictionaries(t *testing.T) {
+	dc := DatabaseChange{Database: "db", AddDictionaries: []DictionarySpec{{Name: "d"}}}
+	assert.False(t, dc.IsEmpty())
+}
+
+func TestDiff_Dictionaries(t *testing.T) {
+	base := mkDict("d", SourceNull{}, LayoutHashed{},
+		DictionaryAttribute{Name: "k", Type: "UInt64"},
+		DictionaryAttribute{Name: "v", Type: "String"},
+	)
+
+	t.Run("add", func(t *testing.T) {
+		from := []DatabaseSpec{{Name: "db"}}
+		to := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
+		cs := Diff(from, to)
+		require.Len(t, cs.Databases, 1)
+		assert.Equal(t, []DictionarySpec{base}, cs.Databases[0].AddDictionaries)
+	})
+
+	t.Run("drop", func(t *testing.T) {
+		from := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
+		to := []DatabaseSpec{{Name: "db"}}
+		cs := Diff(from, to)
+		require.Len(t, cs.Databases, 1)
+		assert.Equal(t, []string{"d"}, cs.Databases[0].DropDictionaries)
+	})
+
+	t.Run("layout change", func(t *testing.T) {
+		changed := base
+		changed.Layout = &DictionaryLayoutSpec{Kind: "flat", Decoded: LayoutFlat{}}
+		from := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
+		to := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{changed}}}
+		cs := Diff(from, to)
+		require.Len(t, cs.Databases, 1)
+		require.Len(t, cs.Databases[0].AlterDictionaries, 1)
+		dd := cs.Databases[0].AlterDictionaries[0]
+		assert.Equal(t, "d", dd.Name)
+		assert.Contains(t, dd.Changed, "layout")
+	})
+
+	t.Run("attributes change", func(t *testing.T) {
+		changed := base
+		changed.Attributes = []DictionaryAttribute{
+			{Name: "k", Type: "UInt64"},
+			{Name: "v", Type: "String"},
+			{Name: "extra", Type: "Int32"},
+		}
+		from := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
+		to := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{changed}}}
+		cs := Diff(from, to)
+		require.Len(t, cs.Databases, 1)
+		require.Len(t, cs.Databases[0].AlterDictionaries, 1)
+		assert.Contains(t, cs.Databases[0].AlterDictionaries[0].Changed, "attributes")
+	})
+
+	t.Run("identical produces no change", func(t *testing.T) {
+		dbs := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
+		assert.True(t, Diff(dbs, dbs).IsEmpty())
+	})
 }

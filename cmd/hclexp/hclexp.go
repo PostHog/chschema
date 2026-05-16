@@ -158,7 +158,8 @@ func runIntrospect(args []string) {
 			os.Exit(1)
 		}
 		slog.Info("introspected database", "name", spec.Name,
-			"tables", len(spec.Tables), "materialized_views", len(spec.MaterializedViews))
+			"tables", len(spec.Tables), "materialized_views", len(spec.MaterializedViews),
+			"dictionaries", len(spec.Dictionaries))
 		dbs = append(dbs, *spec)
 	}
 
@@ -340,6 +341,15 @@ func renderChangeSet(w io.Writer, cs hclload.ChangeSet) {
 			if mvd.QueryChange != nil {
 				fmt.Fprintf(w, "      ~ query changed\n")
 			}
+		}
+		for _, d := range dc.AddDictionaries {
+			fmt.Fprintf(w, "  + dictionary %s\n", d.Name)
+		}
+		for _, name := range dc.DropDictionaries {
+			fmt.Fprintf(w, "  - dictionary %s\n", name)
+		}
+		for _, dd := range dc.AlterDictionaries {
+			fmt.Fprintf(w, "  ~ dictionary %s (changed: %s)\n", dd.Name, strings.Join(dd.Changed, ", "))
 		}
 	}
 }

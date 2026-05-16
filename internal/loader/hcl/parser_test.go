@@ -119,3 +119,56 @@ func TestParseFile_MaterializedView(t *testing.T) {
 	}
 	assert.Equal(t, expected, dbs)
 }
+
+func TestParseFile_Dictionary(t *testing.T) {
+	dbs, err := ParseFile(filepath.Join("testdata", "dictionary.hcl"))
+	require.NoError(t, err)
+
+	expected := []DatabaseSpec{
+		{
+			Name: "posthog",
+			Dictionaries: []DictionarySpec{
+				{
+					Name:       "exchange_rate_dict",
+					PrimaryKey: []string{"currency"},
+					Attributes: []DictionaryAttribute{
+						{Name: "currency", Type: "String"},
+						{Name: "start_date", Type: "Date"},
+						{Name: "end_date", Type: "Nullable(Date)"},
+						{Name: "rate", Type: "Decimal64(10)"},
+					},
+					Source: &DictionarySourceSpec{
+						Kind: "clickhouse",
+						Decoded: SourceClickHouse{
+							Query:    ptr("SELECT currency, start_date, end_date, rate FROM default.exchange_rate"),
+							User:     ptr("default"),
+							Password: ptr("[HIDDEN]"),
+						},
+					},
+					Layout: &DictionaryLayoutSpec{
+						Kind: "complex_key_range_hashed",
+						Decoded: LayoutComplexKeyRangeHashed{
+							RangeLookupStrategy: ptr("max"),
+						},
+					},
+					Lifetime: &DictionaryLifetime{Min: ptr(int64(3000)), Max: ptr(int64(3600))},
+					Range:    &DictionaryRange{Min: "start_date", Max: "end_date"},
+					Settings: map[string]string{"format_csv_allow_single_quotes": "1"},
+					Cluster:  ptr("posthog"),
+					Comment:  ptr("fx rates by date"),
+				},
+			},
+		},
+	}
+
+	// Body is an opaque hcl.Body; strip it before equality (mirrors the MV pattern).
+	require.Len(t, dbs, 1)
+	require.Len(t, dbs[0].Dictionaries, 1)
+	d := &dbs[0].Dictionaries[0]
+	require.NotNil(t, d.Source)
+	require.NotNil(t, d.Layout)
+	d.Source = &DictionarySourceSpec{Kind: d.Source.Kind, Decoded: d.Source.Decoded}
+	d.Layout = &DictionaryLayoutSpec{Kind: d.Layout.Kind, Decoded: d.Layout.Decoded}
+
+	assert.Equal(t, expected, dbs)
+}
