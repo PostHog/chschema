@@ -169,6 +169,13 @@ func runIntrospect(args []string) {
 	}
 	schema.NamedCollections = ncs
 	slog.Info("introspected named collections", "count", len(schema.NamedCollections))
+	for _, nc := range schema.NamedCollections {
+		if redacted := hclload.RedactedParamKeys(nc); len(redacted) > 0 {
+			slog.Warn("named collection has redacted values; diff will skip these params to avoid overwriting real secrets with '[HIDDEN]'",
+				"collection", nc.Name, "redacted_keys", redacted,
+				"hint", "to unredact, grant displaySecretsInShowAndSelect to this user AND set display_secrets_in_show_and_select = 1 on the server")
+		}
+	}
 
 	if err := writeIntrospected(*outFlag, schema); err != nil {
 		slog.Error("failed to write introspected schema", "out", *outFlag, "err", err)
@@ -379,6 +386,9 @@ func renderChangeSet(w io.Writer, cs hclload.ChangeSet) {
 				}
 				for _, k := range ncc.DeleteParams {
 					fmt.Fprintf(w, "      - param %s\n", k)
+				}
+				for _, k := range ncc.SkippedRedactedParams {
+					fmt.Fprintf(w, "      ? param %s (skipped: value is '[HIDDEN]' on at least one side; grant displaySecretsInShowAndSelect to compare)\n", k)
 				}
 				if ncc.CommentChange != nil {
 					fmt.Fprintln(w, "      ~ comment changed")

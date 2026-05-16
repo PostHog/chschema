@@ -2,6 +2,16 @@ package hcl
 
 import "sort"
 
+// RedactedValue is the literal string ClickHouse returns from
+// system.named_collections for secret values when the connecting user
+// lacks displaySecretsInShowAndSelect / the server lacks
+// display_secrets_in_show_and_select / a query omits
+// format_display_secrets_in_show_and_select. The diff layer treats this
+// value as "unknown, don't generate a change" rather than as a literal
+// target — overwriting a real cluster value with the string "[HIDDEN]"
+// would be actively destructive.
+const RedactedValue = "[HIDDEN]"
+
 // NamedCollectionChange describes a planned change to a named collection.
 type NamedCollectionChange struct {
 	Name string
@@ -22,6 +32,11 @@ type NamedCollectionChange struct {
 	DeleteParams  []string
 	CommentChange *StringChange
 
+	// SkippedRedactedParams lists param keys whose diff was suppressed
+	// because either side had the redacted "[HIDDEN]" value. The CLI
+	// surfaces these so operators know hclexp couldn't verify equality.
+	SkippedRedactedParams []string
+
 	// Error is non-empty when the diff describes an unsupported transition
 	// (e.g. external↔managed). sqlgen emits no DDL; the CLI surfaces it.
 	Error string
@@ -30,7 +45,8 @@ type NamedCollectionChange struct {
 func (c NamedCollectionChange) IsEmpty() bool {
 	return c.Add == nil && !c.Drop && !c.Recreate &&
 		len(c.SetParams) == 0 && len(c.DeleteParams) == 0 &&
-		c.CommentChange == nil && c.Error == ""
+		c.CommentChange == nil && c.Error == "" &&
+		len(c.SkippedRedactedParams) == 0
 }
 
 func (c NamedCollectionChange) IsUnsafe() bool { return false }
@@ -108,7 +124,11 @@ func diffOneNamedCollection(name string, f, ft *NamedCollectionSpec) NamedCollec
 		return change
 	}
 
-	// Param SET / DELETE.
+	// Param SET / DELETE. Params whose value is "[HIDDEN]" on EITHER side
+	// are skipped — we can't tell whether they actually differ, and writing
+	// the literal "[HIDDEN]" back to the cluster would clobber the real
+	// secret. They're recorded in SkippedRedactedParams so the CLI can
+	// warn the operator.
 	fromParams := map[string]NamedCollectionParam{}
 	for _, p := range f.Params {
 		fromParams[p.Key] = p
@@ -119,6 +139,10 @@ func diffOneNamedCollection(name string, f, ft *NamedCollectionSpec) NamedCollec
 	}
 	for _, p := range ft.Params {
 		fp, present := fromParams[p.Key]
+		if present && (fp.Value == RedactedValue || p.Value == RedactedValue) {
+			change.SkippedRedactedParams = append(change.SkippedRedactedParams, p.Key)
+			continue
+		}
 		if !present || fp.Value != p.Value || !ncPtrBoolEqual(fp.Overridable, p.Overridable) {
 			change.SetParams = append(change.SetParams, p)
 		}

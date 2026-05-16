@@ -74,6 +74,22 @@ func sortStrings(ss []string) {
 	}
 }
 
+// RedactedParamKeys returns the param keys whose introspected value is
+// the literal "[HIDDEN]" placeholder ClickHouse returns when the user
+// lacks displaySecretsInShowAndSelect / the server-side
+// display_secrets_in_show_and_select is off. Returns an empty slice when
+// the spec is fully un-redacted. Callers use this to warn operators that
+// the diff cannot be trusted for those specific params.
+func RedactedParamKeys(nc NamedCollectionSpec) []string {
+	var keys []string
+	for _, p := range nc.Params {
+		if p.Value == RedactedValue {
+			keys = append(keys, p.Key)
+		}
+	}
+	return keys
+}
+
 // buildNamedCollectionFromCreateSQL parses a CREATE NAMED COLLECTION
 // statement and returns the corresponding NamedCollectionSpec.
 func buildNamedCollectionFromCreateSQL(createSQL string) (NamedCollectionSpec, error) {

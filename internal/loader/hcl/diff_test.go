@@ -660,3 +660,47 @@ func TestDiff_ExternalToManaged_Errors(t *testing.T) {
 	assert.NotEmpty(t, c.Error)
 	assert.Contains(t, c.Error, "external")
 }
+
+func TestDiff_NamedCollections_HIDDEN_SkipsValueChange(t *testing.T) {
+	// Cluster (from) returns redacted '[HIDDEN]' for kafka_sasl_password.
+	// HCL (to) declares the real value. Diff MUST NOT propose a SET that
+	// would overwrite the cluster's real secret with '[HIDDEN]', nor
+	// propose a SET with the real HCL value (we can't verify they differ).
+	from := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name: "nc1",
+		Params: []NamedCollectionParam{
+			{Key: "kafka_broker_list", Value: "k:9092"},
+			{Key: "kafka_sasl_password", Value: RedactedValue},
+		},
+	}}}
+	to := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name: "nc1",
+		Params: []NamedCollectionParam{
+			{Key: "kafka_broker_list", Value: "k:9092"},
+			{Key: "kafka_sasl_password", Value: "real-secret"},
+		},
+	}}}
+	cs := Diff(from, to)
+	require.Len(t, cs.NamedCollections, 1)
+	c := cs.NamedCollections[0]
+	assert.Empty(t, c.SetParams, "no SET should be proposed when either side is [HIDDEN]")
+	assert.Empty(t, c.DeleteParams)
+	assert.Equal(t, []string{"kafka_sasl_password"}, c.SkippedRedactedParams)
+}
+
+func TestDiff_NamedCollections_HIDDEN_OnTargetSide(t *testing.T) {
+	// Symmetric: HCL committed with redacted placeholder (bad practice but
+	// possible). Don't write '[HIDDEN]' to the cluster.
+	from := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name:   "nc1",
+		Params: []NamedCollectionParam{{Key: "k", Value: "real"}},
+	}}}
+	to := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name:   "nc1",
+		Params: []NamedCollectionParam{{Key: "k", Value: RedactedValue}},
+	}}}
+	cs := Diff(from, to)
+	require.Len(t, cs.NamedCollections, 1)
+	assert.Empty(t, cs.NamedCollections[0].SetParams)
+	assert.Equal(t, []string{"k"}, cs.NamedCollections[0].SkippedRedactedParams)
+}
