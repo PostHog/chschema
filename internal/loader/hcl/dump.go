@@ -31,6 +31,16 @@ func Write(w io.Writer, schema *Schema) error {
 		writeDatabase(dbBlock.Body(), db)
 	}
 
+	ncs := append([]NamedCollectionSpec(nil), schema.NamedCollections...)
+	sort.Slice(ncs, func(i, j int) bool { return ncs[i].Name < ncs[j].Name })
+	for i, nc := range ncs {
+		if len(schema.Databases) > 0 || i > 0 {
+			body.AppendNewline()
+		}
+		ncBlock := body.AppendNewBlock("named_collection", []string{nc.Name})
+		writeNamedCollection(ncBlock.Body(), nc)
+	}
+
 	_, err := w.Write(f.Bytes())
 	return err
 }
