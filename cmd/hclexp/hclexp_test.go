@@ -181,3 +181,22 @@ func writeTemp(t *testing.T, name, content string) string {
 }
 
 func ptrStr(s string) *string { return &s }
+
+func TestRenderChangeSet_Dictionaries(t *testing.T) {
+	cs := hclload.ChangeSet{Databases: []hclload.DatabaseChange{{
+		Database:          "posthog",
+		AddDictionaries:   []hclload.DictionarySpec{{Name: "new_dict"}},
+		DropDictionaries:  []string{"old_dict"},
+		AlterDictionaries: []hclload.DictionaryDiff{{Name: "rebuild_dict", Changed: []string{"layout", "source"}}},
+	}}}
+
+	var buf bytes.Buffer
+	renderChangeSet(&buf, cs)
+
+	want := `database "posthog"
+  + dictionary new_dict
+  - dictionary old_dict
+  ~ dictionary rebuild_dict (changed: layout, source)
+`
+	require.Equal(t, want, buf.String())
+}
