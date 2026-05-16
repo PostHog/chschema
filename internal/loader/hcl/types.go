@@ -18,6 +18,10 @@ type DatabaseSpec struct {
 	// TableSpec. MVs do not participate in the table inheritance system
 	// (extend / abstract / patch_table).
 	MaterializedViews []MaterializedViewSpec `hcl:"materialized_view,block"`
+
+	// Dictionaries are a third sibling collection. Like MVs, they do not
+	// participate in the table inheritance system.
+	Dictionaries []DictionarySpec `hcl:"dictionary,block"`
 }
 
 // MaterializedViewSpec models a ClickHouse materialized view in its
@@ -126,3 +130,64 @@ type EngineSpec struct {
 	// because it has no hcl tag.
 	Decoded Engine
 }
+
+// DictionarySpec models a ClickHouse dictionary. Dictionaries are a sibling
+// collection on DatabaseSpec, not a flavored table; they do not participate
+// in the table inheritance system (extend/abstract/patch_table). Source and
+// layout are modeled typed-per-kind via DictionarySource/DictionaryLayout —
+// the same pattern engines use.
+type DictionarySpec struct {
+	Name       string                `hcl:"name,label"`
+	PrimaryKey []string              `hcl:"primary_key"`
+	Attributes []DictionaryAttribute `hcl:"attribute,block"`
+	Source     *DictionarySourceSpec `hcl:"source,block"`
+	Layout     *DictionaryLayoutSpec `hcl:"layout,block"`
+	Lifetime   *DictionaryLifetime   `hcl:"lifetime,block"`
+	Range      *DictionaryRange      `hcl:"range,block"`
+	Settings   map[string]string     `hcl:"settings,optional"`
+	Cluster    *string               `hcl:"cluster,optional"`
+	Comment    *string               `hcl:"comment,optional"`
+}
+
+type DictionaryAttribute struct {
+	Name         string  `hcl:"name,label"`
+	Type         string  `hcl:"type"`
+	Default      *string `hcl:"default,optional"`
+	Expression   *string `hcl:"expression,optional"`
+	Hierarchical bool    `hcl:"hierarchical,optional"`
+	Injective    bool    `hcl:"injective,optional"`
+	IsObjectID   bool    `hcl:"is_object_id,optional"`
+}
+
+// DictionaryLifetime models LIFETIME(...). The simple form LIFETIME(n) sets
+// only Min (Max remains nil). The range form LIFETIME(MIN x MAX y) sets both.
+type DictionaryLifetime struct {
+	Min *int64 `hcl:"min,optional"`
+	Max *int64 `hcl:"max,optional"`
+}
+
+type DictionaryRange struct {
+	Min string `hcl:"min"`
+	Max string `hcl:"max"`
+}
+
+// DictionarySourceSpec mirrors EngineSpec: Kind label + opaque hcl.Body +
+// typed Decoded value. Decoded is populated by DecodeDictionarySource after
+// the initial gohcl decode; Kind and Body are diff-skipped artifacts.
+type DictionarySourceSpec struct {
+	Kind string   `hcl:"kind,label" diff:"-"`
+	Body hcl.Body `hcl:",remain"    diff:"-"`
+
+	Decoded DictionarySource
+}
+
+type DictionarySource interface{ Kind() string }
+
+type DictionaryLayoutSpec struct {
+	Kind string   `hcl:"kind,label" diff:"-"`
+	Body hcl.Body `hcl:",remain"    diff:"-"`
+
+	Decoded DictionaryLayout
+}
+
+type DictionaryLayout interface{ Kind() string }
