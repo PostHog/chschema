@@ -78,8 +78,17 @@ type Schema struct {
 // NamedCollectionSpec models a ClickHouse named collection — a
 // cluster-scoped key/value bag of configuration values that other
 // objects (most notably Kafka tables) can reference by name.
+//
+// External = true marks a collection as managed outside hclexp — for
+// example, defined in the ClickHouse server XML config under
+// /etc/clickhouse-server/config.d/. hclexp emits no DDL for external
+// collections (no CREATE / ALTER / DROP); they exist in HCL only as
+// declarations so engine `collection = "x"` references can resolve and
+// be validated. Params is optional when External = true (the values
+// live in the XML config, not in HCL).
 type NamedCollectionSpec struct {
     Name     string                 `hcl:"name,label"`
+    External bool                   `hcl:"external,optional"`
     Override bool                   `hcl:"override,optional" diff:"-"`
     Cluster  *string                `hcl:"cluster,optional"`
     Comment  *string                `hcl:"comment,optional"`
@@ -110,6 +119,45 @@ named_collection "my_kafka" {
   }
 }
 ```
+
+### Externally-managed (XML config) named collections
+
+When a named collection is defined in the ClickHouse server's XML config
+rather than via DDL (the PostHog production pattern), declare it in HCL
+with `external = true`:
+
+```hcl
+named_collection "kafka_main" {
+  external = true
+  comment  = "managed in /etc/clickhouse-server/config.d/kafka_collections.xml"
+}
+
+database "posthog" {
+  table "events_kafka" {
+    engine "kafka" { collection = "kafka_main" }
+  }
+}
+```
+
+`hclexp` emits no `CREATE` / `ALTER` / `DROP` for external collections —
+they're declared in HCL so:
+
+- Kafka engine `collection = "..."` references can be validated against
+  the declared set of collections (typo protection at parse time).
+- The HCL is self-documenting: a reader can see which collections exist
+  on the cluster without grepping the XML config.
+
+Validation rules for external collections:
+
+- `Params` is optional (values live in the XML config, not HCL).
+- `Cluster` is optional.
+- The spec round-trips through dump/parse but is **invisible to
+  introspection** (introspection still filters `source = 'DDL'`).
+- The spec is **invisible to diff** — comparing two schemas, any pair of
+  matching external NCs is skipped regardless of attribute changes.
+  Diff between a "from" with `external = true` and a "to" without (or
+  vice versa) is an error: an NC can't be promoted from external to
+  managed (or back) by hclexp; that's an operator-level migration.
 
 ### Production override pattern
 
@@ -241,11 +289,15 @@ the later layer wins.
 `Resolve(*Schema) error` runs the existing per-database resolution and
 adds `validateNamedCollections` and `validateKafkaEngines`:
 
-- Named collections: unique names; non-empty `Params`; unique `Key` within
-  each collection.
+- Named collections: unique names; non-empty `Params` **when
+  `External = false`** (external collections may have empty `Params`,
+  since their values live in the XML config); unique `Key` within each
+  collection.
 - Kafka engine: XOR of `Collection` vs. inline settings. When inline:
   `BrokerList`, `TopicList`, `GroupName`, `Format` all required. When
-  `Collection` set: every inline field, including `Extra`, must be nil/empty.
+  `Collection` set: every inline field, including `Extra`, must be
+  nil/empty; the referenced collection must be declared in the schema
+  (either managed or `external = true`).
 
 ### Introspection — `introspect.go` + new `named_collection_introspect.go`
 
@@ -316,6 +368,12 @@ type NamedCollectionChange struct {
 ```
 
 `diffNamedCollection(from, to *NamedCollectionSpec)`:
+- **External handling:** if either side has `External = true` and the
+  other side has `External = false`, return an error — promoting an NC
+  from external to managed (or vice versa) is an operator-level
+  migration, not a diff. If **both** sides are external, return an
+  empty diff (no DDL for external collections, regardless of attribute
+  changes). Otherwise proceed:
 - `from.Cluster != to.Cluster` → `Recreate = true`; populate the full
   target `NamedCollectionSpec` in `Add` so the create-half has everything.
 - Otherwise, walk params keyed by `Key`: changed values + added keys →
@@ -443,6 +501,10 @@ old signature.
 - `named_collection_sqlgen_test.go::TestCreateNamedCollectionSQL` — DDL assertion across overridable shapes.
 - `named_collection_sqlgen_test.go::TestAlterNamedCollectionSQL` — SET, DELETE, combined.
 - `named_collection_sqlgen_test.go::TestRecreateOrdering` — synthesize an NC recreate diff; assert DROP precedes CREATE adjacently at the front of `out.Statements`.
+- `named_collection_diff_test.go::TestDiff_ExternalNCs_Ignored` — two schemas where both have the NC marked `external = true` with different params; assert empty diff.
+- `named_collection_diff_test.go::TestDiff_ExternalToManaged_Errors` — diff with one side `external = true` and the other side managed; assert error mentioning external↔managed migration.
+- `resolver_test.go::TestResolve_KafkaCollectionReference` — Kafka engine references a `collection` that isn't declared in the schema → resolver error; references one that IS declared (managed or external) → passes.
+- `dump_test.go::TestWrite_RoundTrip_ExternalNamedCollection` — round-trip a `named_collection { external = true }` block (cluster, comment, empty Params).
 - `sqlgen_test.go::TestKafkaEngineSQL_Cases` — table-driven over the 4 emit shapes.
 
 ### CLI
@@ -483,8 +545,12 @@ old signature.
 - ALTER / DROP parser AST in the clickhouse-sql-parser fork. We emit
   these as plain strings; introspection only ever sees CREATE statements
   via `system.named_collections.create_query`.
-- Server config-file (XML/YAML) named collections. We read only `source = 'DDL'`
-  collections; file-based ones aren't ours to manage.
+- Managing server config-file (XML/YAML) named collections. We read only
+  `source = 'DDL'` collections during introspection. Config-file
+  collections can still be declared in HCL with `external = true` so
+  Kafka references resolve and are validated, but hclexp emits no DDL
+  for them — they remain the operator's responsibility to provision via
+  the server config file.
 - Other engines that consume named collections (S3, MySQL, PostgreSQL,
   Remote, MongoDB). Same pattern applies, but only Kafka is in this
   change.
