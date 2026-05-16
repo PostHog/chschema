@@ -565,3 +565,98 @@ func TestDiff_Dictionaries(t *testing.T) {
 		assert.True(t, Diff(&Schema{Databases: dbs}, &Schema{Databases: dbs}).IsEmpty())
 	})
 }
+
+func mkNC(name string, params ...NamedCollectionParam) NamedCollectionSpec {
+	return NamedCollectionSpec{Name: name, Params: params}
+}
+
+func TestDiff_NamedCollections(t *testing.T) {
+	base := mkNC("nc1",
+		NamedCollectionParam{Key: "a", Value: "1"},
+		NamedCollectionParam{Key: "b", Value: "2"},
+	)
+
+	t.Run("add", func(t *testing.T) {
+		from := &Schema{}
+		to := &Schema{NamedCollections: []NamedCollectionSpec{base}}
+		cs := Diff(from, to)
+		require.Len(t, cs.NamedCollections, 1)
+		change := cs.NamedCollections[0]
+		assert.Equal(t, "nc1", change.Name)
+		require.NotNil(t, change.Add)
+		assert.Equal(t, base, *change.Add)
+	})
+
+	t.Run("drop", func(t *testing.T) {
+		from := &Schema{NamedCollections: []NamedCollectionSpec{base}}
+		to := &Schema{}
+		cs := Diff(from, to)
+		require.Len(t, cs.NamedCollections, 1)
+		assert.True(t, cs.NamedCollections[0].Drop)
+		assert.Equal(t, "nc1", cs.NamedCollections[0].Name)
+	})
+
+	t.Run("set+delete params", func(t *testing.T) {
+		changed := mkNC("nc1",
+			NamedCollectionParam{Key: "a", Value: "1_new"},
+			NamedCollectionParam{Key: "c", Value: "3"},
+		)
+		from := &Schema{NamedCollections: []NamedCollectionSpec{base}}
+		to := &Schema{NamedCollections: []NamedCollectionSpec{changed}}
+		cs := Diff(from, to)
+		require.Len(t, cs.NamedCollections, 1)
+		c := cs.NamedCollections[0]
+		assert.False(t, c.Recreate)
+		require.Len(t, c.SetParams, 2)
+		setKeys := map[string]string{}
+		for _, p := range c.SetParams {
+			setKeys[p.Key] = p.Value
+		}
+		assert.Equal(t, "1_new", setKeys["a"])
+		assert.Equal(t, "3", setKeys["c"])
+		assert.Equal(t, []string{"b"}, c.DeleteParams)
+	})
+
+	t.Run("on cluster change recreates", func(t *testing.T) {
+		from := &Schema{NamedCollections: []NamedCollectionSpec{base}}
+		toNC := base
+		c := "posthog"
+		toNC.Cluster = &c
+		to := &Schema{NamedCollections: []NamedCollectionSpec{toNC}}
+		cs := Diff(from, to)
+		require.Len(t, cs.NamedCollections, 1)
+		assert.True(t, cs.NamedCollections[0].Recreate)
+		require.NotNil(t, cs.NamedCollections[0].Add)
+		assert.Equal(t, "posthog", *cs.NamedCollections[0].Add.Cluster)
+	})
+
+	t.Run("identical produces no change", func(t *testing.T) {
+		schema := &Schema{NamedCollections: []NamedCollectionSpec{base}}
+		assert.True(t, Diff(schema, schema).IsEmpty())
+	})
+}
+
+func TestDiff_ExternalNCs_Ignored(t *testing.T) {
+	from := &Schema{NamedCollections: []NamedCollectionSpec{
+		{Name: "x", External: true, Params: []NamedCollectionParam{{Key: "a", Value: "1"}}},
+	}}
+	to := &Schema{NamedCollections: []NamedCollectionSpec{
+		{Name: "x", External: true, Params: []NamedCollectionParam{{Key: "a", Value: "2"}}},
+	}}
+	cs := Diff(from, to)
+	assert.True(t, cs.IsEmpty(), "external collections should be diff-skipped regardless of attribute changes")
+}
+
+func TestDiff_ExternalToManaged_Errors(t *testing.T) {
+	from := &Schema{NamedCollections: []NamedCollectionSpec{
+		{Name: "x", External: true},
+	}}
+	to := &Schema{NamedCollections: []NamedCollectionSpec{
+		{Name: "x", Params: []NamedCollectionParam{{Key: "a", Value: "1"}}},
+	}}
+	cs := Diff(from, to)
+	require.Len(t, cs.NamedCollections, 1)
+	c := cs.NamedCollections[0]
+	assert.NotEmpty(t, c.Error)
+	assert.Contains(t, c.Error, "external")
+}

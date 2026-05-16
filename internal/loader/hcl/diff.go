@@ -8,7 +8,8 @@ import (
 // ChangeSet describes the changes required to evolve a `from` schema into a
 // `to` schema. Empty databases (no tables to add/drop/alter) are omitted.
 type ChangeSet struct {
-	Databases []DatabaseChange
+	Databases        []DatabaseChange
+	NamedCollections []NamedCollectionChange
 }
 
 // DatabaseChange holds the per-database differences.
@@ -127,6 +128,11 @@ func (cs ChangeSet) IsEmpty() bool {
 			return false
 		}
 	}
+	for _, ncc := range cs.NamedCollections {
+		if !ncc.IsEmpty() {
+			return false
+		}
+	}
 	return true
 }
 
@@ -199,6 +205,7 @@ func Diff(from, to *Schema) ChangeSet {
 		sortDatabaseChange(&dc)
 		cs.Databases = append(cs.Databases, dc)
 	}
+	cs.NamedCollections = diffNamedCollections(from.NamedCollections, to.NamedCollections)
 	return cs
 }
 
