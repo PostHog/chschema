@@ -17,6 +17,7 @@ import (
 	"github.com/posthog/chschema/internal/executor"
 	"github.com/posthog/chschema/internal/introspection"
 	"github.com/posthog/chschema/internal/loader"
+	hclload "github.com/posthog/chschema/internal/loader/hcl"
 	"github.com/posthog/chschema/test/testhelpers"
 	"github.com/stretchr/testify/require"
 )
@@ -143,8 +144,104 @@ func TestLive_EndToEnd_SchemaApply(t *testing.T) {
 	}
 }
 
+// createStubsForFixture pre-creates stub source/destination tables for a
+// CREATE MATERIALIZED VIEW / VIEW / DICTIONARY statement so the CREATE is
+// executable in isolation. ClickHouse rejects an MV CREATE when its
+// destination or any SELECT-FROM source table is missing; this helper
+// derives the dependency set via the hcl package and synthesizes minimal
+// Null-engine stubs.
+//
+// Stub schema: the column list declared on the CREATE statement itself —
+// destination column list for MVs, attribute list for dictionaries,
+// declared columns for views — applied to every referenced table. This is
+// only correct for fixtures where source and destination share a schema
+// (the common PostHog kafka_* → sharded_* shape), which is the case for
+// every fixture in test/testdata/posthog-create-statements/.
+//
+// Engine = Null: never accepts INSERTs (it discards them silently), so
+// these stubs add no storage or replication overhead. They're sufficient
+// for CREATE-time validation and for the introspector to see the object.
+//
+// Stubs are created with IF NOT EXISTS so multiple fixtures in the same
+// group sharing a source table don't collide.
+//
+// Stubs live in a sibling `<dbName>_stubs` database, not in `dbName`
+// itself. This keeps the per-test database holding only real fixture
+// objects, so a later subtest that CREATEs (for real) a table whose
+// name happens to match a stub source — e.g. `exchange_rate` is both a
+// fixture and referenced by `exchange_rate_mv` — doesn't collide.
+//
+// To make MV/View bodies actually find the stubs, we also rewrite each
+// referenced `<dbName>.<refName>` in the SQL to point at the stubs
+// database. The returned string replaces the input SQL when the caller
+// runs `conn.Exec`.
+func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL string) string {
+	t.Helper()
+	refs, err := hclload.ExtractReferencedTables(createSQL)
+	if err != nil {
+		t.Logf("createStubsForFixture: extract refs failed: %v (continuing without stubs)", err)
+		return createSQL
+	}
+	if len(refs) == 0 {
+		return createSQL
+	}
+	stubsDB := dbName + "_stubs"
+	// Drop and recreate the stubs DB so each fixture sees stubs whose
+	// columns match its own declared schema. Without this, the first
+	// fixture to reference `kafka_person` would lock in its column
+	// list and a later MV with a different column list would fail
+	// the CREATE with "no matching columns in target table".
+	if err := conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+stubsDB+" SYNC"); err != nil {
+		t.Logf("createStubsForFixture: drop stubs db failed: %v", err)
+	}
+	if err := conn.Exec(context.Background(), "CREATE DATABASE "+stubsDB); err != nil {
+		t.Logf("createStubsForFixture: create stubs db failed: %v", err)
+		return createSQL
+	}
+	cols, err := hclload.ExtractDeclaredColumns(createSQL)
+	if err != nil {
+		t.Logf("createStubsForFixture: extract declared columns failed: %v", err)
+	}
+	colList := "_dummy String"
+	if len(cols) > 0 {
+		parts := make([]string, len(cols))
+		for i, c := range cols {
+			parts[i] = fmt.Sprintf("`%s` %s", c.Name, c.Type)
+		}
+		colList = strings.Join(parts, ", ")
+	}
+	for _, r := range refs {
+		stmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s (%s) ENGINE = Null", stubsDB, r.Name, colList)
+		if err := conn.Exec(context.Background(), stmt); err != nil {
+			t.Logf("createStubsForFixture: stub create failed for %s.%s: %v\n%s", stubsDB, r.Name, err, stmt)
+		}
+		// Repoint references in the fixture SQL from the test DB to
+		// the stubs DB. cleanupSQL already rewrote `default.X` to
+		// `dbName.X`, so we only need to handle the post-cleanup
+		// shape (bare and backtick-quoted forms). Match on a word
+		// boundary after the name to avoid clobbering `dbName.groups`
+		// inside `dbName.groups_mv`.
+		bareRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(dbName+"."+r.Name) + `\b`)
+		createSQL = bareRe.ReplaceAllString(createSQL, stubsDB+"."+r.Name)
+		quoted := "`" + dbName + "`.`" + r.Name + "`"
+		createSQL = strings.ReplaceAll(createSQL, quoted, "`"+stubsDB+"`.`"+r.Name+"`")
+	}
+	return createSQL
+}
+
 func cleanupSQL(t *testing.T, dbName, createSQL string) string {
-	createSQL = strings.Replace(createSQL, "TABLE default.", "TABLE "+dbName+".", 1)
+	// Rewrite every reference to the fixture's `default` database to the
+	// isolated per-test database. This covers:
+	//   - the object being created: `CREATE TABLE/MATERIALIZED VIEW/DICTIONARY/VIEW default.X`
+	//   - destination tables on MVs: `TO default.X`
+	//   - source tables in SELECT bodies: `FROM default.X`, `JOIN default.X`
+	//   - backtick-quoted forms inside dictionary QUERY clauses: `` `default`.`X` ``
+	//
+	// We do the simplest thing that works: a global replace of every
+	// `default.` occurrence. The fixtures only ever reference the `default`
+	// database, so this is safe in this test corpus.
+	createSQL = strings.ReplaceAll(createSQL, "`default`.", "`"+dbName+"`.")
+	createSQL = strings.ReplaceAll(createSQL, "default.", dbName+".")
 	// Make every ReplicatedMergeTree ZooKeeper path unique to this test
 	// database. The fixture paths come in several shapes
 	// (/clickhouse/tables/..., /clickhouse/prod/tables/...), and a fixed
