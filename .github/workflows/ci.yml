@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   lint:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     steps:
     - name: Checkout code
       uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -36,7 +36,7 @@ jobs:
         fi
 
   vet:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     steps:
     - name: Checkout code
       uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -58,7 +58,7 @@ jobs:
       run: go vet ./...
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     steps:
     - name: Checkout code
       uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -86,7 +86,7 @@ jobs:
         echo "Total test coverage: ${COVERAGE}%"
 
   test-live:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     steps:
     - name: Checkout code
       uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5.0.1
@@ -129,7 +129,7 @@ jobs:
       run: docker compose down -v
 
   build:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-22.04
     needs: [lint, vet, test, test-live]
     steps:
     - name: Checkout code
