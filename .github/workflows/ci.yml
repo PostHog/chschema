@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   lint:
-    runs-on: depot-ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -21,6 +21,8 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: '1.25'
+        cache: true
+        cache-dependency-path: go.sum
 
     - name: Download dependencies
       run: go mod download
@@ -34,7 +36,7 @@ jobs:
         fi
 
   vet:
-    runs-on: depot-ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -43,6 +45,8 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: '1.25'
+        cache: true
+        cache-dependency-path: go.sum
 
     - name: Download dependencies
       run: go mod download
@@ -54,7 +58,7 @@ jobs:
       run: go vet ./...
 
   test:
-    runs-on: depot-ubuntu-22.04
+    runs-on: ubuntu-latest
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -63,6 +67,8 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: '1.25'
+        cache: true
+        cache-dependency-path: go.sum
 
     - name: Download dependencies
       run: go mod download
@@ -80,7 +86,7 @@ jobs:
         echo "Total test coverage: ${COVERAGE}%"
 
   build:
-    runs-on: depot-ubuntu-22.04
+    runs-on: ubuntu-latest
     needs: [lint, vet, test]
     steps:
     - name: Checkout code
@@ -90,15 +96,26 @@ jobs:
       uses: actions/setup-go@v6
       with:
         go-version: '1.25'
+        cache: true
+        cache-dependency-path: go.sum
 
     - name: Download dependencies
       run: go mod download
 
-    - name: Build binary
-      run: go build -o chschema ./cmd/chschema
+    - name: Build all packages
+      run: go build ./...
 
-    - name: Test binary version command
-      run: ./chschema version
+    - name: Build hclexp binary
+      run: go build -o hclexp ./cmd/hclexp
 
-    - name: Test binary help command
-      run: ./chschema --help
+    - name: Smoke-test hclexp help
+      run: ./hclexp -h
+
+    - name: Smoke-test hclexp diff help
+      run: ./hclexp diff -h
+
+    - name: Smoke-test hclexp introspect help
+      run: ./hclexp introspect -h
+
+    - name: Smoke-test hclexp validate help
+      run: ./hclexp validate -h
