@@ -73,7 +73,7 @@ func TestCHLive_Kafka_WithNamedCollection_E2E(t *testing.T) {
 	for _, p := range gotNC.Params {
 		gotValues[p.Key] = p.Value
 	}
-	assertNCValuesMatchOrSkipRedacted(t, wantValues, gotValues)
+	assert.Equal(t, wantValues, gotValues)
 
 	dbIntrospected, err := Introspect(ctx, conn, dbName)
 	require.NoError(t, err)
