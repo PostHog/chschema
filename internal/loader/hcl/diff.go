@@ -21,7 +21,23 @@ type DatabaseChange struct {
 	AddMaterializedViews   []MaterializedViewSpec // emitted via CREATE MATERIALIZED VIEW
 	DropMaterializedViews  []string               // emitted via DROP VIEW
 	AlterMaterializedViews []MaterializedViewDiff
+
+	AddDictionaries   []DictionarySpec // emitted via CREATE OR REPLACE DICTIONARY
+	DropDictionaries  []string         // emitted via DROP DICTIONARY
+	AlterDictionaries []DictionaryDiff
 }
+
+// DictionaryDiff describes a change to a dictionary. ClickHouse has no
+// useful in-place ALTER DICTIONARY, so any non-empty diff is materialized
+// as a CREATE OR REPLACE DICTIONARY statement — safe, not flagged as
+// unsafe. Changed lists field paths that differ, for rendering.
+type DictionaryDiff struct {
+	Name    string
+	Changed []string
+}
+
+func (d DictionaryDiff) IsEmpty() bool  { return len(d.Changed) == 0 }
+func (d DictionaryDiff) IsUnsafe() bool { return false }
 
 // MaterializedViewDiff is the set of mutations to a single existing
 // materialized view. A query-only change is applied in place via
@@ -117,7 +133,9 @@ func (cs ChangeSet) IsEmpty() bool {
 func (dc DatabaseChange) IsEmpty() bool {
 	return len(dc.AddTables) == 0 && len(dc.DropTables) == 0 && len(dc.AlterTables) == 0 &&
 		len(dc.AddMaterializedViews) == 0 && len(dc.DropMaterializedViews) == 0 &&
-		len(dc.AlterMaterializedViews) == 0
+		len(dc.AlterMaterializedViews) == 0 &&
+		len(dc.AddDictionaries) == 0 && len(dc.DropDictionaries) == 0 &&
+		len(dc.AlterDictionaries) == 0
 }
 
 func (td TableDiff) IsEmpty() bool {
@@ -251,7 +269,87 @@ func diffDatabase(name string, from, to *DatabaseSpec) DatabaseChange {
 			dc.AlterMaterializedViews = append(dc.AlterMaterializedViews, mvd)
 		}
 	}
+
+	fromDicts := indexDictionaries(from.Dictionaries)
+	toDicts := indexDictionaries(to.Dictionaries)
+	for _, n := range sortedKeys(toDicts) {
+		if _, ok := fromDicts[n]; !ok {
+			dc.AddDictionaries = append(dc.AddDictionaries, *toDicts[n])
+		}
+	}
+	for _, n := range sortedKeys(fromDicts) {
+		if _, ok := toDicts[n]; !ok {
+			dc.DropDictionaries = append(dc.DropDictionaries, n)
+		}
+	}
+	for _, n := range sortedKeys(fromDicts) {
+		t, ok := toDicts[n]
+		if !ok {
+			continue
+		}
+		dd := diffDictionary(fromDicts[n], t)
+		if !dd.IsEmpty() {
+			dc.AlterDictionaries = append(dc.AlterDictionaries, dd)
+		}
+	}
 	return dc
+}
+
+func indexDictionaries(ds []DictionarySpec) map[string]*DictionarySpec {
+	out := make(map[string]*DictionarySpec, len(ds))
+	for i := range ds {
+		out[ds[i].Name] = &ds[i]
+	}
+	return out
+}
+
+// diffDictionary walks two dictionaries field-by-field and records every
+// path that differs. Source/layout comparison uses reflect.DeepEqual on
+// the decoded typed value (Body and Kind are diff-skipped artifacts).
+func diffDictionary(from, to *DictionarySpec) DictionaryDiff {
+	d := DictionaryDiff{Name: to.Name}
+	if !reflect.DeepEqual(from.PrimaryKey, to.PrimaryKey) {
+		d.Changed = append(d.Changed, "primary_key")
+	}
+	if !reflect.DeepEqual(from.Attributes, to.Attributes) {
+		d.Changed = append(d.Changed, "attributes")
+	}
+	if !dictSourceEqual(from.Source, to.Source) {
+		d.Changed = append(d.Changed, "source")
+	}
+	if !dictLayoutEqual(from.Layout, to.Layout) {
+		d.Changed = append(d.Changed, "layout")
+	}
+	if !reflect.DeepEqual(from.Lifetime, to.Lifetime) {
+		d.Changed = append(d.Changed, "lifetime")
+	}
+	if !reflect.DeepEqual(from.Range, to.Range) {
+		d.Changed = append(d.Changed, "range")
+	}
+	if !reflect.DeepEqual(from.Settings, to.Settings) {
+		d.Changed = append(d.Changed, "settings")
+	}
+	if !reflect.DeepEqual(from.Cluster, to.Cluster) {
+		d.Changed = append(d.Changed, "cluster")
+	}
+	if !reflect.DeepEqual(from.Comment, to.Comment) {
+		d.Changed = append(d.Changed, "comment")
+	}
+	return d
+}
+
+func dictSourceEqual(a, b *DictionarySourceSpec) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Kind == b.Kind && reflect.DeepEqual(a.Decoded, b.Decoded)
+}
+
+func dictLayoutEqual(a, b *DictionaryLayoutSpec) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.Kind == b.Kind && reflect.DeepEqual(a.Decoded, b.Decoded)
 }
 
 func indexMaterializedViews(mvs []MaterializedViewSpec) map[string]*MaterializedViewSpec {
@@ -480,5 +578,12 @@ func sortDatabaseChange(dc *DatabaseChange) {
 	sort.Strings(dc.DropMaterializedViews)
 	sort.Slice(dc.AlterMaterializedViews, func(i, j int) bool {
 		return dc.AlterMaterializedViews[i].Name < dc.AlterMaterializedViews[j].Name
+	})
+	sort.Slice(dc.AddDictionaries, func(i, j int) bool {
+		return dc.AddDictionaries[i].Name < dc.AddDictionaries[j].Name
+	})
+	sort.Strings(dc.DropDictionaries)
+	sort.Slice(dc.AlterDictionaries, func(i, j int) bool {
+		return dc.AlterDictionaries[i].Name < dc.AlterDictionaries[j].Name
 	})
 }
