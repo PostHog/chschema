@@ -191,3 +191,37 @@ type DictionaryLayoutSpec struct {
 }
 
 type DictionaryLayout interface{ Kind() string }
+
+// Schema is what ParseFile returns. It carries both top-level kinds
+// hclexp tracks: databases (with their tables/MVs/dictionaries) and
+// named collections (cluster-scoped, separate from any database).
+type Schema struct {
+	Databases        []DatabaseSpec
+	NamedCollections []NamedCollectionSpec
+}
+
+// NamedCollectionSpec models a ClickHouse named collection — a
+// cluster-scoped key/value bag of configuration values that other
+// objects (most notably Kafka tables) can reference by name.
+//
+// External = true marks a collection as managed outside hclexp — for
+// example, defined in the ClickHouse server XML config under
+// /etc/clickhouse-server/config.d/. hclexp emits no DDL for external
+// collections (no CREATE / ALTER / DROP); they exist in HCL only as
+// declarations so engine `collection = "x"` references can resolve and
+// be validated. Params is optional when External = true (the values
+// live in the XML config, not in HCL).
+type NamedCollectionSpec struct {
+	Name     string                 `hcl:"name,label"`
+	External bool                   `hcl:"external,optional"`
+	Override bool                   `hcl:"override,optional" diff:"-"`
+	Cluster  *string                `hcl:"cluster,optional"`
+	Comment  *string                `hcl:"comment,optional"`
+	Params   []NamedCollectionParam `hcl:"param,block"`
+}
+
+type NamedCollectionParam struct {
+	Key         string `hcl:"name,label"`
+	Value       string `hcl:"value"`
+	Overridable *bool  `hcl:"overridable,optional"`
+}
