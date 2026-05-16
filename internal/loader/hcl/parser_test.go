@@ -172,3 +172,76 @@ func TestParseFile_Dictionary(t *testing.T) {
 
 	assert.Equal(t, expected, schema.Databases)
 }
+
+func TestParseFile_NamedCollection(t *testing.T) {
+	schema, err := ParseFile(filepath.Join("testdata", "named_collection.hcl"))
+	require.NoError(t, err)
+
+	require.Len(t, schema.NamedCollections, 2)
+
+	mk := schema.NamedCollections[0]
+	assert.Equal(t, "my_kafka", mk.Name)
+	assert.False(t, mk.External)
+	require.NotNil(t, mk.Cluster)
+	assert.Equal(t, "posthog", *mk.Cluster)
+	require.NotNil(t, mk.Comment)
+	assert.Equal(t, "shared kafka cluster for events ingestion", *mk.Comment)
+	require.Len(t, mk.Params, 5)
+	assert.Equal(t, "kafka_broker_list", mk.Params[0].Key)
+	assert.Equal(t, "k1:9092,k2:9092", mk.Params[0].Value)
+	assert.Nil(t, mk.Params[0].Overridable)
+	assert.Equal(t, "kafka_sasl_password", mk.Params[4].Key)
+	require.NotNil(t, mk.Params[4].Overridable)
+	assert.False(t, *mk.Params[4].Overridable)
+
+	ext := schema.NamedCollections[1]
+	assert.Equal(t, "external_xml_managed", ext.Name)
+	assert.True(t, ext.External)
+	assert.Empty(t, ext.Params)
+}
+
+func TestParseFile_KafkaWithCollection(t *testing.T) {
+	schema, err := ParseFile(filepath.Join("testdata", "kafka_with_collection.hcl"))
+	require.NoError(t, err)
+
+	require.Len(t, schema.NamedCollections, 1)
+	require.Len(t, schema.Databases, 1)
+	require.Len(t, schema.Databases[0].Tables, 1)
+	tbl := schema.Databases[0].Tables[0]
+	require.NotNil(t, tbl.Engine)
+	kafkaEng, ok := tbl.Engine.Decoded.(EngineKafka)
+	require.True(t, ok)
+	require.NotNil(t, kafkaEng.Collection)
+	assert.Equal(t, "my_kafka", *kafkaEng.Collection)
+	assert.Nil(t, kafkaEng.BrokerList)
+	assert.Nil(t, kafkaEng.TopicList)
+	assert.Nil(t, kafkaEng.GroupName)
+	assert.Nil(t, kafkaEng.Format)
+}
+
+func TestParseFile_KafkaInlineSettings(t *testing.T) {
+	schema, err := ParseFile(filepath.Join("testdata", "kafka_inline_settings.hcl"))
+	require.NoError(t, err)
+
+	require.Len(t, schema.Databases, 1)
+	tbl := schema.Databases[0].Tables[0]
+	kafkaEng, ok := tbl.Engine.Decoded.(EngineKafka)
+	require.True(t, ok)
+
+	assert.Nil(t, kafkaEng.Collection)
+	require.NotNil(t, kafkaEng.BrokerList)
+	assert.Equal(t, "kafka:9092", *kafkaEng.BrokerList)
+	require.NotNil(t, kafkaEng.NumConsumers)
+	assert.Equal(t, int64(4), *kafkaEng.NumConsumers)
+	require.NotNil(t, kafkaEng.MaxBlockSize)
+	assert.Equal(t, int64(1048576), *kafkaEng.MaxBlockSize)
+	require.NotNil(t, kafkaEng.CommitOnSelect)
+	assert.False(t, *kafkaEng.CommitOnSelect)
+	require.NotNil(t, kafkaEng.SkipBrokenMessages)
+	assert.Equal(t, int64(100), *kafkaEng.SkipBrokenMessages)
+	require.NotNil(t, kafkaEng.HandleErrorMode)
+	assert.Equal(t, "stream", *kafkaEng.HandleErrorMode)
+
+	require.NotNil(t, kafkaEng.Extra)
+	assert.Equal(t, "foo", kafkaEng.Extra["kafka_some_future_setting"])
+}
