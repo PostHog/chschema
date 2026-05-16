@@ -315,7 +315,7 @@ func TestSQLGen_EndToEndDiffToSQL(t *testing.T) {
 		ColumnSpec{Name: "ts", Type: "DateTime"},
 	))}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	out := GenerateSQL(cs)
 
 	assert.Equal(t, []string{"ALTER TABLE posthog.events ADD COLUMN ts DateTime"}, out.Statements)

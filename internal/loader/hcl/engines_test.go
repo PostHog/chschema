@@ -9,10 +9,10 @@ import (
 )
 
 func TestParseFile_AllEngineKinds(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "engines_all_kinds.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "engines_all_kinds.hcl"))
 	require.NoError(t, err)
-	require.Len(t, dbs, 1)
-	tables := dbs[0].Tables
+	require.Len(t, schema.Databases, 1)
+	tables := schema.Databases[0].Tables
 
 	byName := map[string]Engine{}
 	for _, tbl := range tables {

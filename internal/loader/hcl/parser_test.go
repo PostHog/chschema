@@ -11,7 +11,7 @@ import (
 func ptr[T any](v T) *T { return &v }
 
 func TestParseFile_BasicTable(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "table_basic.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "table_basic.hcl"))
 	require.NoError(t, err)
 
 	expected := []DatabaseSpec{
@@ -27,16 +27,16 @@ func TestParseFile_BasicTable(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, expected, dbs)
+	assert.Equal(t, expected, schema.Databases)
 }
 
 func TestParseFile_FullTable(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "table_full.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "table_full.hcl"))
 	require.NoError(t, err)
-	require.Len(t, dbs, 1)
-	require.Len(t, dbs[0].Tables, 1)
+	require.Len(t, schema.Databases, 1)
+	require.Len(t, schema.Databases[0].Tables, 1)
 
-	tbl := dbs[0].Tables[0]
+	tbl := schema.Databases[0].Tables[0]
 
 	// Engine.Body is an opaque hcl.Body; assert the Decoded value
 	// separately, then strip Body so the rest can be compared whole.
@@ -96,7 +96,7 @@ func TestParseFile_UnknownAttribute(t *testing.T) {
 }
 
 func TestParseFile_MaterializedView(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "materialized_view.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "materialized_view.hcl"))
 	require.NoError(t, err)
 
 	expected := []DatabaseSpec{
@@ -117,11 +117,11 @@ func TestParseFile_MaterializedView(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, expected, dbs)
+	assert.Equal(t, expected, schema.Databases)
 }
 
 func TestParseFile_Dictionary(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "dictionary.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "dictionary.hcl"))
 	require.NoError(t, err)
 
 	expected := []DatabaseSpec{
@@ -162,13 +162,13 @@ func TestParseFile_Dictionary(t *testing.T) {
 	}
 
 	// Body is an opaque hcl.Body; strip it before equality (mirrors the MV pattern).
-	require.Len(t, dbs, 1)
-	require.Len(t, dbs[0].Dictionaries, 1)
-	d := &dbs[0].Dictionaries[0]
+	require.Len(t, schema.Databases, 1)
+	require.Len(t, schema.Databases[0].Dictionaries, 1)
+	d := &schema.Databases[0].Dictionaries[0]
 	require.NotNil(t, d.Source)
 	require.NotNil(t, d.Layout)
 	d.Source = &DictionarySourceSpec{Kind: d.Source.Kind, Decoded: d.Source.Decoded}
 	d.Layout = &DictionaryLayoutSpec{Kind: d.Layout.Kind, Decoded: d.Layout.Decoded}
 
-	assert.Equal(t, expected, dbs)
+	assert.Equal(t, expected, schema.Databases)
 }

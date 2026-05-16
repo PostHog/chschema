@@ -40,10 +40,10 @@ func roundTrip(t *testing.T, file string) {
 	require.NoError(t, err, "re-parse failed; dump output:\n%s", buf.String())
 	require.NoError(t, Resolve(after))
 
-	stripEngineBodies(before)
-	stripEngineBodies(after)
-	sortTables(before)
-	sortTables(after)
+	stripEngineBodies(before.Databases)
+	stripEngineBodies(after.Databases)
+	sortTables(before.Databases)
+	sortTables(after.Databases)
 
 	assert.Equal(t, before, after, "round-trip mismatch; dump output:\n%s", buf.String())
 }

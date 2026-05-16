@@ -1,6 +1,7 @@
 package hcl
 
 import (
+	"errors"
 	"io"
 	"sort"
 
@@ -15,11 +16,14 @@ import (
 // The dumper assumes the input has already been resolved: extend/abstract/
 // override are consumed, patches applied, engines decoded. Fields tagged
 // diff:"-" in the type definitions are intentionally never emitted.
-func Write(w io.Writer, dbs []DatabaseSpec) error {
+func Write(w io.Writer, schema *Schema) error {
+	if schema == nil {
+		return errors.New("Write: nil schema")
+	}
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
 
-	for i, db := range dbs {
+	for i, db := range schema.Databases {
 		if i > 0 {
 			body.AppendNewline()
 		}

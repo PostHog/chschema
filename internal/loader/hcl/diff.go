@@ -158,9 +158,15 @@ func (td TableDiff) IsUnsafe() bool {
 // Diff compares two resolved schemas and returns a deterministic ChangeSet.
 // Both inputs must already have been resolved (engines decoded, abstracts
 // dropped, extend/patches consumed).
-func Diff(from, to []DatabaseSpec) ChangeSet {
-	fromIdx := indexDatabases(from)
-	toIdx := indexDatabases(to)
+func Diff(from, to *Schema) ChangeSet {
+	if from == nil {
+		from = &Schema{}
+	}
+	if to == nil {
+		to = &Schema{}
+	}
+	fromIdx := indexDatabases(from.Databases)
+	toIdx := indexDatabases(to.Databases)
 	names := mergedKeys(fromIdx, toIdx)
 
 	var cs ChangeSet

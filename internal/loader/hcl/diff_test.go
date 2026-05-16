@@ -25,7 +25,7 @@ func mkDB(name string, tables ...TableSpec) DatabaseSpec {
 func TestDiff_IdenticalSchemasEmpty(t *testing.T) {
 	a := []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"}))}
 	b := []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"}))}
-	cs := Diff(a, b)
+	cs := Diff(&Schema{Databases: a}, &Schema{Databases: b})
 	assert.True(t, cs.IsEmpty())
 	assert.Empty(t, cs.Databases)
 }
@@ -35,7 +35,7 @@ func TestDiff_AddTable(t *testing.T) {
 	newTable := mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"})
 	to := []DatabaseSpec{mkDB("posthog", newTable)}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	expected := ChangeSet{
 		Databases: []DatabaseChange{
 			{Database: "posthog", AddTables: []TableSpec{newTable}},
@@ -48,7 +48,7 @@ func TestDiff_DropTable(t *testing.T) {
 	from := []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"}))}
 	to := []DatabaseSpec{mkDB("posthog")}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	expected := ChangeSet{
 		Databases: []DatabaseChange{
 			{Database: "posthog", DropTables: []TableSpec{mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"})}},
@@ -67,7 +67,7 @@ func TestDiff_AddDropColumns(t *testing.T) {
 		ColumnSpec{Name: "new_col", Type: "UInt64"},
 	))}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	expected := ChangeSet{
 		Databases: []DatabaseChange{
 			{
@@ -95,7 +95,7 @@ func TestDiff_ModifyColumnType(t *testing.T) {
 		ColumnSpec{Name: "count", Type: "UInt64"},
 	))}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterTables, 1)
@@ -108,7 +108,7 @@ func TestDiff_EngineChange(t *testing.T) {
 	from := []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"}))}
 	to := []DatabaseSpec{mkDB("posthog", mkTable("events", EngineLog{}, ColumnSpec{Name: "id", Type: "UUID"}))}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterTables, 1)
@@ -127,7 +127,7 @@ func TestDiff_EngineFieldsChange(t *testing.T) {
 		ColumnSpec{Name: "id", Type: "UUID"},
 	))}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterTables, 1)
@@ -140,7 +140,7 @@ func TestDiff_OrderByChange(t *testing.T) {
 	tTo := mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"})
 	tTo.OrderBy = []string{"id", "ts"}
 
-	cs := Diff([]DatabaseSpec{mkDB("posthog", tFrom)}, []DatabaseSpec{mkDB("posthog", tTo)})
+	cs := Diff(&Schema{Databases: []DatabaseSpec{mkDB("posthog", tFrom)}}, &Schema{Databases: []DatabaseSpec{mkDB("posthog", tTo)}})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterTables, 1)
@@ -153,7 +153,7 @@ func TestDiff_SettingsAddRemoveChange(t *testing.T) {
 	tTo := mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"})
 	tTo.Settings = map[string]string{"keep": "1", "change": "9", "add": "4"}
 
-	cs := Diff([]DatabaseSpec{mkDB("posthog", tFrom)}, []DatabaseSpec{mkDB("posthog", tTo)})
+	cs := Diff(&Schema{Databases: []DatabaseSpec{mkDB("posthog", tFrom)}}, &Schema{Databases: []DatabaseSpec{mkDB("posthog", tTo)}})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterTables, 1)
@@ -171,7 +171,7 @@ func TestDiff_StringPtrAttributes(t *testing.T) {
 	tFrom.TTL = pt("ts + INTERVAL 1 YEAR")
 	tTo.TTL = pt("ts + INTERVAL 2 YEAR")
 
-	cs := Diff([]DatabaseSpec{mkDB("posthog", tFrom)}, []DatabaseSpec{mkDB("posthog", tTo)})
+	cs := Diff(&Schema{Databases: []DatabaseSpec{mkDB("posthog", tFrom)}}, &Schema{Databases: []DatabaseSpec{mkDB("posthog", tTo)}})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterTables, 1)
@@ -192,7 +192,7 @@ func TestDiff_IndexAddDropChange(t *testing.T) {
 		{Name: "add_me", Expr: "id", Type: "minmax", Granularity: 4},
 	}
 
-	cs := Diff([]DatabaseSpec{mkDB("posthog", tFrom)}, []DatabaseSpec{mkDB("posthog", tTo)})
+	cs := Diff(&Schema{Databases: []DatabaseSpec{mkDB("posthog", tFrom)}}, &Schema{Databases: []DatabaseSpec{mkDB("posthog", tTo)}})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterTables, 1)
@@ -209,7 +209,7 @@ func TestDiff_NewDatabase(t *testing.T) {
 	newTable := mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"})
 	to := []DatabaseSpec{mkDB("posthog", newTable)}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	expected := ChangeSet{
 		Databases: []DatabaseChange{
 			{Database: "posthog", AddTables: []TableSpec{newTable}},
@@ -225,7 +225,7 @@ func TestDiff_DroppedDatabaseDropsAllTables(t *testing.T) {
 	)}
 	to := []DatabaseSpec{}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	assert.ElementsMatch(t, []TableSpec{
@@ -245,7 +245,7 @@ func TestDiff_RenameColumn(t *testing.T) {
 		ColumnSpec{Name: "event_old", Type: "String", RenamedFrom: pt("event_name")},
 	))}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterTables, 1)
@@ -268,7 +268,7 @@ func TestDiff_RenameAndIntroduceNewColumnWithOldName(t *testing.T) {
 		ColumnSpec{Name: "event_name", Type: "Int64"},
 	))}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterTables, 1)
@@ -288,7 +288,7 @@ func TestDiff_RenameWithTypeChange(t *testing.T) {
 		ColumnSpec{Name: "new", Type: "UInt64", RenamedFrom: pt("old")},
 	))}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterTables, 1)
@@ -308,7 +308,7 @@ func TestDiff_RenameStaleDirectiveIsNoOp(t *testing.T) {
 		ColumnSpec{Name: "new_name", Type: "String", RenamedFrom: pt("old_name")},
 	))}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	assert.True(t, cs.IsEmpty())
 }
 
@@ -338,7 +338,7 @@ func TestDiff_AddMaterializedView(t *testing.T) {
 	mv := mkMV("metrics_mv", "default.metrics", "SELECT id FROM default.src")
 	to := []DatabaseSpec{mkDBWithMVs("posthog", mv)}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	expected := ChangeSet{Databases: []DatabaseChange{
 		{Database: "posthog", AddMaterializedViews: []MaterializedViewSpec{mv}},
 	}}
@@ -349,7 +349,7 @@ func TestDiff_DropMaterializedView(t *testing.T) {
 	from := []DatabaseSpec{mkDBWithMVs("posthog", mkMV("metrics_mv", "default.metrics", "SELECT id FROM default.src"))}
 	to := []DatabaseSpec{mkDB("posthog")}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	expected := ChangeSet{Databases: []DatabaseChange{
 		{Database: "posthog", DropMaterializedViews: []string{"metrics_mv"}},
 	}}
@@ -360,7 +360,7 @@ func TestDiff_AlterMaterializedViewQueryOnly(t *testing.T) {
 	from := []DatabaseSpec{mkDBWithMVs("posthog", mkMV("metrics_mv", "default.metrics", "SELECT id FROM default.src"))}
 	to := []DatabaseSpec{mkDBWithMVs("posthog", mkMV("metrics_mv", "default.metrics", "SELECT id, ts FROM default.src"))}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterMaterializedViews, 1)
@@ -378,7 +378,7 @@ func TestDiff_AlterMaterializedViewToTableRecreate(t *testing.T) {
 	from := []DatabaseSpec{mkDBWithMVs("posthog", mkMV("metrics_mv", "default.metrics_a", "SELECT id FROM default.src"))}
 	to := []DatabaseSpec{mkDBWithMVs("posthog", mkMV("metrics_mv", "default.metrics_b", "SELECT id FROM default.src"))}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterMaterializedViews, 1)
@@ -391,8 +391,8 @@ func TestDiff_AlterMaterializedViewToTableRecreate(t *testing.T) {
 func TestDiff_IdenticalMaterializedViewsEmpty(t *testing.T) {
 	mv := mkMV("metrics_mv", "default.metrics", "SELECT id FROM default.src")
 	cs := Diff(
-		[]DatabaseSpec{mkDBWithMVs("posthog", mv)},
-		[]DatabaseSpec{mkDBWithMVs("posthog", mv)},
+		&Schema{Databases: []DatabaseSpec{mkDBWithMVs("posthog", mv)}},
+		&Schema{Databases: []DatabaseSpec{mkDBWithMVs("posthog", mv)}},
 	)
 	assert.True(t, cs.IsEmpty())
 }
@@ -441,8 +441,8 @@ func TestDiff_AlterMaterializedViewColumnListRecreate(t *testing.T) {
 	}
 
 	cs := Diff(
-		[]DatabaseSpec{{Name: "posthog", MaterializedViews: []MaterializedViewSpec{fromMV}}},
-		[]DatabaseSpec{{Name: "posthog", MaterializedViews: []MaterializedViewSpec{toMV}}},
+		&Schema{Databases: []DatabaseSpec{{Name: "posthog", MaterializedViews: []MaterializedViewSpec{fromMV}}}},
+		&Schema{Databases: []DatabaseSpec{{Name: "posthog", MaterializedViews: []MaterializedViewSpec{toMV}}}},
 	)
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
@@ -462,7 +462,7 @@ func TestDiff_AlterMaterializedViewBothToTableAndQueryRecreateOnly(t *testing.T)
 		mkMV("metrics_mv", "default.metrics_b", "SELECT id, ts FROM default.src"),
 	)}
 
-	cs := Diff(from, to)
+	cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterMaterializedViews, 1)
@@ -519,7 +519,7 @@ func TestDiff_Dictionaries(t *testing.T) {
 	t.Run("add", func(t *testing.T) {
 		from := []DatabaseSpec{{Name: "db"}}
 		to := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
-		cs := Diff(from, to)
+		cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 		require.Len(t, cs.Databases, 1)
 		assert.Equal(t, []DictionarySpec{base}, cs.Databases[0].AddDictionaries)
 	})
@@ -527,7 +527,7 @@ func TestDiff_Dictionaries(t *testing.T) {
 	t.Run("drop", func(t *testing.T) {
 		from := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
 		to := []DatabaseSpec{{Name: "db"}}
-		cs := Diff(from, to)
+		cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 		require.Len(t, cs.Databases, 1)
 		assert.Equal(t, []string{"d"}, cs.Databases[0].DropDictionaries)
 	})
@@ -537,7 +537,7 @@ func TestDiff_Dictionaries(t *testing.T) {
 		changed.Layout = &DictionaryLayoutSpec{Kind: "flat", Decoded: LayoutFlat{}}
 		from := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
 		to := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{changed}}}
-		cs := Diff(from, to)
+		cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 		require.Len(t, cs.Databases, 1)
 		require.Len(t, cs.Databases[0].AlterDictionaries, 1)
 		dd := cs.Databases[0].AlterDictionaries[0]
@@ -554,7 +554,7 @@ func TestDiff_Dictionaries(t *testing.T) {
 		}
 		from := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
 		to := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{changed}}}
-		cs := Diff(from, to)
+		cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
 		require.Len(t, cs.Databases, 1)
 		require.Len(t, cs.Databases[0].AlterDictionaries, 1)
 		assert.Contains(t, cs.Databases[0].AlterDictionaries[0].Changed, "attributes")
@@ -562,6 +562,6 @@ func TestDiff_Dictionaries(t *testing.T) {
 
 	t.Run("identical produces no change", func(t *testing.T) {
 		dbs := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
-		assert.True(t, Diff(dbs, dbs).IsEmpty())
+		assert.True(t, Diff(&Schema{Databases: dbs}, &Schema{Databases: dbs}).IsEmpty())
 	})
 }

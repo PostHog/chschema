@@ -31,10 +31,10 @@ func stripEngineBodies(dbs []DatabaseSpec) {
 }
 
 func TestResolve_BasicHappyPath(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_basic.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_basic.hcl"))
 	require.NoError(t, err)
-	require.NoError(t, Resolve(dbs))
-	stripEngineBodies(dbs)
+	require.NoError(t, Resolve(schema))
+	stripEngineBodies(schema.Databases)
 
 	rmtEngine := &EngineSpec{
 		Kind: "replicated_merge_tree",
@@ -81,45 +81,45 @@ func TestResolve_BasicHappyPath(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, expected, dbs)
+	assert.Equal(t, expected, schema.Databases)
 }
 
 func TestResolve_Cycle(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_cycle.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_cycle.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cycle")
 }
 
 func TestResolve_SelfCycle(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_self_cycle.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_self_cycle.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cycle")
 }
 
 func TestResolve_MissingParent(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_missing_parent.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_missing_parent.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does_not_exist")
 }
 
 func TestResolve_ColumnCollision(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_column_collision.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_column_collision.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "collides")
 }
 
 func TestResolve_NoEngineOnNonAbstract(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_no_engine.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_no_engine.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "engine")
 }
@@ -149,7 +149,7 @@ func TestResolve_Dictionary_RequiresSourceLayoutPrimaryKey(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dbs := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{tc.dict}}}
-			err := Resolve(dbs)
+			err := Resolve(&Schema{Databases: dbs})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.errSubs)
 		})
@@ -164,7 +164,7 @@ func TestResolve_Dictionary_RangeOnlyForRangeLayouts(t *testing.T) {
 		Layout:     &DictionaryLayoutSpec{Kind: "hashed", Decoded: LayoutHashed{}},
 		Range:      &DictionaryRange{Min: "a", Max: "b"},
 	}}}}
-	err := Resolve(dbs)
+	err := Resolve(&Schema{Databases: dbs})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "range")
 	assert.Contains(t, err.Error(), "hashed")

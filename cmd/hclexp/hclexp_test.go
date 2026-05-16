@@ -44,12 +44,12 @@ database "posthog" {
   }
 }`)
 
-	dbs, err := loadSide(path)
+	schema, err := loadSide(path)
 	require.NoError(t, err)
-	require.Len(t, dbs, 1)
-	require.Equal(t, "posthog", dbs[0].Name)
-	require.Len(t, dbs[0].Tables, 1)
-	require.Equal(t, "events", dbs[0].Tables[0].Name)
+	require.Len(t, schema.Databases, 1)
+	require.Equal(t, "posthog", schema.Databases[0].Name)
+	require.Len(t, schema.Databases[0].Tables, 1)
+	require.Equal(t, "events", schema.Databases[0].Tables[0].Name)
 }
 
 func TestRunDiff_RenderChangeSet(t *testing.T) {

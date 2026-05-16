@@ -124,14 +124,14 @@ func TestCHLive_IntrospectMaterializedView(t *testing.T) {
 // a temp file, then runs Resolve, returning the single DatabaseSpec.
 func mustParseResolve(t *testing.T, src string) *DatabaseSpec {
 	t.Helper()
-	dbs, err := parseSource(t, src)
+	schema, err := parseSource(t, src)
 	require.NoError(t, err)
-	require.NoError(t, Resolve(dbs))
-	require.Len(t, dbs, 1)
-	return &dbs[0]
+	require.NoError(t, Resolve(schema))
+	require.Len(t, schema.Databases, 1)
+	return &schema.Databases[0]
 }
 
-func parseSource(t *testing.T, src string) ([]DatabaseSpec, error) {
+func parseSource(t *testing.T, src string) (*Schema, error) {
 	t.Helper()
 	tmp := t.TempDir() + "/spec.hcl"
 	require.NoError(t, os.WriteFile(tmp, []byte(src), 0o644))

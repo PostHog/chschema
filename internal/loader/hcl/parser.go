@@ -11,12 +11,13 @@ import (
 )
 
 type fileSpec struct {
-	Databases []DatabaseSpec `hcl:"database,block"`
+	Databases        []DatabaseSpec        `hcl:"database,block"`
+	NamedCollections []NamedCollectionSpec `hcl:"named_collection,block"`
 }
 
-// ParseFile parses a single HCL file and returns the declared databases.
+// ParseFile parses a single HCL file and returns the declared schema.
 // Diagnostics are formatted into the returned error.
-func ParseFile(path string) ([]DatabaseSpec, error) {
+func ParseFile(path string) (*Schema, error) {
 	parser := hclparse.NewParser()
 	f, diags := parser.ParseHCLFile(path)
 	if diags.HasErrors() {
@@ -59,7 +60,10 @@ func ParseFile(path string) ([]DatabaseSpec, error) {
 			}
 		}
 	}
-	return spec.Databases, nil
+	return &Schema{
+		Databases:        spec.Databases,
+		NamedCollections: spec.NamedCollections,
+	}, nil
 }
 
 func formatDiagnostics(parser *hclparse.Parser, diags hcl.Diagnostics) error {

@@ -1,6 +1,7 @@
 package hcl
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -8,15 +9,18 @@ import (
 // Resolve walks each database, applies patch_table additions, resolves
 // extend chains, drops abstract tables, and validates that every remaining
 // table has an engine. All mutation happens in place on the supplied slice.
-func Resolve(dbs []DatabaseSpec) error {
-	for di := range dbs {
-		if err := applyPatches(&dbs[di]); err != nil {
+func Resolve(s *Schema) error {
+	if s == nil {
+		return errors.New("Resolve: nil schema")
+	}
+	for di := range s.Databases {
+		if err := applyPatches(&s.Databases[di]); err != nil {
 			return err
 		}
-		if err := resolveDatabase(&dbs[di]); err != nil {
+		if err := resolveDatabase(&s.Databases[di]); err != nil {
 			return err
 		}
-		if err := validateDictionaries(&dbs[di]); err != nil {
+		if err := validateDictionaries(&s.Databases[di]); err != nil {
 			return err
 		}
 	}

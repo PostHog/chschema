@@ -47,17 +47,17 @@ func runValidate(args []string) {
 	skipFlag := fs.String("skip-validation", "", "comma-separated dependent object names to skip, or \"*\" for all")
 	_ = fs.Parse(args)
 
-	dbs, err := load(*configFlag, *layersFlag)
+	schema, err := load(*configFlag, *layersFlag)
 	if err != nil {
 		slog.Error("failed to load config", "err", err)
 		os.Exit(1)
 	}
-	if err := hclload.Resolve(dbs); err != nil {
+	if err := hclload.Resolve(schema); err != nil {
 		slog.Error("failed to resolve schema", "err", err)
 		os.Exit(1)
 	}
 
-	errs := hclload.Validate(dbs, hclload.ParseSkipSet(*skipFlag))
+	errs := hclload.Validate(schema.Databases, hclload.ParseSkipSet(*skipFlag))
 	if len(errs) > 0 {
 		for _, e := range errs {
 			fmt.Fprintf(os.Stderr, "validation error: %s\n", e.Error())
@@ -66,7 +66,7 @@ func runValidate(args []string) {
 		os.Exit(1)
 	}
 
-	slog.Info("schema validation passed", "databases", len(dbs))
+	slog.Info("schema validation passed", "databases", len(schema.Databases))
 }
 
 // runLoad loads an HCL config (single file or layers), resolves it, and
@@ -80,19 +80,19 @@ func runLoad(args []string) {
 
 	slog.Info("HCL experiment is up")
 
-	dbs, err := load(*configFlag, *layersFlag)
+	schema, err := load(*configFlag, *layersFlag)
 	if err != nil {
 		slog.Error("failed to load config", "err", err)
 		os.Exit(1)
 	}
 
-	if err := hclload.Resolve(dbs); err != nil {
+	if err := hclload.Resolve(schema); err != nil {
 		slog.Error("failed to resolve schema", "err", err)
 		os.Exit(1)
 	}
 
-	slog.Info("schema resolved", "databases", len(dbs))
-	for _, db := range dbs {
+	slog.Info("schema resolved", "databases", len(schema.Databases), "named_collections", len(schema.NamedCollections))
+	for _, db := range schema.Databases {
 		slog.Info("database", "name", db.Name, "tables", len(db.Tables))
 		for _, tbl := range db.Tables {
 			slog.Info("table",
@@ -111,7 +111,7 @@ func runLoad(args []string) {
 			os.Exit(1)
 		}
 		defer f.Close()
-		if err := hclload.Write(f, dbs); err != nil {
+		if err := hclload.Write(f, schema); err != nil {
 			slog.Error("failed to write resolved schema", "err", err)
 			os.Exit(1)
 		}
@@ -150,7 +150,7 @@ func runIntrospect(args []string) {
 	defer conn.Close()
 
 	ctx := context.Background()
-	var dbs []hclload.DatabaseSpec
+	schema := &hclload.Schema{}
 	for _, name := range databases {
 		spec, err := hclload.Introspect(ctx, conn, name)
 		if err != nil {
@@ -160,10 +160,10 @@ func runIntrospect(args []string) {
 		slog.Info("introspected database", "name", spec.Name,
 			"tables", len(spec.Tables), "materialized_views", len(spec.MaterializedViews),
 			"dictionaries", len(spec.Dictionaries))
-		dbs = append(dbs, *spec)
+		schema.Databases = append(schema.Databases, *spec)
 	}
 
-	if err := writeIntrospected(*outFlag, dbs); err != nil {
+	if err := writeIntrospected(*outFlag, schema); err != nil {
 		slog.Error("failed to write introspected schema", "out", *outFlag, "err", err)
 		os.Exit(1)
 	}
@@ -223,37 +223,37 @@ func runDiff(args []string) {
 // introspected from a live instance; anything else is treated as a
 // filesystem HCL source (a single file, or comma-separated layer dirs) and
 // resolved.
-func loadSide(spec string) ([]hclload.DatabaseSpec, error) {
+func loadSide(spec string) (*hclload.Schema, error) {
 	if strings.HasPrefix(spec, "clickhouse://") {
 		return loadFromClickHouse(spec)
 	}
 
 	paths := splitList(spec)
 	var (
-		dbs []hclload.DatabaseSpec
-		err error
+		schema *hclload.Schema
+		err    error
 	)
 	if len(paths) == 1 {
 		if info, statErr := os.Stat(paths[0]); statErr == nil && !info.IsDir() {
-			dbs, err = hclload.ParseFile(paths[0])
+			schema, err = hclload.ParseFile(paths[0])
 		} else {
-			dbs, err = hclload.LoadLayers(paths)
+			schema, err = hclload.LoadLayers(paths)
 		}
 	} else {
-		dbs, err = hclload.LoadLayers(paths)
+		schema, err = hclload.LoadLayers(paths)
 	}
 	if err != nil {
 		return nil, err
 	}
-	if err := hclload.Resolve(dbs); err != nil {
+	if err := hclload.Resolve(schema); err != nil {
 		return nil, fmt.Errorf("resolve: %w", err)
 	}
-	return dbs, nil
+	return schema, nil
 }
 
 // loadFromClickHouse connects to and introspects the databases named in a
 // clickhouse:// URI.
-func loadFromClickHouse(uri string) ([]hclload.DatabaseSpec, error) {
+func loadFromClickHouse(uri string) (*hclload.Schema, error) {
 	cfg, databases, err := parseClickHouseURI(uri)
 	if err != nil {
 		return nil, err
@@ -265,15 +265,15 @@ func loadFromClickHouse(uri string) ([]hclload.DatabaseSpec, error) {
 	defer conn.Close()
 
 	ctx := context.Background()
-	var dbs []hclload.DatabaseSpec
+	schema := &hclload.Schema{}
 	for _, name := range databases {
 		spec, err := hclload.Introspect(ctx, conn, name)
 		if err != nil {
 			return nil, fmt.Errorf("introspect %s: %w", name, err)
 		}
-		dbs = append(dbs, *spec)
+		schema.Databases = append(schema.Databases, *spec)
 	}
-	return dbs, nil
+	return schema, nil
 }
 
 // parseClickHouseURI turns clickhouse://user:password@host:port/db1,db2 into
@@ -399,7 +399,7 @@ func renderTableDiff(w io.Writer, td hclload.TableDiff) {
 	}
 }
 
-func load(configFlag, layersFlag string) ([]hclload.DatabaseSpec, error) {
+func load(configFlag, layersFlag string) (*hclload.Schema, error) {
 	if layersFlag != "" {
 		layers := strings.Split(layersFlag, ",")
 		slog.Debug("loading layers", "layers", layers)
@@ -412,15 +412,15 @@ func load(configFlag, layersFlag string) ([]hclload.DatabaseSpec, error) {
 // writeIntrospected dumps the introspected databases. An empty target writes
 // to stdout; a directory target writes one <db>.hcl file per database;
 // anything else is treated as a single output file holding all databases.
-func writeIntrospected(out string, dbs []hclload.DatabaseSpec) error {
+func writeIntrospected(out string, schema *hclload.Schema) error {
 	if out == "" {
-		return hclload.Write(os.Stdout, dbs)
+		return hclload.Write(os.Stdout, schema)
 	}
 
 	if info, err := os.Stat(out); err == nil && info.IsDir() {
-		for _, db := range dbs {
+		for _, db := range schema.Databases {
 			path := filepath.Join(out, db.Name+".hcl")
-			if err := writeFile(path, []hclload.DatabaseSpec{db}); err != nil {
+			if err := writeFile(path, &hclload.Schema{Databases: []hclload.DatabaseSpec{db}}); err != nil {
 				return err
 			}
 			slog.Info("schema written", "path", path)
@@ -428,20 +428,20 @@ func writeIntrospected(out string, dbs []hclload.DatabaseSpec) error {
 		return nil
 	}
 
-	if err := writeFile(out, dbs); err != nil {
+	if err := writeFile(out, schema); err != nil {
 		return err
 	}
 	slog.Info("schema written", "path", out)
 	return nil
 }
 
-func writeFile(path string, dbs []hclload.DatabaseSpec) error {
+func writeFile(path string, schema *hclload.Schema) error {
 	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
-	return hclload.Write(f, dbs)
+	return hclload.Write(f, schema)
 }
 
 func splitList(s string) []string {
