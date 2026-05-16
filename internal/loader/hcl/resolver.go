@@ -1,6 +1,7 @@
 package hcl
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -8,16 +9,102 @@ import (
 // Resolve walks each database, applies patch_table additions, resolves
 // extend chains, drops abstract tables, and validates that every remaining
 // table has an engine. All mutation happens in place on the supplied slice.
-func Resolve(dbs []DatabaseSpec) error {
-	for di := range dbs {
-		if err := applyPatches(&dbs[di]); err != nil {
+func Resolve(s *Schema) error {
+	if s == nil {
+		return errors.New("Resolve: nil schema")
+	}
+	if err := validateNamedCollections(s); err != nil {
+		return err
+	}
+	for di := range s.Databases {
+		if err := applyPatches(&s.Databases[di]); err != nil {
 			return err
 		}
-		if err := resolveDatabase(&dbs[di]); err != nil {
+		if err := resolveDatabase(&s.Databases[di]); err != nil {
 			return err
 		}
-		if err := validateDictionaries(&dbs[di]); err != nil {
+		if err := validateDictionaries(&s.Databases[di]); err != nil {
 			return err
+		}
+	}
+	if err := validateKafkaEngines(s); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateNamedCollections enforces name uniqueness, param-key uniqueness,
+// and that Params is non-empty for managed (non-external) collections.
+func validateNamedCollections(s *Schema) error {
+	seen := map[string]bool{}
+	for _, nc := range s.NamedCollections {
+		if seen[nc.Name] {
+			return fmt.Errorf("named_collection %q: duplicate", nc.Name)
+		}
+		seen[nc.Name] = true
+		if !nc.External && len(nc.Params) == 0 {
+			return fmt.Errorf("named_collection %q: requires non-empty params (or external = true)", nc.Name)
+		}
+		keys := map[string]bool{}
+		for _, p := range nc.Params {
+			if keys[p.Key] {
+				return fmt.Errorf("named_collection %q: duplicate param %q", nc.Name, p.Key)
+			}
+			keys[p.Key] = true
+		}
+	}
+	return nil
+}
+
+// validateKafkaEngines enforces XOR between collection and inline settings,
+// required-fields-when-inline, and that referenced collections exist.
+func validateKafkaEngines(s *Schema) error {
+	ncDeclared := map[string]bool{}
+	for _, nc := range s.NamedCollections {
+		ncDeclared[nc.Name] = true
+	}
+	for _, db := range s.Databases {
+		for _, t := range db.Tables {
+			if t.Engine == nil || t.Engine.Decoded == nil {
+				continue
+			}
+			k, ok := t.Engine.Decoded.(EngineKafka)
+			if !ok {
+				continue
+			}
+			hasInline := k.BrokerList != nil || k.TopicList != nil || k.GroupName != nil || k.Format != nil ||
+				k.SecurityProtocol != nil || k.SaslMechanism != nil || k.SaslUsername != nil || k.SaslPassword != nil ||
+				k.ClientID != nil || k.Schema != nil || k.HandleErrorMode != nil || k.CompressionCodec != nil ||
+				k.NumConsumers != nil || k.MaxBlockSize != nil || k.SkipBrokenMessages != nil ||
+				k.PollTimeoutMs != nil || k.PollMaxBatchSize != nil || k.FlushIntervalMs != nil ||
+				k.ConsumerRescheduleMs != nil || k.MaxRowsPerMessage != nil || k.CompressionLevel != nil ||
+				k.CommitEveryBatch != nil || k.ThreadPerConsumer != nil || k.CommitOnSelect != nil ||
+				k.AutodetectClientRack != nil || len(k.Extra) > 0
+
+			if k.Collection == nil && !hasInline {
+				return fmt.Errorf("%s.%s: kafka engine requires either `collection` or inline settings", db.Name, t.Name)
+			}
+			if k.Collection != nil && hasInline {
+				return fmt.Errorf("%s.%s: kafka engine `collection` and inline settings are mutually exclusive", db.Name, t.Name)
+			}
+			if k.Collection != nil {
+				if !ncDeclared[*k.Collection] {
+					return fmt.Errorf("%s.%s: kafka engine references collection %q which is not declared in the schema (declare with `named_collection %q {...}` or `external = true`)", db.Name, t.Name, *k.Collection, *k.Collection)
+				}
+			} else {
+				if k.BrokerList == nil {
+					return fmt.Errorf("%s.%s: kafka engine inline form requires broker_list", db.Name, t.Name)
+				}
+				if k.TopicList == nil {
+					return fmt.Errorf("%s.%s: kafka engine inline form requires topic_list", db.Name, t.Name)
+				}
+				if k.GroupName == nil {
+					return fmt.Errorf("%s.%s: kafka engine inline form requires group_name", db.Name, t.Name)
+				}
+				if k.Format == nil {
+					return fmt.Errorf("%s.%s: kafka engine inline form requires format", db.Name, t.Name)
+				}
+			}
 		}
 	}
 	return nil

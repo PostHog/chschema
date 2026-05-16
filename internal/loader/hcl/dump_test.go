@@ -21,6 +21,10 @@ func sortTables(dbs []DatabaseSpec) {
 	}
 }
 
+func sortNamedCollections(ncs []NamedCollectionSpec) {
+	sort.Slice(ncs, func(i, j int) bool { return ncs[i].Name < ncs[j].Name })
+}
+
 // roundTrip parses, resolves, dumps, parses, resolves again. The before and
 // after schemas (with engine bodies cleared) must compare equal.
 func roundTrip(t *testing.T, file string) {
@@ -40,10 +44,12 @@ func roundTrip(t *testing.T, file string) {
 	require.NoError(t, err, "re-parse failed; dump output:\n%s", buf.String())
 	require.NoError(t, Resolve(after))
 
-	stripEngineBodies(before)
-	stripEngineBodies(after)
-	sortTables(before)
-	sortTables(after)
+	stripEngineBodies(before.Databases)
+	stripEngineBodies(after.Databases)
+	sortTables(before.Databases)
+	sortTables(after.Databases)
+	sortNamedCollections(before.NamedCollections)
+	sortNamedCollections(after.NamedCollections)
 
 	assert.Equal(t, before, after, "round-trip mismatch; dump output:\n%s", buf.String())
 }
@@ -77,4 +83,16 @@ func TestWrite_OutputIsStable(t *testing.T) {
 	require.NoError(t, Write(&a, dbs))
 	require.NoError(t, Write(&b, dbs))
 	assert.Equal(t, a.String(), b.String(), "dump output should be deterministic")
+}
+
+func TestWrite_RoundTrip_NamedCollection(t *testing.T) {
+	roundTrip(t, filepath.Join("testdata", "named_collection.hcl"))
+}
+
+func TestWrite_RoundTrip_KafkaWithCollection(t *testing.T) {
+	roundTrip(t, filepath.Join("testdata", "kafka_with_collection.hcl"))
+}
+
+func TestWrite_RoundTrip_KafkaInlineSettings(t *testing.T) {
+	roundTrip(t, filepath.Join("testdata", "kafka_inline_settings.hcl"))
 }

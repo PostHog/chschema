@@ -38,4 +38,15 @@
         <level>information</level>
         <console>true</console>
     </logger>
+
+    <!-- Per ClickHouse docs, a user wishing to see un-redacted secrets in
+         SHOW / SELECT (including system.named_collections.collection)
+         needs THREE things:
+           1. This server setting: display_secrets_in_show_and_select = 1
+           2. The user privilege displaySecretsInShowAndSelect (granted in
+              users.d/grants.xml as <show_named_collections_secrets>1</…>)
+           3. Per-query SETTINGS format_display_secrets_in_show_and_select = 1
+              (applied by IntrospectNamedCollections).
+         All three together let the live tests assert real values. -->
+    <display_secrets_in_show_and_select>1</display_secrets_in_show_and_select>
 </clickhouse>

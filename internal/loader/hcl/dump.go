@@ -1,6 +1,7 @@
 package hcl
 
 import (
+	"errors"
 	"io"
 	"sort"
 
@@ -15,16 +16,29 @@ import (
 // The dumper assumes the input has already been resolved: extend/abstract/
 // override are consumed, patches applied, engines decoded. Fields tagged
 // diff:"-" in the type definitions are intentionally never emitted.
-func Write(w io.Writer, dbs []DatabaseSpec) error {
+func Write(w io.Writer, schema *Schema) error {
+	if schema == nil {
+		return errors.New("Write: nil schema")
+	}
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
 
-	for i, db := range dbs {
+	for i, db := range schema.Databases {
 		if i > 0 {
 			body.AppendNewline()
 		}
 		dbBlock := body.AppendNewBlock("database", []string{db.Name})
 		writeDatabase(dbBlock.Body(), db)
+	}
+
+	ncs := append([]NamedCollectionSpec(nil), schema.NamedCollections...)
+	sort.Slice(ncs, func(i, j int) bool { return ncs[i].Name < ncs[j].Name })
+	for i, nc := range ncs {
+		if len(schema.Databases) > 0 || i > 0 {
+			body.AppendNewline()
+		}
+		ncBlock := body.AppendNewBlock("named_collection", []string{nc.Name})
+		writeNamedCollection(ncBlock.Body(), nc)
 	}
 
 	_, err := w.Write(f.Bytes())
@@ -159,10 +173,57 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 			b.SetAttributeValue("sharding_key", cty.StringVal(*v.ShardingKey))
 		}
 	case EngineKafka:
-		b.SetAttributeValue("broker_list", stringList(v.BrokerList))
-		b.SetAttributeValue("topic", cty.StringVal(v.Topic))
-		b.SetAttributeValue("consumer_group", cty.StringVal(v.ConsumerGroup))
-		b.SetAttributeValue("format", cty.StringVal(v.Format))
+		if v.Collection != nil {
+			b.SetAttributeValue("collection", cty.StringVal(*v.Collection))
+			return
+		}
+		setStr := func(name string, p *string) {
+			if p != nil {
+				b.SetAttributeValue(name, cty.StringVal(*p))
+			}
+		}
+		setInt := func(name string, p *int64) {
+			if p != nil {
+				b.SetAttributeValue(name, cty.NumberIntVal(*p))
+			}
+		}
+		setBool := func(name string, p *bool) {
+			if p != nil {
+				if *p {
+					b.SetAttributeValue(name, cty.True)
+				} else {
+					b.SetAttributeValue(name, cty.False)
+				}
+			}
+		}
+		setStr("broker_list", v.BrokerList)
+		setStr("topic_list", v.TopicList)
+		setStr("group_name", v.GroupName)
+		setStr("format", v.Format)
+		setStr("security_protocol", v.SecurityProtocol)
+		setStr("sasl_mechanism", v.SaslMechanism)
+		setStr("sasl_username", v.SaslUsername)
+		setStr("sasl_password", v.SaslPassword)
+		setStr("client_id", v.ClientID)
+		setStr("schema", v.Schema)
+		setStr("handle_error_mode", v.HandleErrorMode)
+		setStr("compression_codec", v.CompressionCodec)
+		setInt("num_consumers", v.NumConsumers)
+		setInt("max_block_size", v.MaxBlockSize)
+		setInt("skip_broken_messages", v.SkipBrokenMessages)
+		setInt("poll_timeout_ms", v.PollTimeoutMs)
+		setInt("poll_max_batch_size", v.PollMaxBatchSize)
+		setInt("flush_interval_ms", v.FlushIntervalMs)
+		setInt("consumer_reschedule_ms", v.ConsumerRescheduleMs)
+		setInt("max_rows_per_message", v.MaxRowsPerMessage)
+		setInt("compression_level", v.CompressionLevel)
+		setBool("commit_every_batch", v.CommitEveryBatch)
+		setBool("thread_per_consumer", v.ThreadPerConsumer)
+		setBool("commit_on_select", v.CommitOnSelect)
+		setBool("autodetect_client_rack", v.AutodetectClientRack)
+		if len(v.Extra) > 0 {
+			b.SetAttributeValue("extra", stringMap(v.Extra))
+		}
 	}
 }
 

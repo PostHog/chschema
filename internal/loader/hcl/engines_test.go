@@ -9,10 +9,10 @@ import (
 )
 
 func TestParseFile_AllEngineKinds(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "engines_all_kinds.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "engines_all_kinds.hcl"))
 	require.NoError(t, err)
-	require.Len(t, dbs, 1)
-	tables := dbs[0].Tables
+	require.Len(t, schema.Databases, 1)
+	tables := schema.Databases[0].Tables
 
 	byName := map[string]Engine{}
 	for _, tbl := range tables {
@@ -69,10 +69,10 @@ func TestParseFile_AllEngineKinds(t *testing.T) {
 	assert.Equal(t, EngineLog{}, byName["t_log"])
 
 	assert.Equal(t, EngineKafka{
-		BrokerList:    []string{"kafka:9092"},
-		Topic:         "events",
-		ConsumerGroup: "ingest",
-		Format:        "JSONEachRow",
+		BrokerList: ptr("kafka:9092"),
+		TopicList:  ptr("events"),
+		GroupName:  ptr("ingest"),
+		Format:     ptr("JSONEachRow"),
 	}, byName["t_kafka"])
 }
 

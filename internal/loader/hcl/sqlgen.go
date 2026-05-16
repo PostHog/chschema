@@ -36,6 +36,30 @@ type UnsafeChange struct {
 // recreate-and-swap procedure.
 func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	var out GeneratedSQL
+
+	// 1. Named-collection recreates (DROP+CREATE adjacent, at the FRONT
+	// before any other create — dependent tables can rely on the new NC).
+	for _, ncc := range cs.NamedCollections {
+		if ncc.Recreate && ncc.Add != nil {
+			out.Statements = append(out.Statements, dropNamedCollectionSQL(ncc.Name))
+			out.Statements = append(out.Statements, createNamedCollectionSQL(*ncc.Add))
+		}
+		if ncc.Error != "" {
+			out.Unsafe = append(out.Unsafe, UnsafeChange{
+				Database: "",
+				Table:    ncc.Name,
+				Reason:   "named collection: " + ncc.Error,
+			})
+		}
+	}
+
+	// 2. Fresh NC adds.
+	for _, ncc := range cs.NamedCollections {
+		if ncc.Add != nil && !ncc.Recreate {
+			out.Statements = append(out.Statements, createNamedCollectionSQL(*ncc.Add))
+		}
+	}
+
 	for _, dt := range orderTablesByDependency(gatherTables(cs, addTablesOf), false) {
 		out.Statements = append(out.Statements, createTableSQL(dt.Database, dt.Table))
 	}
@@ -82,6 +106,20 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 			})
 		}
 	}
+
+	// 8. ALTER NAMED COLLECTION (SET then DELETE, only for non-recreate diffs).
+	for _, ncc := range cs.NamedCollections {
+		if ncc.Recreate || ncc.Add != nil || ncc.Drop {
+			continue
+		}
+		if stmt := alterNamedCollectionSetSQL(ncc.Name, ncc.SetParams); stmt != "" {
+			out.Statements = append(out.Statements, stmt)
+		}
+		if stmt := alterNamedCollectionDeleteSQL(ncc.Name, ncc.DeleteParams); stmt != "" {
+			out.Statements = append(out.Statements, stmt)
+		}
+	}
+
 	for _, dc := range cs.Databases {
 		for _, name := range dc.DropMaterializedViews {
 			out.Statements = append(out.Statements, dropViewSQL(dc.Database, name))
@@ -96,6 +134,13 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	}
 	for _, dt := range orderTablesByDependency(gatherTables(cs, dropTablesOf), true) {
 		out.Statements = append(out.Statements, dropTableSQL(dt.Database, dt.Table.Name))
+	}
+
+	// 12. NC pure drops (not recreate). After tables — anything referencing them is gone.
+	for _, ncc := range cs.NamedCollections {
+		if ncc.Drop && !ncc.Recreate {
+			out.Statements = append(out.Statements, dropNamedCollectionSQL(ncc.Name))
+		}
 	}
 	return out
 }
@@ -443,12 +488,59 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 	case EngineLog:
 		return "Log()", nil
 	case EngineKafka:
-		return "Kafka()", map[string]string{
-			"kafka_broker_list": strings.Join(v.BrokerList, ","),
-			"kafka_topic_list":  v.Topic,
-			"kafka_group_name":  v.ConsumerGroup,
-			"kafka_format":      v.Format,
+		if v.Collection != nil {
+			// Named collection form: Kafka(<collection>); no settings emitted.
+			return fmt.Sprintf("Kafka(%s)", *v.Collection), nil
 		}
+		settings := map[string]string{}
+		setStr := func(name string, p *string) {
+			if p != nil {
+				settings[name] = *p
+			}
+		}
+		setInt := func(name string, p *int64) {
+			if p != nil {
+				settings[name] = fmt.Sprintf("%d", *p)
+			}
+		}
+		setBool := func(name string, p *bool) {
+			if p != nil {
+				if *p {
+					settings[name] = "1"
+				} else {
+					settings[name] = "0"
+				}
+			}
+		}
+		setStr("kafka_broker_list", v.BrokerList)
+		setStr("kafka_topic_list", v.TopicList)
+		setStr("kafka_group_name", v.GroupName)
+		setStr("kafka_format", v.Format)
+		setStr("kafka_security_protocol", v.SecurityProtocol)
+		setStr("kafka_sasl_mechanism", v.SaslMechanism)
+		setStr("kafka_sasl_username", v.SaslUsername)
+		setStr("kafka_sasl_password", v.SaslPassword)
+		setStr("kafka_client_id", v.ClientID)
+		setStr("kafka_schema", v.Schema)
+		setStr("kafka_handle_error_mode", v.HandleErrorMode)
+		setStr("kafka_compression_codec", v.CompressionCodec)
+		setInt("kafka_num_consumers", v.NumConsumers)
+		setInt("kafka_max_block_size", v.MaxBlockSize)
+		setInt("kafka_skip_broken_messages", v.SkipBrokenMessages)
+		setInt("kafka_poll_timeout_ms", v.PollTimeoutMs)
+		setInt("kafka_poll_max_batch_size", v.PollMaxBatchSize)
+		setInt("kafka_flush_interval_ms", v.FlushIntervalMs)
+		setInt("kafka_consumer_reschedule_ms", v.ConsumerRescheduleMs)
+		setInt("kafka_max_rows_per_message", v.MaxRowsPerMessage)
+		setInt("kafka_compression_level", v.CompressionLevel)
+		setBool("kafka_commit_every_batch", v.CommitEveryBatch)
+		setBool("kafka_thread_per_consumer", v.ThreadPerConsumer)
+		setBool("kafka_commit_on_select", v.CommitOnSelect)
+		setBool("kafka_autodetect_client_rack", v.AutodetectClientRack)
+		for k, val := range v.Extra {
+			settings[k] = val
+		}
+		return "Kafka()", settings
 	}
 	return "", nil
 }

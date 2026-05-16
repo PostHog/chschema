@@ -31,10 +31,10 @@ func stripEngineBodies(dbs []DatabaseSpec) {
 }
 
 func TestResolve_BasicHappyPath(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_basic.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_basic.hcl"))
 	require.NoError(t, err)
-	require.NoError(t, Resolve(dbs))
-	stripEngineBodies(dbs)
+	require.NoError(t, Resolve(schema))
+	stripEngineBodies(schema.Databases)
 
 	rmtEngine := &EngineSpec{
 		Kind: "replicated_merge_tree",
@@ -81,45 +81,45 @@ func TestResolve_BasicHappyPath(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, expected, dbs)
+	assert.Equal(t, expected, schema.Databases)
 }
 
 func TestResolve_Cycle(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_cycle.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_cycle.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cycle")
 }
 
 func TestResolve_SelfCycle(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_self_cycle.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_self_cycle.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cycle")
 }
 
 func TestResolve_MissingParent(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_missing_parent.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_missing_parent.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does_not_exist")
 }
 
 func TestResolve_ColumnCollision(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_column_collision.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_column_collision.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "collides")
 }
 
 func TestResolve_NoEngineOnNonAbstract(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "resolve_no_engine.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_no_engine.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "engine")
 }
@@ -149,7 +149,7 @@ func TestResolve_Dictionary_RequiresSourceLayoutPrimaryKey(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			dbs := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{tc.dict}}}
-			err := Resolve(dbs)
+			err := Resolve(&Schema{Databases: dbs})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tc.errSubs)
 		})
@@ -164,8 +164,156 @@ func TestResolve_Dictionary_RangeOnlyForRangeLayouts(t *testing.T) {
 		Layout:     &DictionaryLayoutSpec{Kind: "hashed", Decoded: LayoutHashed{}},
 		Range:      &DictionaryRange{Min: "a", Max: "b"},
 	}}}}
-	err := Resolve(dbs)
+	err := Resolve(&Schema{Databases: dbs})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "range")
 	assert.Contains(t, err.Error(), "hashed")
+}
+
+func TestResolve_NamedCollection_Validation(t *testing.T) {
+	cases := []struct {
+		name    string
+		schema  *Schema
+		errSubs string
+	}{
+		{
+			name: "duplicate names",
+			schema: &Schema{NamedCollections: []NamedCollectionSpec{
+				{Name: "x", Params: []NamedCollectionParam{{Key: "a", Value: "1"}}},
+				{Name: "x", Params: []NamedCollectionParam{{Key: "b", Value: "2"}}},
+			}},
+			errSubs: "duplicate",
+		},
+		{
+			name: "duplicate param keys",
+			schema: &Schema{NamedCollections: []NamedCollectionSpec{
+				{Name: "x", Params: []NamedCollectionParam{
+					{Key: "a", Value: "1"},
+					{Key: "a", Value: "2"},
+				}},
+			}},
+			errSubs: "duplicate param",
+		},
+		{
+			name: "empty params on managed NC",
+			schema: &Schema{NamedCollections: []NamedCollectionSpec{
+				{Name: "x"},
+			}},
+			errSubs: "non-empty",
+		},
+		{
+			name: "empty params allowed on external NC",
+			schema: &Schema{NamedCollections: []NamedCollectionSpec{
+				{Name: "x", External: true},
+			}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Resolve(tc.schema)
+			if tc.errSubs == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errSubs)
+			}
+		})
+	}
+}
+
+func TestResolve_KafkaEngine_XOR(t *testing.T) {
+	mkTblWithKafka := func(eng EngineKafka) *Schema {
+		return &Schema{Databases: []DatabaseSpec{{
+			Name: "db",
+			Tables: []TableSpec{{
+				Name:    "t",
+				Columns: []ColumnSpec{{Name: "id", Type: "UInt64"}},
+				OrderBy: []string{"id"},
+				Engine: &EngineSpec{
+					Kind:    "kafka",
+					Decoded: eng,
+				},
+			}},
+		}}}
+	}
+	cases := []struct {
+		name    string
+		eng     EngineKafka
+		errSubs string
+		setupNC bool
+	}{
+		{
+			name:    "neither collection nor inline",
+			eng:     EngineKafka{},
+			errSubs: "requires either",
+		},
+		{
+			name:    "collection AND inline broker_list",
+			eng:     EngineKafka{Collection: ptr("nc1"), BrokerList: ptr("k:9092")},
+			errSubs: "mutually exclusive",
+			setupNC: true,
+		},
+		{
+			name:    "collection AND extra",
+			eng:     EngineKafka{Collection: ptr("nc1"), Extra: map[string]string{"kafka_x": "y"}},
+			errSubs: "mutually exclusive",
+			setupNC: true,
+		},
+		{
+			name:    "inline missing topic_list",
+			eng:     EngineKafka{BrokerList: ptr("k:9092"), GroupName: ptr("g"), Format: ptr("JSONEachRow")},
+			errSubs: "topic_list",
+		},
+		{
+			name: "valid inline",
+			eng: EngineKafka{
+				BrokerList: ptr("k:9092"),
+				TopicList:  ptr("events"),
+				GroupName:  ptr("g"),
+				Format:     ptr("JSONEachRow"),
+			},
+		},
+		{
+			name:    "valid collection",
+			eng:     EngineKafka{Collection: ptr("nc1")},
+			setupNC: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := mkTblWithKafka(tc.eng)
+			if tc.setupNC {
+				s.NamedCollections = []NamedCollectionSpec{{
+					Name:   "nc1",
+					Params: []NamedCollectionParam{{Key: "kafka_broker_list", Value: "k:9092"}},
+				}}
+			}
+			err := Resolve(s)
+			if tc.errSubs == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tc.errSubs)
+			}
+		})
+	}
+}
+
+func TestResolve_KafkaCollectionReference(t *testing.T) {
+	s := &Schema{Databases: []DatabaseSpec{{
+		Name: "db",
+		Tables: []TableSpec{{
+			Name:    "t",
+			Columns: []ColumnSpec{{Name: "id", Type: "UInt64"}},
+			OrderBy: []string{"id"},
+			Engine: &EngineSpec{
+				Kind:    "kafka",
+				Decoded: EngineKafka{Collection: ptr("undeclared_nc")},
+			},
+		}},
+	}}}
+	err := Resolve(s)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "undeclared_nc")
+	assert.Contains(t, err.Error(), "not declared")
 }

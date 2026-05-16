@@ -15,9 +15,11 @@ import (
 //
 // LoadLayers does NOT call Resolve; callers run that explicitly so they can
 // inspect the merged-but-unresolved input first.
-func LoadLayers(layerDirs []string) ([]DatabaseSpec, error) {
+func LoadLayers(layerDirs []string) (*Schema, error) {
 	registry := map[string]*DatabaseSpec{}
 	var ordered []string
+	ncByName := map[string]*NamedCollectionSpec{}
+	var ncOrder []string
 
 	for _, dir := range layerDirs {
 		files, err := hclFilesIn(dir)
@@ -29,7 +31,7 @@ func LoadLayers(layerDirs []string) ([]DatabaseSpec, error) {
 			if err != nil {
 				return nil, err
 			}
-			for _, db := range parsed {
+			for _, db := range parsed.Databases {
 				if existing, ok := registry[db.Name]; ok {
 					if err := mergeIntoDatabase(existing, db); err != nil {
 						return nil, fmt.Errorf("%s: %w", file, err)
@@ -40,12 +42,27 @@ func LoadLayers(layerDirs []string) ([]DatabaseSpec, error) {
 					ordered = append(ordered, db.Name)
 				}
 			}
+			for _, nc := range parsed.NamedCollections {
+				if existing, ok := ncByName[nc.Name]; ok {
+					if !nc.Override {
+						return nil, fmt.Errorf("%s: named_collection %q redeclared without override = true", file, nc.Name)
+					}
+					*existing = nc
+				} else {
+					cp := nc
+					ncByName[nc.Name] = &cp
+					ncOrder = append(ncOrder, nc.Name)
+				}
+			}
 		}
 	}
 
-	out := make([]DatabaseSpec, 0, len(ordered))
+	out := &Schema{}
 	for _, name := range ordered {
-		out = append(out, *registry[name])
+		out.Databases = append(out.Databases, *registry[name])
+	}
+	for _, name := range ncOrder {
+		out.NamedCollections = append(out.NamedCollections, *ncByName[name])
 	}
 	return out, nil
 }

@@ -84,10 +84,49 @@ type EngineLog struct{}
 func (EngineLog) Kind() string { return "log" }
 
 type EngineKafka struct {
-	BrokerList    []string `hcl:"broker_list"`
-	Topic         string   `hcl:"topic"`
-	ConsumerGroup string   `hcl:"consumer_group"`
-	Format        string   `hcl:"format"`
+	// Collection is the named-collection reference. Mutually exclusive
+	// with every other field; when set, no inline setting may be set.
+	Collection *string `hcl:"collection,optional"`
+
+	// Required when Collection is nil.
+	BrokerList *string `hcl:"broker_list,optional"`
+	TopicList  *string `hcl:"topic_list,optional"`
+	GroupName  *string `hcl:"group_name,optional"`
+	Format     *string `hcl:"format,optional"`
+
+	// Optional auth.
+	SecurityProtocol *string `hcl:"security_protocol,optional"`
+	SaslMechanism    *string `hcl:"sasl_mechanism,optional"`
+	SaslUsername     *string `hcl:"sasl_username,optional"`
+	SaslPassword     *string `hcl:"sasl_password,optional"`
+
+	// Optional numeric tuning.
+	NumConsumers         *int64 `hcl:"num_consumers,optional"`
+	MaxBlockSize         *int64 `hcl:"max_block_size,optional"`
+	SkipBrokenMessages   *int64 `hcl:"skip_broken_messages,optional"`
+	PollTimeoutMs        *int64 `hcl:"poll_timeout_ms,optional"`
+	PollMaxBatchSize     *int64 `hcl:"poll_max_batch_size,optional"`
+	FlushIntervalMs      *int64 `hcl:"flush_interval_ms,optional"`
+	ConsumerRescheduleMs *int64 `hcl:"consumer_reschedule_ms,optional"`
+	MaxRowsPerMessage    *int64 `hcl:"max_rows_per_message,optional"`
+	CompressionLevel     *int64 `hcl:"compression_level,optional"`
+
+	// Optional booleans (introspected as 0/1, presented as bool in HCL).
+	CommitEveryBatch     *bool `hcl:"commit_every_batch,optional"`
+	ThreadPerConsumer    *bool `hcl:"thread_per_consumer,optional"`
+	CommitOnSelect       *bool `hcl:"commit_on_select,optional"`
+	AutodetectClientRack *bool `hcl:"autodetect_client_rack,optional"`
+
+	// Optional strings.
+	ClientID         *string `hcl:"client_id,optional"`
+	Schema           *string `hcl:"schema,optional"`
+	HandleErrorMode  *string `hcl:"handle_error_mode,optional"`
+	CompressionCodec *string `hcl:"compression_codec,optional"`
+
+	// Extra is the escape valve for kafka_* settings ClickHouse adds in
+	// versions we don't yet model. Keys are passed through verbatim and
+	// MUST include the `kafka_` prefix (the typed fields above strip it).
+	Extra map[string]string `hcl:"extra,optional"`
 }
 
 func (EngineKafka) Kind() string { return "kafka" }

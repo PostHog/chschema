@@ -310,6 +310,95 @@ Kinds outside these lists error during introspection with `unsupported dictionar
 
 **`PASSWORD '[HIDDEN]'` caveat.** ClickHouse's `system.tables.create_table_query` redacts secrets, so an introspected dictionary's `password` is the literal string `[HIDDEN]`. Applying a dumped dictionary verbatim will leave it unable to load data from its source. Edit dumped HCL to restore real credentials (or wire secrets through some out-of-band mechanism) before deploying.
 
+### Named collections
+
+A `named_collection` block declares a ClickHouse named collection —
+cluster-scoped key/value bags that other objects (most notably Kafka
+tables) can reference by name. Named collections sit **at the top level**
+of the HCL document, next to `database` blocks rather than inside one —
+they're cluster-scoped, not database-scoped.
+
+```hcl
+named_collection "my_kafka" {
+  cluster = "posthog"
+
+  param "kafka_broker_list" { value = "kafka:9092" }
+  param "kafka_topic_list"  { value = "events" }
+  param "kafka_group_name"  { value = "ch_events" }
+  param "kafka_format"      { value = "JSONEachRow" }
+}
+
+database "posthog" {
+  table "events_kafka" {
+    column "team_id" { type = "Int64" }
+    column "payload" { type = "String" }
+    engine "kafka" { collection = "my_kafka" }
+  }
+}
+```
+
+| Block / attribute | Required | Meaning |
+|-------------------|----------|---------|
+| `external`        | no       | `true` marks an NC managed outside hclexp (e.g. server XML config); hclexp emits no DDL for it but lets Kafka references resolve. |
+| `cluster`         | no       | `ON CLUSTER` target. Changing it forces a DROP+CREATE recreate. |
+| `comment`         | no       | NC comment. |
+| `param`           | yes (unless `external = true`) | one per key, with required `value` and optional `overridable` boolean. |
+
+**Diff & apply.** `hclexp diff` uses `ALTER NAMED COLLECTION ... SET / DELETE` for surgical param changes and a `DROP+CREATE` pair (emitted adjacently) when `cluster` changes. External↔managed transitions are flagged as unsupported migrations.
+
+**Production secret pattern.** The natural way to keep secret NC values out of VCS is the layered HCL pattern:
+
+```bash
+hclexp -layer schema/base,schema/prod-secrets ...
+```
+
+The base layer commits the NC declaration with placeholder values; the override layer (gitignored or vault-sourced) declares the same NC with `override = true` and the real values. Layer merging applies the override.
+
+**Externally-managed NCs (PostHog-style XML config).** When a collection is defined in the ClickHouse server's XML config rather than via DDL, declare it in HCL with `external = true`:
+
+```hcl
+named_collection "kafka_main" {
+  external = true
+  comment  = "managed in /etc/clickhouse-server/config.d/kafka.xml"
+}
+```
+
+hclexp emits no DDL for external collections, but their declaration makes engine `collection = "..."` references resolvable and validatable at parse time.
+
+**Privilege & redaction caveat.** ClickHouse redacts named-collection values to `[HIDDEN]` for users without `SHOW_NAMED_COLLECTIONS_SECRETS`. The introspection in this package relies on the cluster exposing real values. In production with restricted users, introspected NCs come back with `[HIDDEN]` placeholders — use the override-layer pattern (or external NCs) to keep the real values out of VCS.
+
+### Kafka engine with named collections
+
+`engine "kafka" { ... }` accepts either a `collection` reference or a complete inline set of `kafka_*` settings — never both. The inline form is the canonical preferred shape, modeling every documented `kafka_*` setting as a typed HCL attribute (numbers, booleans, strings) with an `extra` escape map for settings ClickHouse adds in versions hclexp doesn't yet model:
+
+```hcl
+engine "kafka" {
+  // option A: named collection reference (no other field allowed)
+  collection = "my_kafka"
+}
+
+engine "kafka" {
+  // option B: full inline (canonical Kafka() + SETTINGS form)
+  broker_list          = "kafka:9092"
+  topic_list           = "events"
+  group_name           = "ch_events"
+  format               = "JSONEachRow"
+  num_consumers        = 4
+  max_block_size       = 1048576
+  commit_on_select     = false
+  skip_broken_messages = 100
+  handle_error_mode    = "stream"
+  sasl_mechanism       = "PLAIN"
+  sasl_username        = "ch"
+  sasl_password        = "[set via override layer]"
+  extra = {
+    kafka_some_future_setting = "passthrough"
+  }
+}
+```
+
+Field names drop the `kafka_` prefix (implicit inside `engine "kafka"`). The `extra` map carries any setting that doesn't have a typed field; its keys must include the `kafka_` prefix.
+
 ## Layering & inheritance
 
 Layers let a base schema be specialized per environment. `-layer a,b,c`

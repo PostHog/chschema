@@ -82,10 +82,10 @@ database "posthog" {
   table "t_kafka" {
     column "id" { type = "UUID" }
     engine "kafka" {
-      broker_list    = ["kafka:9092"]
-      topic          = "events"
-      consumer_group = "ingest"
-      format         = "JSONEachRow"
+      broker_list = "kafka:9092"
+      topic_list  = "events"
+      group_name  = "ingest"
+      format      = "JSONEachRow"
     }
   }
 }

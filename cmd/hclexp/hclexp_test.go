@@ -44,12 +44,12 @@ database "posthog" {
   }
 }`)
 
-	dbs, err := loadSide(path)
+	schema, err := loadSide(path)
 	require.NoError(t, err)
-	require.Len(t, dbs, 1)
-	require.Equal(t, "posthog", dbs[0].Name)
-	require.Len(t, dbs[0].Tables, 1)
-	require.Equal(t, "events", dbs[0].Tables[0].Name)
+	require.Len(t, schema.Databases, 1)
+	require.Equal(t, "posthog", schema.Databases[0].Name)
+	require.Len(t, schema.Databases[0].Tables, 1)
+	require.Equal(t, "events", schema.Databases[0].Tables[0].Name)
 }
 
 func TestRunDiff_RenderChangeSet(t *testing.T) {
@@ -197,6 +197,32 @@ func TestRenderChangeSet_Dictionaries(t *testing.T) {
   + dictionary new_dict
   - dictionary old_dict
   ~ dictionary rebuild_dict (changed: layout, source)
+`
+	require.Equal(t, want, buf.String())
+}
+
+func TestRenderChangeSet_NamedCollections(t *testing.T) {
+	cs := hclload.ChangeSet{
+		NamedCollections: []hclload.NamedCollectionChange{
+			{Name: "new_nc", Add: &hclload.NamedCollectionSpec{Name: "new_nc"}},
+			{Name: "old_nc", Drop: true},
+			{Name: "prod_nc", SetParams: []hclload.NamedCollectionParam{
+				{Key: "kafka_topic_list", Value: "new_topic"},
+				{Key: "kafka_new_setting", Value: "added"},
+			}, DeleteParams: []string{"kafka_unused"}},
+		},
+	}
+
+	var buf bytes.Buffer
+	renderChangeSet(&buf, cs)
+
+	want := `named_collections
+  + named_collection new_nc
+  - named_collection old_nc
+  ~ named_collection prod_nc
+      ~ param kafka_topic_list (set)
+      ~ param kafka_new_setting (set)
+      - param kafka_unused
 `
 	require.Equal(t, want, buf.String())
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 
 	chparser "github.com/AfterShip/clickhouse-sql-parser/parser"
@@ -392,20 +393,9 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 	case "Log":
 		return EngineLog{}, allSettings, nil
 	case "Kafka":
-		k := EngineKafka{
-			BrokerList:    splitCSV(allSettings["kafka_broker_list"]),
-			Topic:         allSettings["kafka_topic_list"],
-			ConsumerGroup: allSettings["kafka_group_name"],
-			Format:        allSettings["kafka_format"],
-		}
-		// Constructor form (legacy): Kafka(broker_list, topic, group, format).
-		if k.Topic == "" && len(params) >= 4 {
-			k = EngineKafka{
-				BrokerList:    splitCSV(params[0]),
-				Topic:         params[1],
-				ConsumerGroup: params[2],
-				Format:        params[3],
-			}
+		k, err := buildKafkaEngine(params, allSettings)
+		if err != nil {
+			return nil, nil, err
 		}
 		// kafka_* settings are engine args, not table settings.
 		stripped := make(map[string]string, len(allSettings))
@@ -738,26 +728,168 @@ func parseSummingMergeTreeHCL(decl string) (Engine, error) {
 func parseKafkaEngine(engineFull, decl string) (Engine, error) {
 	settings := extractEngineSettings(engineFull)
 	if len(settings) > 0 {
-		return EngineKafka{
-			BrokerList:    splitCSV(settings["kafka_broker_list"]),
-			Topic:         settings["kafka_topic_list"],
-			ConsumerGroup: settings["kafka_group_name"],
-			Format:        settings["kafka_format"],
-		}, nil
+		k, err := buildKafkaEngine(nil, settings)
+		if err != nil {
+			return nil, err
+		}
+		return k, nil
 	}
 	p, err := extractEngineParams(decl)
 	if err != nil {
 		return nil, err
 	}
-	if len(p) < 4 {
-		return nil, fmt.Errorf("Kafka needs (broker_list, topic, group, format) or SETTINGS form; got %v", p)
+	return buildKafkaEngine(p, nil)
+}
+
+// buildKafkaEngine decodes Kafka engine parameters into the typed
+// EngineKafka struct across the four supported forms:
+//  1. Kafka() + kafka_* settings (canonical inline form)
+//  2. Kafka(<collection_name>) with no settings (named collection)
+//  3. Kafka('broker', 'topic', 'group', 'format') legacy positional
+//  4. Kafka(<collection>) + kafka_* settings → error (mixed form)
+func buildKafkaEngine(params []string, allSettings map[string]string) (EngineKafka, error) {
+	hasKafkaSettings := false
+	for k := range allSettings {
+		if strings.HasPrefix(k, "kafka_") {
+			hasKafkaSettings = true
+			break
+		}
 	}
-	return EngineKafka{
-		BrokerList:    splitCSV(p[0]),
-		Topic:         p[1],
-		ConsumerGroup: p[2],
-		Format:        p[3],
-	}, nil
+
+	// Form 2 / 4: single arg that looks like an identifier — no colon
+	// (broker list always has host:port), no comma (broker list is
+	// comma-joined), no slash, no whitespace.
+	if len(params) == 1 && !strings.ContainsAny(params[0], ":,/ ") {
+		name := params[0]
+		if hasKafkaSettings {
+			return EngineKafka{}, fmt.Errorf("Kafka(%s) cannot be combined with kafka_* SETTINGS overrides — declare full inline settings instead", name)
+		}
+		return EngineKafka{Collection: &name}, nil
+	}
+
+	// Form 3: legacy positional Kafka('broker', 'topic', 'group', 'format').
+	if len(params) == 4 {
+		broker := params[0]
+		topic := params[1]
+		group := params[2]
+		format := params[3]
+		k := EngineKafka{
+			BrokerList: &broker,
+			TopicList:  &topic,
+			GroupName:  &group,
+			Format:     &format,
+		}
+		for key, val := range allSettings {
+			if !strings.HasPrefix(key, "kafka_") {
+				continue
+			}
+			// Skip keys already populated by positional args.
+			switch key {
+			case "kafka_broker_list", "kafka_topic_list", "kafka_group_name", "kafka_format":
+				continue
+			}
+			applyKafkaSetting(&k, key, val)
+		}
+		return k, nil
+	}
+
+	// Form 1: Kafka() + kafka_* settings.
+	if len(params) > 0 {
+		return EngineKafka{}, fmt.Errorf("Kafka() unexpected positional args: %v", params)
+	}
+	k := EngineKafka{}
+	for key, val := range allSettings {
+		if !strings.HasPrefix(key, "kafka_") {
+			continue
+		}
+		applyKafkaSetting(&k, key, val)
+	}
+	return k, nil
+}
+
+// applyKafkaSetting routes one kafka_* setting into the matching typed
+// field. Unknown keys land in Extra with their prefix intact.
+func applyKafkaSetting(k *EngineKafka, key, val string) {
+	switch key {
+	case "kafka_broker_list":
+		k.BrokerList = &val
+	case "kafka_topic_list":
+		k.TopicList = &val
+	case "kafka_group_name":
+		k.GroupName = &val
+	case "kafka_format":
+		k.Format = &val
+	case "kafka_security_protocol":
+		k.SecurityProtocol = &val
+	case "kafka_sasl_mechanism":
+		k.SaslMechanism = &val
+	case "kafka_sasl_username":
+		k.SaslUsername = &val
+	case "kafka_sasl_password":
+		k.SaslPassword = &val
+	case "kafka_client_id":
+		k.ClientID = &val
+	case "kafka_schema":
+		k.Schema = &val
+	case "kafka_handle_error_mode":
+		k.HandleErrorMode = &val
+	case "kafka_compression_codec":
+		k.CompressionCodec = &val
+	case "kafka_num_consumers":
+		k.NumConsumers = parseInt64Ptr(val)
+	case "kafka_max_block_size":
+		k.MaxBlockSize = parseInt64Ptr(val)
+	case "kafka_skip_broken_messages":
+		k.SkipBrokenMessages = parseInt64Ptr(val)
+	case "kafka_poll_timeout_ms":
+		k.PollTimeoutMs = parseInt64Ptr(val)
+	case "kafka_poll_max_batch_size":
+		k.PollMaxBatchSize = parseInt64Ptr(val)
+	case "kafka_flush_interval_ms":
+		k.FlushIntervalMs = parseInt64Ptr(val)
+	case "kafka_consumer_reschedule_ms":
+		k.ConsumerRescheduleMs = parseInt64Ptr(val)
+	case "kafka_max_rows_per_message":
+		k.MaxRowsPerMessage = parseInt64Ptr(val)
+	case "kafka_compression_level":
+		k.CompressionLevel = parseInt64Ptr(val)
+	case "kafka_commit_every_batch":
+		k.CommitEveryBatch = parseBoolPtr(val)
+	case "kafka_thread_per_consumer":
+		k.ThreadPerConsumer = parseBoolPtr(val)
+	case "kafka_commit_on_select":
+		k.CommitOnSelect = parseBoolPtr(val)
+	case "kafka_autodetect_client_rack":
+		k.AutodetectClientRack = parseBoolPtr(val)
+	default:
+		if k.Extra == nil {
+			k.Extra = map[string]string{}
+		}
+		k.Extra[key] = val
+	}
+}
+
+func parseInt64Ptr(s string) *int64 {
+	if s == "" {
+		return nil
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &n
+}
+
+func parseBoolPtr(s string) *bool {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "1", "true":
+		v := true
+		return &v
+	case "0", "false":
+		v := false
+		return &v
+	}
+	return nil
 }
 
 func extractEngineSettings(engineFull string) map[string]string {

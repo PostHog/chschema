@@ -13,13 +13,13 @@ func layerPath(scenario, layer string) string {
 }
 
 func TestLoadLayers_BasicPatchFromHigherLayer(t *testing.T) {
-	dbs, err := LoadLayers([]string{
+	schema, err := LoadLayers([]string{
 		layerPath("basic_patch", "base"),
 		layerPath("basic_patch", "env_us"),
 	})
 	require.NoError(t, err)
-	require.NoError(t, Resolve(dbs))
-	stripEngineBodies(dbs)
+	require.NoError(t, Resolve(schema))
+	stripEngineBodies(schema.Databases)
 
 	expected := []DatabaseSpec{
 		{
@@ -41,21 +41,21 @@ func TestLoadLayers_BasicPatchFromHigherLayer(t *testing.T) {
 			},
 		},
 	}
-	assert.Equal(t, expected, dbs)
+	assert.Equal(t, expected, schema.Databases)
 }
 
 func TestLoadLayers_OverrideAcrossLayers(t *testing.T) {
-	dbs, err := LoadLayers([]string{
+	schema, err := LoadLayers([]string{
 		layerPath("override", "base"),
 		layerPath("override", "env_dev"),
 	})
 	require.NoError(t, err)
-	require.NoError(t, Resolve(dbs))
-	stripEngineBodies(dbs)
+	require.NoError(t, Resolve(schema))
+	stripEngineBodies(schema.Databases)
 
-	require.Len(t, dbs, 1)
-	require.Len(t, dbs[0].Tables, 1)
-	tbl := dbs[0].Tables[0]
+	require.Len(t, schema.Databases, 1)
+	require.Len(t, schema.Databases[0].Tables, 1)
+	tbl := schema.Databases[0].Tables[0]
 	assert.Equal(t, "events", tbl.Name)
 	assert.Equal(t, []ColumnSpec{{Name: "dev_id", Type: "UInt32"}}, tbl.Columns)
 	require.NotNil(t, tbl.Engine)
@@ -72,18 +72,18 @@ func TestLoadLayers_CollisionWithoutOverrideErrors(t *testing.T) {
 }
 
 func TestLoadLayers_PatchPropagatesThroughExtend(t *testing.T) {
-	dbs, err := LoadLayers([]string{
+	schema, err := LoadLayers([]string{
 		layerPath("patch_with_extend", "base"),
 		layerPath("patch_with_extend", "env_us"),
 	})
 	require.NoError(t, err)
-	require.NoError(t, Resolve(dbs))
-	stripEngineBodies(dbs)
+	require.NoError(t, Resolve(schema))
+	stripEngineBodies(schema.Databases)
 
-	require.Len(t, dbs, 1)
+	require.Len(t, schema.Databases, 1)
 	// Abstract _event_base has been dropped; events_local remains.
-	require.Len(t, dbs[0].Tables, 1)
-	tbl := dbs[0].Tables[0]
+	require.Len(t, schema.Databases[0].Tables, 1)
+	tbl := schema.Databases[0].Tables[0]
 	assert.Equal(t, "events_local", tbl.Name)
 	// us_session_id was patched onto _event_base and inherited via extend.
 	assert.Equal(t, []ColumnSpec{
@@ -94,17 +94,17 @@ func TestLoadLayers_PatchPropagatesThroughExtend(t *testing.T) {
 }
 
 func TestResolve_PatchUnknownTarget(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "patch_unknown_target.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "patch_unknown_target.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "does_not_exist")
 }
 
 func TestResolve_PatchColumnCollision(t *testing.T) {
-	dbs, err := ParseFile(filepath.Join("testdata", "patch_column_collision.hcl"))
+	schema, err := ParseFile(filepath.Join("testdata", "patch_column_collision.hcl"))
 	require.NoError(t, err)
-	err = Resolve(dbs)
+	err = Resolve(schema)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "already exists")
 }
