@@ -15,6 +15,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -24,7 +25,14 @@ import (
 // clickhouseLive enables tests that execute generated DDL against a real
 // ClickHouse instance. Mirrors the flag in test/integration_test.go — both
 // are valid in their respective test binaries, neither affects the other.
-var clickhouseLive = flag.Bool("clickhouse", false, "run tests that execute against a live ClickHouse")
+// Defaults from the ENABLE_CLICKHOUSE env var so CI can opt in without
+// the flag-ordering gotcha (custom flags must follow the package list).
+var clickhouseLive = flag.Bool("clickhouse", envBoolClickhouse(), "run tests that execute against a live ClickHouse")
+
+func envBoolClickhouse() bool {
+	v, _ := strconv.ParseBool(os.Getenv("ENABLE_CLICKHOUSE"))
+	return v
+}
 
 // createTableCase is one row of the doc-derived test table. Each case maps a
 // CREATE TABLE feature from the ClickHouse docs to a piece of HCL and the

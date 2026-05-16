@@ -105,12 +105,18 @@ jobs:
       run: docker compose up -d --wait
 
     - name: Run live tests
+      # ENABLE_CLICKHOUSE is the env-var default for the -clickhouse flag
+      # in both test packages, avoiding the gotcha that custom test flags
+      # must follow the package list.
+      #
       # Skips MaterializedView/View/Dictionary subtests of
       # TestLive_Introspection_AllStatements because they depend on source
       # tables the test harness doesn't pre-create. Tracked in
       # docs/tasks/live-introspection-mv-view-dict.md.
+      env:
+        ENABLE_CLICKHOUSE: '1'
       run: |
-        go test -v -clickhouse \
+        go test -v \
           -skip 'TestLive_Introspection_AllStatements/(MaterializedView|View|Dictionary)' \
           ./test/... ./internal/loader/hcl/...
 
