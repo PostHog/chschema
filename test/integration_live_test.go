@@ -224,9 +224,7 @@ func TestEnd2End(t *testing.T) {
 			require.NoError(t, err, "Failed to introspect current state")
 			require.Len(t, state.Tables, 1)
 
-			tempDir, err := os.MkdirTemp("dump", "dumper_test")
-			require.NoError(t, err, "Failed to create temp dir")
-			// defer os.RemoveAll(tempDir)
+			tempDir := t.TempDir()
 
 			require.NoError(t, dumper.WriteYAMLFile(path.Join(tempDir, tableName+".yaml"), state.Tables[0], false))
 		})
