@@ -11,7 +11,9 @@ import (
 )
 
 // decodeSource parses an HCL snippet of the form
-//   dictionary "x" { source "<kind>" { ... } }
+//
+//	dictionary "x" { source "<kind>" { ... } }
+//
 // and returns the post-DecodeDictionarySource value, for testing in isolation.
 func decodeSource(t *testing.T, src string) (DictionarySource, error) {
 	t.Helper()
