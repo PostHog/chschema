@@ -446,3 +446,86 @@ func TestProcessIntrospectRows_DispatchesDictionary(t *testing.T) {
 	require.NotNil(t, db.Dictionaries[0].Layout)
 	assert.Equal(t, "hashed", db.Dictionaries[0].Layout.Kind)
 }
+
+func TestParseKafkaEngine_Cases(t *testing.T) {
+	tests := []struct {
+		name      string
+		params    []string
+		settings  map[string]string
+		expectErr bool
+		errSubstr string
+		check     func(t *testing.T, k EngineKafka)
+	}{
+		{
+			name:   "inline form: all kafka_* in settings",
+			params: nil,
+			settings: map[string]string{
+				"kafka_broker_list":         "k:9092",
+				"kafka_topic_list":          "events",
+				"kafka_group_name":          "g1",
+				"kafka_format":              "JSONEachRow",
+				"kafka_num_consumers":       "4",
+				"kafka_commit_on_select":    "0",
+				"kafka_handle_error_mode":   "stream",
+				"kafka_some_future_setting": "passthrough",
+			},
+			check: func(t *testing.T, k EngineKafka) {
+				assert.Nil(t, k.Collection)
+				require.NotNil(t, k.BrokerList)
+				assert.Equal(t, "k:9092", *k.BrokerList)
+				require.NotNil(t, k.NumConsumers)
+				assert.Equal(t, int64(4), *k.NumConsumers)
+				require.NotNil(t, k.CommitOnSelect)
+				assert.False(t, *k.CommitOnSelect)
+				require.NotNil(t, k.HandleErrorMode)
+				assert.Equal(t, "stream", *k.HandleErrorMode)
+				assert.Equal(t, "passthrough", k.Extra["kafka_some_future_setting"])
+			},
+		},
+		{
+			name:   "named collection form: Kafka(my_nc)",
+			params: []string{"my_nc"},
+			check: func(t *testing.T, k EngineKafka) {
+				require.NotNil(t, k.Collection)
+				assert.Equal(t, "my_nc", *k.Collection)
+				assert.Nil(t, k.BrokerList)
+			},
+		},
+		{
+			name:   "legacy positional form",
+			params: []string{"k:9092", "events", "g1", "JSONEachRow"},
+			check: func(t *testing.T, k EngineKafka) {
+				assert.Nil(t, k.Collection)
+				require.NotNil(t, k.BrokerList)
+				assert.Equal(t, "k:9092", *k.BrokerList)
+				require.NotNil(t, k.TopicList)
+				assert.Equal(t, "events", *k.TopicList)
+				require.NotNil(t, k.GroupName)
+				assert.Equal(t, "g1", *k.GroupName)
+				require.NotNil(t, k.Format)
+				assert.Equal(t, "JSONEachRow", *k.Format)
+			},
+		},
+		{
+			name:      "mixed form: Kafka(my_nc) + kafka_* settings errors",
+			params:    []string{"my_nc"},
+			settings:  map[string]string{"kafka_num_consumers": "4"},
+			expectErr: true,
+			errSubstr: "cannot be combined",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			k, err := buildKafkaEngine(tc.params, tc.settings)
+			if tc.expectErr {
+				require.Error(t, err)
+				if tc.errSubstr != "" {
+					assert.Contains(t, err.Error(), tc.errSubstr)
+				}
+				return
+			}
+			require.NoError(t, err)
+			tc.check(t, k)
+		})
+	}
+}
