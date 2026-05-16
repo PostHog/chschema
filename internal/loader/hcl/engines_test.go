@@ -69,10 +69,10 @@ func TestParseFile_AllEngineKinds(t *testing.T) {
 	assert.Equal(t, EngineLog{}, byName["t_log"])
 
 	assert.Equal(t, EngineKafka{
-		BrokerList:    []string{"kafka:9092"},
-		Topic:         "events",
-		ConsumerGroup: "ingest",
-		Format:        "JSONEachRow",
+		BrokerList: ptr("kafka:9092"),
+		TopicList:  ptr("events"),
+		GroupName:  ptr("ingest"),
+		Format:     ptr("JSONEachRow"),
 	}, byName["t_kafka"])
 }
 

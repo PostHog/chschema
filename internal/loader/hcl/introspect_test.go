@@ -83,20 +83,20 @@ func TestParseEngineString(t *testing.T) {
 			"kafka_settings_form",
 			"Kafka SETTINGS kafka_broker_list = 'kafka:9092', kafka_topic_list = 'events', kafka_group_name = 'g1', kafka_format = 'JSONEachRow'",
 			EngineKafka{
-				BrokerList:    []string{"kafka:9092"},
-				Topic:         "events",
-				ConsumerGroup: "g1",
-				Format:        "JSONEachRow",
+				BrokerList: ptr("kafka:9092"),
+				TopicList:  ptr("events"),
+				GroupName:  ptr("g1"),
+				Format:     ptr("JSONEachRow"),
 			},
 		},
 		{
 			"kafka_constructor_form",
 			"Kafka('kafka:9092', 'events', 'g1', 'JSONEachRow')",
 			EngineKafka{
-				BrokerList:    []string{"kafka:9092"},
-				Topic:         "events",
-				ConsumerGroup: "g1",
-				Format:        "JSONEachRow",
+				BrokerList: ptr("kafka:9092"),
+				TopicList:  ptr("events"),
+				GroupName:  ptr("g1"),
+				Format:     ptr("JSONEachRow"),
 			},
 		},
 	}
@@ -228,10 +228,10 @@ SETTINGS kafka_broker_list = 'kafka:9092', kafka_topic_list = 'events', kafka_gr
 	require.NoError(t, err)
 	require.NotNil(t, got.Engine)
 	assert.Equal(t, EngineKafka{
-		BrokerList:    []string{"kafka:9092"},
-		Topic:         "events",
-		ConsumerGroup: "g",
-		Format:        "JSONEachRow",
+		BrokerList: ptr("kafka:9092"),
+		TopicList:  ptr("events"),
+		GroupName:  ptr("g"),
+		Format:     ptr("JSONEachRow"),
 	}, got.Engine.Decoded)
 	// Non-kafka settings should end up in t.Settings; kafka_* are folded
 	// into the engine and removed from Settings.

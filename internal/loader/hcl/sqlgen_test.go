@@ -79,10 +79,10 @@ func TestSQLGen_CreateDistributedWithShardingKey(t *testing.T) {
 
 func TestSQLGen_CreateKafkaFoldsSettings(t *testing.T) {
 	tbl := mkTable("ingest", EngineKafka{
-		BrokerList:    []string{"kafka:9092"},
-		Topic:         "events",
-		ConsumerGroup: "group1",
-		Format:        "JSONEachRow",
+		BrokerList: ptr("kafka:9092"),
+		TopicList:  ptr("events"),
+		GroupName:  ptr("group1"),
+		Format:     ptr("JSONEachRow"),
 	}, ColumnSpec{Name: "id", Type: "UUID"})
 
 	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{

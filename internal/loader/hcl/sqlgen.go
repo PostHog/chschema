@@ -443,12 +443,59 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 	case EngineLog:
 		return "Log()", nil
 	case EngineKafka:
-		return "Kafka()", map[string]string{
-			"kafka_broker_list": strings.Join(v.BrokerList, ","),
-			"kafka_topic_list":  v.Topic,
-			"kafka_group_name":  v.ConsumerGroup,
-			"kafka_format":      v.Format,
+		if v.Collection != nil {
+			// Named collection form: Kafka(<collection>); no settings emitted.
+			return fmt.Sprintf("Kafka(%s)", *v.Collection), nil
 		}
+		settings := map[string]string{}
+		setStr := func(name string, p *string) {
+			if p != nil {
+				settings[name] = *p
+			}
+		}
+		setInt := func(name string, p *int64) {
+			if p != nil {
+				settings[name] = fmt.Sprintf("%d", *p)
+			}
+		}
+		setBool := func(name string, p *bool) {
+			if p != nil {
+				if *p {
+					settings[name] = "1"
+				} else {
+					settings[name] = "0"
+				}
+			}
+		}
+		setStr("kafka_broker_list", v.BrokerList)
+		setStr("kafka_topic_list", v.TopicList)
+		setStr("kafka_group_name", v.GroupName)
+		setStr("kafka_format", v.Format)
+		setStr("kafka_security_protocol", v.SecurityProtocol)
+		setStr("kafka_sasl_mechanism", v.SaslMechanism)
+		setStr("kafka_sasl_username", v.SaslUsername)
+		setStr("kafka_sasl_password", v.SaslPassword)
+		setStr("kafka_client_id", v.ClientID)
+		setStr("kafka_schema", v.Schema)
+		setStr("kafka_handle_error_mode", v.HandleErrorMode)
+		setStr("kafka_compression_codec", v.CompressionCodec)
+		setInt("kafka_num_consumers", v.NumConsumers)
+		setInt("kafka_max_block_size", v.MaxBlockSize)
+		setInt("kafka_skip_broken_messages", v.SkipBrokenMessages)
+		setInt("kafka_poll_timeout_ms", v.PollTimeoutMs)
+		setInt("kafka_poll_max_batch_size", v.PollMaxBatchSize)
+		setInt("kafka_flush_interval_ms", v.FlushIntervalMs)
+		setInt("kafka_consumer_reschedule_ms", v.ConsumerRescheduleMs)
+		setInt("kafka_max_rows_per_message", v.MaxRowsPerMessage)
+		setInt("kafka_compression_level", v.CompressionLevel)
+		setBool("kafka_commit_every_batch", v.CommitEveryBatch)
+		setBool("kafka_thread_per_consumer", v.ThreadPerConsumer)
+		setBool("kafka_commit_on_select", v.CommitOnSelect)
+		setBool("kafka_autodetect_client_rack", v.AutodetectClientRack)
+		for k, val := range v.Extra {
+			settings[k] = val
+		}
+		return "Kafka()", settings
 	}
 	return "", nil
 }
