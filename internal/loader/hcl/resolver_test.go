@@ -18,6 +18,15 @@ func stripEngineBodies(dbs []DatabaseSpec) {
 				tbl.Engine.Body = nil
 			}
 		}
+		for i := range dbs[di].Dictionaries {
+			d := &dbs[di].Dictionaries[i]
+			if d.Source != nil {
+				d.Source.Body = nil
+			}
+			if d.Layout != nil {
+				d.Layout.Body = nil
+			}
+		}
 	}
 }
 

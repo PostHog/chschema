@@ -55,6 +55,16 @@ func writeDatabase(body *hclwrite.Body, db DatabaseSpec) {
 		mvBlock := body.AppendNewBlock("materialized_view", []string{mv.Name})
 		writeMaterializedView(mvBlock.Body(), mv)
 	}
+
+	dicts := append([]DictionarySpec(nil), db.Dictionaries...)
+	sort.Slice(dicts, func(i, j int) bool { return dicts[i].Name < dicts[j].Name })
+	for i, d := range dicts {
+		if len(tables) > 0 || len(mvs) > 0 || i > 0 {
+			body.AppendNewline()
+		}
+		dBlock := body.AppendNewBlock("dictionary", []string{d.Name})
+		writeDictionary(dBlock.Body(), d)
+	}
 }
 
 func writeMaterializedView(body *hclwrite.Body, mv MaterializedViewSpec) {
