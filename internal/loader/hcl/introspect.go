@@ -82,6 +82,13 @@ func processIntrospectRows(db *DatabaseSpec, database string, rows rowScanner) e
 			}
 			mv.Name = name
 			db.MaterializedViews = append(db.MaterializedViews, mv)
+		case *chparser.CreateDictionary:
+			d, err := buildDictionaryFromCreateDictionary(s)
+			if err != nil {
+				return fmt.Errorf("introspect dictionary %s.%s: %w", database, name, err)
+			}
+			d.Name = name
+			db.Dictionaries = append(db.Dictionaries, d)
 		case *chparser.CreateView:
 			// Plain (non-materialized) views are out of scope; skip them
 			// rather than failing the whole introspection.

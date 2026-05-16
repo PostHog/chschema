@@ -350,3 +350,99 @@ func TestParseCodecExpression(t *testing.T) {
 		assert.Equal(t, c.want, parseCodecExpression(c.in), "input=%q", c.in)
 	}
 }
+
+func TestBuildDictionaryFromAST_Full(t *testing.T) {
+	src := `CREATE DICTIONARY db.exchange_rate_dict (
+    ` + "`currency`" + ` String,
+    ` + "`start_date`" + ` Date,
+    ` + "`end_date`" + ` Nullable(Date),
+    ` + "`rate`" + ` Decimal64(10)
+) PRIMARY KEY currency
+SOURCE(CLICKHOUSE(QUERY 'SELECT currency, start_date, end_date, rate FROM db.exchange_rate' USER 'default' PASSWORD '[HIDDEN]'))
+LIFETIME(MIN 3000 MAX 3600)
+LAYOUT(COMPLEX_KEY_RANGE_HASHED(RANGE_LOOKUP_STRATEGY 'max'))
+RANGE(MIN start_date MAX end_date)
+COMMENT 'fx rates by date'`
+
+	got, err := buildDictionaryFromCreateSQL(src)
+	require.NoError(t, err)
+
+	assert.Equal(t, []string{"currency"}, got.PrimaryKey)
+	assert.Equal(t, []DictionaryAttribute{
+		{Name: "currency", Type: "String"},
+		{Name: "start_date", Type: "Date"},
+		{Name: "end_date", Type: "Nullable(Date)"},
+		{Name: "rate", Type: "Decimal64(10)"},
+	}, got.Attributes)
+
+	require.NotNil(t, got.Source)
+	assert.Equal(t, "clickhouse", got.Source.Kind)
+	assert.Equal(t, SourceClickHouse{
+		Query:    ptr("SELECT currency, start_date, end_date, rate FROM db.exchange_rate"),
+		User:     ptr("default"),
+		Password: ptr("[HIDDEN]"),
+	}, got.Source.Decoded)
+
+	require.NotNil(t, got.Layout)
+	assert.Equal(t, "complex_key_range_hashed", got.Layout.Kind)
+	assert.Equal(t, LayoutComplexKeyRangeHashed{RangeLookupStrategy: ptr("max")}, got.Layout.Decoded)
+
+	require.NotNil(t, got.Lifetime)
+	assert.Equal(t, &DictionaryLifetime{Min: ptr(int64(3000)), Max: ptr(int64(3600))}, got.Lifetime)
+
+	require.NotNil(t, got.Range)
+	assert.Equal(t, &DictionaryRange{Min: "start_date", Max: "end_date"}, got.Range)
+
+	require.NotNil(t, got.Comment)
+	assert.Equal(t, "fx rates by date", *got.Comment)
+}
+
+func TestBuildDictionaryFromAST_LifetimeSimpleForm(t *testing.T) {
+	src := `CREATE DICTIONARY db.d (
+    ` + "`k`" + ` UInt64,
+    ` + "`v`" + ` String
+) PRIMARY KEY k
+SOURCE(NULL())
+LIFETIME(300)
+LAYOUT(FLAT())`
+	got, err := buildDictionaryFromCreateSQL(src)
+	require.NoError(t, err)
+	require.NotNil(t, got.Lifetime)
+	assert.Equal(t, &DictionaryLifetime{Min: ptr(int64(300))}, got.Lifetime)
+}
+
+func TestBuildDictionaryFromAST_UnsupportedSource(t *testing.T) {
+	src := `CREATE DICTIONARY db.d (` + "`k`" + ` UInt64, ` + "`v`" + ` String) PRIMARY KEY k
+SOURCE(MONGODB(connection_string 'mongodb://x'))
+LAYOUT(HASHED())
+LIFETIME(0)`
+	_, err := buildDictionaryFromCreateSQL(src)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported dictionary source kind")
+}
+
+func TestBuildDictionaryFromAST_UnsupportedLayout(t *testing.T) {
+	src := `CREATE DICTIONARY db.d (` + "`k`" + ` UInt64, ` + "`v`" + ` String) PRIMARY KEY k
+SOURCE(NULL())
+LAYOUT(HASHED_ARRAY())
+LIFETIME(0)`
+	_, err := buildDictionaryFromCreateSQL(src)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unsupported dictionary layout kind")
+}
+
+func TestProcessIntrospectRows_DispatchesDictionary(t *testing.T) {
+	rows := &fakeRows{rows: []struct{ name, sql string }{
+		{name: "events", sql: "CREATE TABLE db.events (`id` UUID) ENGINE = MergeTree ORDER BY id"},
+		{name: "d", sql: "CREATE DICTIONARY db.d (`k` UInt64, `v` String) PRIMARY KEY k SOURCE(NULL()) LAYOUT(HASHED()) LIFETIME(0)"},
+	}}
+	db := &DatabaseSpec{Name: "db"}
+	require.NoError(t, processIntrospectRows(db, "db", rows))
+	require.Len(t, db.Tables, 1)
+	require.Len(t, db.Dictionaries, 1)
+	assert.Equal(t, "d", db.Dictionaries[0].Name)
+	require.NotNil(t, db.Dictionaries[0].Source)
+	assert.Equal(t, "null", db.Dictionaries[0].Source.Kind)
+	require.NotNil(t, db.Dictionaries[0].Layout)
+	assert.Equal(t, "hashed", db.Dictionaries[0].Layout.Kind)
+}
