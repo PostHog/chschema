@@ -4,6 +4,7 @@ import (
 	"flag"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -14,11 +15,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// clickhouse defaults from the ENABLE_CLICKHOUSE env var so CI can opt in
+// without the custom-flag-after-packages ordering trap.
 var (
 	updateSnapshots = flag.Bool("update-snapshots", false, "update SQL snapshots")
-	clickhouse      = flag.Bool("clickhouse", false, "run ClickHouse tests")
+	clickhouse      = flag.Bool("clickhouse", envBoolClickhouse(), "run ClickHouse tests")
 	emptyState      = loader.NewDesiredState()
 )
+
+func envBoolClickhouse() bool {
+	v, _ := strconv.ParseBool(os.Getenv("ENABLE_CLICKHOUSE"))
+	return v
+}
 
 // AssertSQLDiff is a generic function that tests SQL generation by comparing desired and current states
 // and validating the generated SQL against a snapshot file.
