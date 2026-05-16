@@ -468,3 +468,139 @@ func TestSQLGen_DropDictionary(t *testing.T) {
 	require.Len(t, out.Statements, 1)
 	assert.Equal(t, "DROP DICTIONARY db.d", out.Statements[0])
 }
+
+func TestSQLGen_Dictionary_LayoutSQL_AllKinds(t *testing.T) {
+	cases := []struct {
+		name string
+		in   DictionaryLayout
+		want string
+	}{
+		{"flat", LayoutFlat{}, "FLAT()"},
+		{"hashed", LayoutHashed{}, "HASHED()"},
+		{"sparse_hashed", LayoutSparseHashed{}, "SPARSE_HASHED()"},
+		{"complex_key_hashed (no preallocate)", LayoutComplexKeyHashed{}, "COMPLEX_KEY_HASHED()"},
+		{"complex_key_hashed (preallocate)", LayoutComplexKeyHashed{Preallocate: ptr(int64(1))}, "COMPLEX_KEY_HASHED(PREALLOCATE 1)"},
+		{"complex_key_sparse_hashed", LayoutComplexKeySparseHashed{}, "COMPLEX_KEY_SPARSE_HASHED()"},
+		{"range_hashed", LayoutRangeHashed{}, "RANGE_HASHED()"},
+		{"range_hashed (lookup strategy)", LayoutRangeHashed{RangeLookupStrategy: ptr("max")}, "RANGE_HASHED(RANGE_LOOKUP_STRATEGY 'max')"},
+		{"complex_key_range_hashed (lookup strategy)", LayoutComplexKeyRangeHashed{RangeLookupStrategy: ptr("min")}, "COMPLEX_KEY_RANGE_HASHED(RANGE_LOOKUP_STRATEGY 'min')"},
+		{"cache", LayoutCache{SizeInCells: 1000}, "CACHE(SIZE_IN_CELLS 1000)"},
+		{"ip_trie", LayoutIPTrie{}, "IP_TRIE()"},
+		{"ip_trie (access_to_key_from_attributes)", LayoutIPTrie{AccessToKeyFromAttributes: ptr(true)}, "IP_TRIE(ACCESS_TO_KEY_FROM_ATTRIBUTES true)"},
+		{"direct", LayoutDirect{}, "DIRECT()"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, layoutSQL(tc.in))
+		})
+	}
+}
+
+func TestSQLGen_Dictionary_SourceSQL_AllKinds(t *testing.T) {
+	cases := []struct {
+		name string
+		in   DictionarySource
+		want string
+	}{
+		{
+			"null", SourceNull{}, "NULL()",
+		},
+		{
+			"clickhouse (full)", SourceClickHouse{
+				Host: ptr("h"), Port: ptr(int64(9000)), User: ptr("u"), Password: ptr("p"),
+				DB: ptr("d"), Table: ptr("t"), Query: ptr("SELECT 1"),
+				InvalidateQuery: ptr("SELECT max(ts)"),
+				UpdateField:     ptr("ts"), UpdateLag: ptr(int64(5)),
+			},
+			"CLICKHOUSE(HOST 'h' PORT 9000 USER 'u' PASSWORD 'p' DB 'd' TABLE 't' QUERY 'SELECT 1' INVALIDATE_QUERY 'SELECT max(ts)' UPDATE_FIELD 'ts' UPDATE_LAG 5)",
+		},
+		{
+			"clickhouse (sparse)", SourceClickHouse{Query: ptr("SELECT 1")},
+			"CLICKHOUSE(QUERY 'SELECT 1')",
+		},
+		{
+			"mysql", SourceMySQL{Host: ptr("h"), Port: ptr(int64(3306)), DB: ptr("d"), Table: ptr("t")},
+			"MYSQL(HOST 'h' PORT 3306 DB 'd' TABLE 't')",
+		},
+		{
+			"postgresql", SourcePostgreSQL{Host: ptr("h"), Port: ptr(int64(5432)), DB: ptr("d"), Table: ptr("t")},
+			"POSTGRESQL(HOST 'h' PORT 5432 DB 'd' TABLE 't')",
+		},
+		{
+			"http", SourceHTTP{URL: "https://x/y", Format: "JSONEachRow", CredentialsUser: ptr("u"), CredentialsPassword: ptr("p")},
+			"HTTP(URL 'https://x/y' FORMAT 'JSONEachRow' CREDENTIALS_USER 'u' CREDENTIALS_PASSWORD 'p')",
+		},
+		{
+			"file", SourceFile{Path: "/data/x.csv", Format: "CSV"},
+			"FILE(PATH '/data/x.csv' FORMAT 'CSV')",
+		},
+		{
+			"executable", SourceExecutable{Command: "/bin/dump", Format: "TabSeparated", ImplicitKey: ptr(true)},
+			"EXECUTABLE(COMMAND '/bin/dump' FORMAT 'TabSeparated' IMPLICIT_KEY true)",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, sourceSQL(tc.in))
+		})
+	}
+}
+
+func TestSQLGen_Dictionary_LifetimeSQL_Forms(t *testing.T) {
+	cases := []struct {
+		name string
+		in   DictionaryLifetime
+		want string
+	}{
+		{"simple (Min only)", DictionaryLifetime{Min: ptr(int64(300))}, "300"},
+		{"range (Min and Max)", DictionaryLifetime{Min: ptr(int64(300)), Max: ptr(int64(600))}, "MIN 300 MAX 600"},
+		{"max only", DictionaryLifetime{Max: ptr(int64(600))}, "MAX 600"},
+		{"empty falls back to 0", DictionaryLifetime{}, "0"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, lifetimeSQL(tc.in))
+		})
+	}
+}
+
+func TestSQLGen_Dictionary_AttributeSQL_AllFlags(t *testing.T) {
+	cases := []struct {
+		name string
+		in   DictionaryAttribute
+		want string
+	}{
+		{"basic", DictionaryAttribute{Name: "k", Type: "UInt64"}, "`k` UInt64"},
+		{"default", DictionaryAttribute{Name: "v", Type: "String", Default: ptr("''")}, "`v` String DEFAULT ''"},
+		{"expression", DictionaryAttribute{Name: "v", Type: "String", Expression: ptr("upper(raw)")}, "`v` String EXPRESSION upper(raw)"},
+		{"hierarchical", DictionaryAttribute{Name: "parent", Type: "UInt64", Hierarchical: true}, "`parent` UInt64 HIERARCHICAL"},
+		{"injective", DictionaryAttribute{Name: "label", Type: "String", Injective: true}, "`label` String INJECTIVE"},
+		{"is_object_id", DictionaryAttribute{Name: "_id", Type: "String", IsObjectID: true}, "`_id` String IS_OBJECT_ID"},
+		{
+			"all flags",
+			DictionaryAttribute{Name: "x", Type: "UInt64", Default: ptr("0"), Hierarchical: true, Injective: true, IsObjectID: true},
+			"`x` UInt64 DEFAULT 0 HIERARCHICAL INJECTIVE IS_OBJECT_ID",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, dictionaryAttributeSQL(tc.in))
+		})
+	}
+}
+
+func TestSQLGen_Dictionary_DirectLayoutOmitsLifetime(t *testing.T) {
+	// ClickHouse rejects LIFETIME on direct/complex_key_direct layouts.
+	// Even if a spec carries one, sqlgen must skip it.
+	d := DictionarySpec{
+		Name:       "d",
+		PrimaryKey: []string{"k"},
+		Attributes: []DictionaryAttribute{{Name: "k", Type: "UInt64"}},
+		Source:     &DictionarySourceSpec{Kind: "null", Decoded: SourceNull{}},
+		Layout:     &DictionaryLayoutSpec{Kind: "direct", Decoded: LayoutDirect{}},
+		Lifetime:   &DictionaryLifetime{Min: ptr(int64(300))},
+	}
+	got := createDictionarySQL("db", d)
+	assert.NotContains(t, got, "LIFETIME", "direct layout must not emit LIFETIME")
+	assert.Contains(t, got, "LAYOUT(DIRECT())")
+}

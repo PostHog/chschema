@@ -27,7 +27,7 @@ func createDictionarySQL(database string, d DictionarySpec) string {
 	if d.Layout != nil && d.Layout.Decoded != nil {
 		fmt.Fprintf(&b, " LAYOUT(%s)", layoutSQL(d.Layout.Decoded))
 	}
-	if d.Lifetime != nil {
+	if d.Lifetime != nil && !lifetimeForbiddenForLayout(d.Layout) {
 		fmt.Fprintf(&b, " LIFETIME(%s)", lifetimeSQL(*d.Lifetime))
 	}
 	if d.Range != nil {
@@ -166,6 +166,20 @@ func layoutSQL(l DictionaryLayout) string {
 		return "IP_TRIE()"
 	}
 	return ""
+}
+
+// lifetimeForbiddenForLayout reports whether ClickHouse rejects a LIFETIME
+// clause on the given layout. DIRECT and COMPLEX_KEY_DIRECT load data on
+// every lookup; they have no concept of cached lifetime.
+func lifetimeForbiddenForLayout(spec *DictionaryLayoutSpec) bool {
+	if spec == nil {
+		return false
+	}
+	switch spec.Kind {
+	case "direct", "complex_key_direct":
+		return true
+	}
+	return false
 }
 
 func lifetimeSQL(lt DictionaryLifetime) string {
