@@ -162,6 +162,13 @@ func runIntrospect(args []string) {
 			"dictionaries", len(spec.Dictionaries))
 		schema.Databases = append(schema.Databases, *spec)
 	}
+	ncs, err := hclload.IntrospectNamedCollections(ctx, conn)
+	if err != nil {
+		slog.Error("failed to introspect named collections", "err", err)
+		os.Exit(1)
+	}
+	schema.NamedCollections = ncs
+	slog.Info("introspected named collections", "count", len(schema.NamedCollections))
 
 	if err := writeIntrospected(*outFlag, schema); err != nil {
 		slog.Error("failed to write introspected schema", "out", *outFlag, "err", err)
