@@ -359,6 +359,33 @@ func renderChangeSet(w io.Writer, cs hclload.ChangeSet) {
 			fmt.Fprintf(w, "  ~ dictionary %s (changed: %s)\n", dd.Name, strings.Join(dd.Changed, ", "))
 		}
 	}
+
+	if len(cs.NamedCollections) > 0 {
+		fmt.Fprintln(w, "named_collections")
+		for _, ncc := range cs.NamedCollections {
+			switch {
+			case ncc.Error != "":
+				fmt.Fprintf(w, "  ! named_collection %s: %s\n", ncc.Name, ncc.Error)
+			case ncc.Recreate:
+				fmt.Fprintf(w, "  ~ named_collection %s (recreate: ON CLUSTER changed)\n", ncc.Name)
+			case ncc.Add != nil:
+				fmt.Fprintf(w, "  + named_collection %s\n", ncc.Name)
+			case ncc.Drop:
+				fmt.Fprintf(w, "  - named_collection %s\n", ncc.Name)
+			default:
+				fmt.Fprintf(w, "  ~ named_collection %s\n", ncc.Name)
+				for _, p := range ncc.SetParams {
+					fmt.Fprintf(w, "      ~ param %s (set)\n", p.Key)
+				}
+				for _, k := range ncc.DeleteParams {
+					fmt.Fprintf(w, "      - param %s\n", k)
+				}
+				if ncc.CommentChange != nil {
+					fmt.Fprintln(w, "      ~ comment changed")
+				}
+			}
+		}
+	}
 }
 
 func renderTableDiff(w io.Writer, td hclload.TableDiff) {
