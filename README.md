@@ -258,6 +258,58 @@ being silently mishandled:
 - window views
 - plain (non-materialized) views — skipped during introspection for now
 
+### Dictionaries
+
+A `dictionary` block declares a ClickHouse dictionary — a key/value
+lookup loaded from an external source (another ClickHouse table, a
+relational database, an HTTP endpoint, a file, etc.) and queried at
+runtime via `dictGet*` functions.
+
+```hcl
+database "posthog" {
+  dictionary "exchange_rate_dict" {
+    primary_key = ["currency"]
+    lifetime { min = 3000  max = 3600 }
+    range    { min = "start_date"  max = "end_date" }
+
+    attribute "currency"   { type = "String" }
+    attribute "start_date" { type = "Date" }
+    attribute "end_date"   { type = "Nullable(Date)" }
+    attribute "rate"       { type = "Decimal64(10)" }
+
+    source "clickhouse" {
+      query    = "SELECT currency, start_date, end_date, rate FROM default.exchange_rate"
+      user     = "default"
+      password = "[HIDDEN]"
+    }
+    layout "complex_key_range_hashed" {
+      range_lookup_strategy = "max"
+    }
+  }
+}
+```
+
+| Block / attribute | Required | Meaning |
+|-------------------|----------|---------|
+| `primary_key`     | yes      | single or composite key column names |
+| `attribute`       | yes      | one per column (`type` + optional `default` / `expression` / `hierarchical` / `injective` / `is_object_id`) |
+| `source`          | yes      | exactly one — see supported kinds below |
+| `layout`          | yes      | exactly one — see supported kinds below |
+| `lifetime`        | no       | `{ min = <s>  max = <s> }` (range form) or just `{ min = <s> }` (simple `LIFETIME(n)`) |
+| `range`           | no       | `{ min = "<col>"  max = "<col>" }` — only with `range_hashed` / `complex_key_range_hashed` layouts |
+| `settings`        | no       | dictionary-level SETTINGS map |
+| `cluster`         | no       | `ON CLUSTER` target |
+| `comment`         | no       | dictionary comment |
+
+**Supported source kinds:** `clickhouse`, `mysql`, `postgresql`, `http`, `file`, `executable`, `null`.
+**Supported layout kinds:** `flat`, `hashed`, `sparse_hashed`, `complex_key_hashed`, `complex_key_sparse_hashed`, `range_hashed`, `complex_key_range_hashed`, `cache`, `ip_trie`, `direct`.
+
+Kinds outside these lists error during introspection with `unsupported dictionary source/layout kind: <name>`. Adding a new kind is a small change — one typed struct + one switch case in `dictionary_sources.go` / `dictionary_layouts.go`.
+
+**Diff & apply.** ClickHouse has no useful in-place `ALTER DICTIONARY`. `hclexp diff` reports any non-empty change with `~ dictionary <name> (changed: ...)`; `-sql` emits a `CREATE OR REPLACE DICTIONARY` statement, which is the idiomatic ClickHouse update path and is treated as safe.
+
+**`PASSWORD '[HIDDEN]'` caveat.** ClickHouse's `system.tables.create_table_query` redacts secrets, so an introspected dictionary's `password` is the literal string `[HIDDEN]`. Applying a dumped dictionary verbatim will leave it unable to load data from its source. Edit dumped HCL to restore real credentials (or wire secrets through some out-of-band mechanism) before deploying.
+
 ## Layering & inheritance
 
 Layers let a base schema be specialized per environment. `-layer a,b,c`
