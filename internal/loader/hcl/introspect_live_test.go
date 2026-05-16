@@ -247,3 +247,63 @@ func normalizeForCompare(t *TableSpec) {
 		t.Engine.Body = nil
 	}
 }
+
+// TestCHLive_IntrospectDictionary creates a source table and a TO-form
+// CLICKHOUSE-source HASHED-layout dictionary against a real ClickHouse
+// instance, introspects the database, and asserts the dictionary
+// round-trips.
+func TestCHLive_IntrospectDictionary(t *testing.T) {
+	if !*clickhouseLive {
+		t.Skip("pass -clickhouse to run against a live ClickHouse")
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	ctx := context.Background()
+
+	runSQL := func(sql string) {
+		require.NoError(t, conn.Exec(ctx, sql), "rejected by ClickHouse:\n%s", sql)
+	}
+
+	runSQL(fmt.Sprintf(
+		"CREATE TABLE %s.src (`k` UInt64, `v` String) ENGINE = MergeTree ORDER BY k",
+		dbName))
+	runSQL(fmt.Sprintf(
+		"INSERT INTO %s.src VALUES (1, 'one'), (2, 'two')", dbName))
+	runSQL(fmt.Sprintf(
+		"CREATE DICTIONARY %s.kv_dict (`k` UInt64, `v` String) "+
+			"PRIMARY KEY k "+
+			"SOURCE(CLICKHOUSE(QUERY 'SELECT k, v FROM %s.src' USER 'default')) "+
+			"LIFETIME(0) "+
+			"LAYOUT(HASHED())",
+		dbName, dbName))
+
+	db, err := Introspect(ctx, conn, dbName)
+	require.NoError(t, err)
+
+	var got *DictionarySpec
+	for i := range db.Dictionaries {
+		if db.Dictionaries[i].Name == "kv_dict" {
+			got = &db.Dictionaries[i]
+			break
+		}
+	}
+	require.NotNil(t, got, "introspected schema has no dictionary kv_dict")
+
+	assert.Equal(t, []string{"k"}, got.PrimaryKey)
+	assert.Equal(t, []DictionaryAttribute{
+		{Name: "k", Type: "UInt64"},
+		{Name: "v", Type: "String"},
+	}, got.Attributes)
+	require.NotNil(t, got.Source)
+	assert.Equal(t, "clickhouse", got.Source.Kind)
+	require.IsType(t, SourceClickHouse{}, got.Source.Decoded)
+	chs := got.Source.Decoded.(SourceClickHouse)
+	require.NotNil(t, chs.Query)
+	assert.Contains(t, *chs.Query, "src")
+	require.NotNil(t, got.Layout)
+	assert.Equal(t, "hashed", got.Layout.Kind)
+	assert.IsType(t, LayoutHashed{}, got.Layout.Decoded)
+
+	// The src table still introspects fine alongside the dictionary.
+	assert.Len(t, db.Tables, 1)
+}
