@@ -20,7 +20,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: '1.25'
+        go-version: '1.26'
         cache: true
         cache-dependency-path: go.sum
 
@@ -44,7 +44,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: '1.25'
+        go-version: '1.26'
         cache: true
         cache-dependency-path: go.sum
 
@@ -66,7 +66,7 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: '1.25'
+        go-version: '1.26'
         cache: true
         cache-dependency-path: go.sum
 
@@ -85,9 +85,8 @@ jobs:
         COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print substr($3, 1, length($3)-1)}')
         echo "Total test coverage: ${COVERAGE}%"
 
-  build:
+  test-live:
     runs-on: ubuntu-latest
-    needs: [lint, vet, test]
     steps:
     - name: Checkout code
       uses: actions/checkout@v5
@@ -95,7 +94,51 @@ jobs:
     - name: Set up Go
       uses: actions/setup-go@v6
       with:
-        go-version: '1.25'
+        go-version: '1.26'
+        cache: true
+        cache-dependency-path: go.sum
+
+    - name: Download dependencies
+      run: go mod download
+
+    - name: Start ClickHouse stack
+      run: docker compose up -d --wait
+
+    - name: Run live tests
+      # ENABLE_CLICKHOUSE is the env-var default for the -clickhouse flag
+      # in both test packages, avoiding the gotcha that custom test flags
+      # must follow the package list.
+      #
+      # Skips MaterializedView/View/Dictionary subtests of
+      # TestLive_Introspection_AllStatements because they depend on source
+      # tables the test harness doesn't pre-create. Tracked in
+      # docs/tasks/live-introspection-mv-view-dict.md.
+      env:
+        ENABLE_CLICKHOUSE: '1'
+      run: |
+        go test -v \
+          -skip 'TestLive_Introspection_AllStatements/(MaterializedView|View|Dictionary)' \
+          ./test/... ./internal/loader/hcl/...
+
+    - name: Dump ClickHouse logs on failure
+      if: failure()
+      run: docker compose logs --no-color clickhouse keeper
+
+    - name: Tear down ClickHouse stack
+      if: always()
+      run: docker compose down -v
+
+  build:
+    runs-on: ubuntu-latest
+    needs: [lint, vet, test, test-live]
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v5
+
+    - name: Set up Go
+      uses: actions/setup-go@v6
+      with:
+        go-version: '1.26'
         cache: true
         cache-dependency-path: go.sum
 
