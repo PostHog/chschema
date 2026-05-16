@@ -27,8 +27,17 @@ import (
 //     captured (the `collection` map doesn't carry them). Round-tripping
 //     these requires a newer ClickHouse with `create_query` exposed —
 //     extending the introspection then is a follow-up.
+//
+// The query also enables `format_display_secrets_in_show_and_select` so
+// values come back as their real strings rather than the redacted
+// `[HIDDEN]` placeholder. The connecting user must have the
+// `displaySecretsInShowAndSelect` access (granted via SQL `GRANT
+// displaySecretsInShowAndSelect ON *.* TO <user>`, or in users.xml via
+// `<show_named_collections_secrets>1</show_named_collections_secrets>`)
+// for the setting to actually take effect — otherwise ClickHouse keeps
+// returning `[HIDDEN]`.
 func IntrospectNamedCollections(ctx context.Context, conn driver.Conn) ([]NamedCollectionSpec, error) {
-	const q = `SELECT name, collection FROM system.named_collections ORDER BY name`
+	const q = `SELECT name, collection FROM system.named_collections ORDER BY name SETTINGS format_display_secrets_in_show_and_select = 1`
 	rows, err := conn.Query(ctx, q)
 	if err != nil {
 		return nil, fmt.Errorf("query system.named_collections: %w", err)
