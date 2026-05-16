@@ -41,6 +41,23 @@ func ParseFile(path string) ([]DatabaseSpec, error) {
 			}
 			tbl.Engine.Decoded = decoded
 		}
+		for i := range db.Dictionaries {
+			d := &db.Dictionaries[i]
+			if d.Source != nil {
+				decoded, err := DecodeDictionarySource(d.Source)
+				if err != nil {
+					return nil, fmt.Errorf("%s.%s: %w", db.Name, d.Name, err)
+				}
+				d.Source.Decoded = decoded
+			}
+			if d.Layout != nil {
+				decoded, err := DecodeDictionaryLayout(d.Layout)
+				if err != nil {
+					return nil, fmt.Errorf("%s.%s: %w", db.Name, d.Name, err)
+				}
+				d.Layout.Decoded = decoded
+			}
+		}
 	}
 	return spec.Databases, nil
 }

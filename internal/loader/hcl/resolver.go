@@ -16,6 +16,35 @@ func Resolve(dbs []DatabaseSpec) error {
 		if err := resolveDatabase(&dbs[di]); err != nil {
 			return err
 		}
+		if err := validateDictionaries(&dbs[di]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateDictionaries enforces dictionary-specific invariants: each dict
+// must have exactly one source and one layout, a non-empty primary key, and
+// a range block only when the layout is one of the range_hashed variants.
+func validateDictionaries(db *DatabaseSpec) error {
+	for _, d := range db.Dictionaries {
+		if d.Source == nil {
+			return fmt.Errorf("%s.%s: dictionary requires a source block", db.Name, d.Name)
+		}
+		if d.Layout == nil {
+			return fmt.Errorf("%s.%s: dictionary requires a layout block", db.Name, d.Name)
+		}
+		if len(d.PrimaryKey) == 0 {
+			return fmt.Errorf("%s.%s: dictionary requires a non-empty primary_key", db.Name, d.Name)
+		}
+		if d.Range != nil {
+			switch d.Layout.Kind {
+			case "range_hashed", "complex_key_range_hashed":
+				// allowed
+			default:
+				return fmt.Errorf("%s.%s: range block only allowed with range_hashed or complex_key_range_hashed layouts (got %q)", db.Name, d.Name, d.Layout.Kind)
+			}
+		}
 	}
 	return nil
 }

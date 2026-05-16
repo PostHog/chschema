@@ -114,3 +114,49 @@ func TestResolve_NoEngineOnNonAbstract(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "engine")
 }
+
+func TestResolve_Dictionary_RequiresSourceLayoutPrimaryKey(t *testing.T) {
+	cases := []struct {
+		name    string
+		dict    DictionarySpec
+		errSubs string
+	}{
+		{
+			name:    "missing source",
+			dict:    DictionarySpec{Name: "d", PrimaryKey: []string{"k"}, Layout: &DictionaryLayoutSpec{Kind: "hashed", Decoded: LayoutHashed{}}},
+			errSubs: "source",
+		},
+		{
+			name:    "missing layout",
+			dict:    DictionarySpec{Name: "d", PrimaryKey: []string{"k"}, Source: &DictionarySourceSpec{Kind: "null", Decoded: SourceNull{}}},
+			errSubs: "layout",
+		},
+		{
+			name:    "missing primary_key",
+			dict:    DictionarySpec{Name: "d", Source: &DictionarySourceSpec{Kind: "null", Decoded: SourceNull{}}, Layout: &DictionaryLayoutSpec{Kind: "hashed", Decoded: LayoutHashed{}}},
+			errSubs: "primary_key",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dbs := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{tc.dict}}}
+			err := Resolve(dbs)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.errSubs)
+		})
+	}
+}
+
+func TestResolve_Dictionary_RangeOnlyForRangeLayouts(t *testing.T) {
+	dbs := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{{
+		Name:       "d",
+		PrimaryKey: []string{"k"},
+		Source:     &DictionarySourceSpec{Kind: "null", Decoded: SourceNull{}},
+		Layout:     &DictionaryLayoutSpec{Kind: "hashed", Decoded: LayoutHashed{}},
+		Range:      &DictionaryRange{Min: "a", Max: "b"},
+	}}}}
+	err := Resolve(dbs)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "range")
+	assert.Contains(t, err.Error(), "hashed")
+}
