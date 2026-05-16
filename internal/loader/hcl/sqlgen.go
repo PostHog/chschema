@@ -45,6 +45,11 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 		}
 	}
 	for _, dc := range cs.Databases {
+		for _, d := range dictionariesByName(dc.AddDictionaries) {
+			out.Statements = append(out.Statements, createDictionarySQL(dc.Database, d))
+		}
+	}
+	for _, dc := range cs.Databases {
 		for _, td := range dc.AlterTables {
 			if td.IsUnsafe() {
 				out.Unsafe = append(out.Unsafe, unsafeReasons(dc.Database, td)...)
@@ -69,8 +74,24 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 		}
 	}
 	for _, dc := range cs.Databases {
+		for _, dd := range dc.AlterDictionaries {
+			out.Unsafe = append(out.Unsafe, UnsafeChange{
+				Database: dc.Database,
+				Table:    dd.Name,
+				Reason:   fmt.Sprintf("dictionary change requires CREATE OR REPLACE DICTIONARY (changed: %s)", strings.Join(dd.Changed, ", ")),
+			})
+		}
+	}
+	for _, dc := range cs.Databases {
 		for _, name := range dc.DropMaterializedViews {
 			out.Statements = append(out.Statements, dropViewSQL(dc.Database, name))
+		}
+	}
+	for _, dc := range cs.Databases {
+		names := append([]string(nil), dc.DropDictionaries...)
+		sort.Strings(names)
+		for _, name := range names {
+			out.Statements = append(out.Statements, dropDictionarySQL(dc.Database, name))
 		}
 	}
 	for _, dt := range orderTablesByDependency(gatherTables(cs, dropTablesOf), true) {

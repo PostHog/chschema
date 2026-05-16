@@ -385,3 +385,86 @@ func TestSQLGen_OrderingAcrossDatabases(t *testing.T) {
 	dist := stmtIndex(out.Statements, "CREATE TABLE edge.events_dist")
 	assert.Less(t, local, dist)
 }
+
+func TestSQLGen_CreateOrReplaceDictionary(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "default",
+		AddDictionaries: []DictionarySpec{{
+			Name:       "exchange_rate_dict",
+			PrimaryKey: []string{"currency"},
+			Attributes: []DictionaryAttribute{
+				{Name: "currency", Type: "String"},
+				{Name: "start_date", Type: "Date"},
+				{Name: "end_date", Type: "Nullable(Date)"},
+				{Name: "rate", Type: "Decimal64(10)"},
+			},
+			Source: &DictionarySourceSpec{
+				Kind: "clickhouse",
+				Decoded: SourceClickHouse{
+					Query:    ptr("SELECT ... FROM default.exchange_rate"),
+					User:     ptr("default"),
+					Password: ptr("[HIDDEN]"),
+				},
+			},
+			Layout: &DictionaryLayoutSpec{
+				Kind:    "complex_key_range_hashed",
+				Decoded: LayoutComplexKeyRangeHashed{RangeLookupStrategy: ptr("max")},
+			},
+			Lifetime: &DictionaryLifetime{Min: ptr(int64(3000)), Max: ptr(int64(3600))},
+			Range:    &DictionaryRange{Min: "start_date", Max: "end_date"},
+		}},
+	}}}
+
+	out := GenerateSQL(cs)
+	require.Len(t, out.Statements, 1)
+	want := "CREATE OR REPLACE DICTIONARY default.exchange_rate_dict (" +
+		"`currency` String, `start_date` Date, `end_date` Nullable(Date), `rate` Decimal64(10)" +
+		") PRIMARY KEY currency " +
+		"SOURCE(CLICKHOUSE(USER 'default' PASSWORD '[HIDDEN]' QUERY 'SELECT ... FROM default.exchange_rate')) " +
+		"LAYOUT(COMPLEX_KEY_RANGE_HASHED(RANGE_LOOKUP_STRATEGY 'max')) " +
+		"LIFETIME(MIN 3000 MAX 3600) " +
+		"RANGE(MIN start_date MAX end_date)"
+	assert.Equal(t, want, out.Statements[0])
+	assert.Empty(t, out.Unsafe)
+}
+
+func TestSQLGen_CreateOrReplaceDictionary_Simple(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "db",
+		AddDictionaries: []DictionarySpec{{
+			Name:       "d",
+			PrimaryKey: []string{"k"},
+			Attributes: []DictionaryAttribute{{Name: "k", Type: "UInt64"}, {Name: "v", Type: "String"}},
+			Source:     &DictionarySourceSpec{Kind: "null", Decoded: SourceNull{}},
+			Layout:     &DictionaryLayoutSpec{Kind: "hashed", Decoded: LayoutHashed{}},
+		}},
+	}}}
+	out := GenerateSQL(cs)
+	require.Len(t, out.Statements, 1)
+	assert.Equal(t,
+		"CREATE OR REPLACE DICTIONARY db.d (`k` UInt64, `v` String) PRIMARY KEY k SOURCE(NULL()) LAYOUT(HASHED())",
+		out.Statements[0])
+}
+
+func TestSQLGen_AlterDictionary_EmitsUnsafe(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database:          "db",
+		AlterDictionaries: []DictionaryDiff{{Name: "d", Changed: []string{"query"}}},
+	}}}
+	out := GenerateSQL(cs)
+	assert.Empty(t, out.Statements)
+	require.Len(t, out.Unsafe, 1)
+	assert.Equal(t, "db", out.Unsafe[0].Database)
+	assert.Equal(t, "d", out.Unsafe[0].Table)
+	assert.Contains(t, out.Unsafe[0].Reason, "CREATE OR REPLACE")
+}
+
+func TestSQLGen_DropDictionary(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database:         "db",
+		DropDictionaries: []string{"d"},
+	}}}
+	out := GenerateSQL(cs)
+	require.Len(t, out.Statements, 1)
+	assert.Equal(t, "DROP DICTIONARY db.d", out.Statements[0])
+}
