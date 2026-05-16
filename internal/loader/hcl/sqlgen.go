@@ -36,6 +36,30 @@ type UnsafeChange struct {
 // recreate-and-swap procedure.
 func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	var out GeneratedSQL
+
+	// 1. Named-collection recreates (DROP+CREATE adjacent, at the FRONT
+	// before any other create — dependent tables can rely on the new NC).
+	for _, ncc := range cs.NamedCollections {
+		if ncc.Recreate && ncc.Add != nil {
+			out.Statements = append(out.Statements, dropNamedCollectionSQL(ncc.Name))
+			out.Statements = append(out.Statements, createNamedCollectionSQL(*ncc.Add))
+		}
+		if ncc.Error != "" {
+			out.Unsafe = append(out.Unsafe, UnsafeChange{
+				Database: "",
+				Table:    ncc.Name,
+				Reason:   "named collection: " + ncc.Error,
+			})
+		}
+	}
+
+	// 2. Fresh NC adds.
+	for _, ncc := range cs.NamedCollections {
+		if ncc.Add != nil && !ncc.Recreate {
+			out.Statements = append(out.Statements, createNamedCollectionSQL(*ncc.Add))
+		}
+	}
+
 	for _, dt := range orderTablesByDependency(gatherTables(cs, addTablesOf), false) {
 		out.Statements = append(out.Statements, createTableSQL(dt.Database, dt.Table))
 	}
@@ -82,6 +106,20 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 			})
 		}
 	}
+
+	// 8. ALTER NAMED COLLECTION (SET then DELETE, only for non-recreate diffs).
+	for _, ncc := range cs.NamedCollections {
+		if ncc.Recreate || ncc.Add != nil || ncc.Drop {
+			continue
+		}
+		if stmt := alterNamedCollectionSetSQL(ncc.Name, ncc.SetParams); stmt != "" {
+			out.Statements = append(out.Statements, stmt)
+		}
+		if stmt := alterNamedCollectionDeleteSQL(ncc.Name, ncc.DeleteParams); stmt != "" {
+			out.Statements = append(out.Statements, stmt)
+		}
+	}
+
 	for _, dc := range cs.Databases {
 		for _, name := range dc.DropMaterializedViews {
 			out.Statements = append(out.Statements, dropViewSQL(dc.Database, name))
@@ -96,6 +134,13 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	}
 	for _, dt := range orderTablesByDependency(gatherTables(cs, dropTablesOf), true) {
 		out.Statements = append(out.Statements, dropTableSQL(dt.Database, dt.Table.Name))
+	}
+
+	// 12. NC pure drops (not recreate). After tables — anything referencing them is gone.
+	for _, ncc := range cs.NamedCollections {
+		if ncc.Drop && !ncc.Recreate {
+			out.Statements = append(out.Statements, dropNamedCollectionSQL(ncc.Name))
+		}
 	}
 	return out
 }
