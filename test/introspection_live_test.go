@@ -385,7 +385,7 @@ func TestLive_Introspection_AllStatements(t *testing.T) {
 					// fixture references. Required for MV/View/Dictionary
 					// fixtures that read from other tables; harmless for
 					// self-contained engines (extracts an empty ref list).
-					statement = createStubsForFixture(t, conn, dbName, statement)
+					statement = createStubsForFixture(t, conn, dbName, groupName, statement)
 
 					// Execute the statement to create the object
 					err = conn.Exec(ctx, statement)

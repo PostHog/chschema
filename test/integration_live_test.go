@@ -175,7 +175,7 @@ func TestLive_EndToEnd_SchemaApply(t *testing.T) {
 // referenced `<dbName>.<refName>` in the SQL to point at the stubs
 // database. The returned string replaces the input SQL when the caller
 // runs `conn.Exec`.
-func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL string) string {
+func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, groupName, createSQL string) string {
 	t.Helper()
 	refs, err := hclload.ExtractReferencedTables(createSQL)
 	if err != nil {
@@ -185,7 +185,21 @@ func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL str
 	if len(refs) == 0 {
 		return createSQL
 	}
-	stubsDB := dbName + "_stubs"
+	// Per-group stubs DB so parallel fixture groups (Dictionary,
+	// MaterializedView, View, Table all run with t.Parallel()) don't
+	// race over each other's stubs database. groupName is the directory
+	// name under test/testdata/posthog-create-statements/.
+	stubsDB := dbName + "_stubs_" + groupName
+	// Drop dependent dictionaries that reference this group's stubs
+	// DB before dropping it. A Dictionary subtest that ran earlier in
+	// this same group may have CREATEd `<dbName>.<X>_dict` with SOURCE
+	// pointing at a stub table here; ClickHouse refuses to DROP the
+	// stubs database while that dictionary still references it (code
+	// 630). The dictionary subtest has already asserted introspection
+	// of its object, so dropping the residue is safe. Filtering by
+	// source = this group's stubs DB avoids racing with the Dictionary
+	// group running in parallel.
+	dropDependentDictionaries(t, conn, dbName, stubsDB)
 	// Drop and recreate the stubs DB so each fixture sees stubs whose
 	// columns match its own declared schema. Without this, the first
 	// fixture to reference `kafka_person` would lock in its column
@@ -193,6 +207,7 @@ func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL str
 	// the CREATE with "no matching columns in target table".
 	if err := conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+stubsDB+" SYNC"); err != nil {
 		t.Logf("createStubsForFixture: drop stubs db failed: %v", err)
+		return createSQL
 	}
 	if err := conn.Exec(context.Background(), "CREATE DATABASE "+stubsDB); err != nil {
 		t.Logf("createStubsForFixture: create stubs db failed: %v", err)
@@ -231,6 +246,53 @@ func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL str
 		createSQL = strings.ReplaceAll(createSQL, quoted, "`"+stubsDB+"`.`"+r.Name+"`")
 	}
 	return createSQL
+}
+
+// dropDependentDictionaries drops every dictionary in dbName whose
+// loading dependencies reference stubsDB. In the live-introspection
+// test loop, a Dictionary subtest may have CREATEd `<dbName>.<X>_dict`
+// with SOURCE rewritten to point at stubsDB; ClickHouse refuses to
+// drop stubsDB while that registered dependency exists (code 630).
+//
+// We use system.tables.loading_dependencies_database, NOT
+// system.dictionaries.source — the latter is empty until the dict is
+// actually loaded (and we use LIFETIME(MIN 0 MAX 0) so it never auto-
+// loads). The loading-dependency filter is essential under
+// t.Parallel(): without it we'd race with a sibling Dictionary group
+// running in parallel and drop a dict whose subtest hasn't asserted
+// introspection yet.
+//
+// Errors are logged but not fatal: failure to query or to drop a
+// specific dict is treated as best-effort — the subsequent DROP
+// DATABASE will surface any remaining dependency.
+func dropDependentDictionaries(t *testing.T, conn driver.Conn, dbName, stubsDB string) {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		`SELECT name FROM system.tables
+		 WHERE database = ?
+		   AND engine = 'Dictionary'
+		   AND has(loading_dependencies_database, ?)`,
+		dbName, stubsDB)
+	if err != nil {
+		t.Logf("dropDependentDictionaries: query system.tables failed: %v", err)
+		return
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Logf("dropDependentDictionaries: scan failed: %v", err)
+			continue
+		}
+		names = append(names, n)
+	}
+	for _, n := range names {
+		stmt := fmt.Sprintf("DROP DICTIONARY IF EXISTS %s.%s SYNC", dbName, n)
+		if err := conn.Exec(context.Background(), stmt); err != nil {
+			t.Logf("dropDependentDictionaries: drop %s.%s failed: %v", dbName, n, err)
+		}
+	}
 }
 
 // kafkaVirtualColumns is the column set ClickHouse's Kafka engine
