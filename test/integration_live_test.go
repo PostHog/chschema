@@ -198,19 +198,23 @@ func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL str
 		t.Logf("createStubsForFixture: create stubs db failed: %v", err)
 		return createSQL
 	}
-	cols, err := hclload.ExtractDeclaredColumns(createSQL)
+	// Fall back to the columns declared by the fixture being CREATEd
+	// when we can't find the source's own fixture (or the source
+	// fixture has no explicit column list).
+	fallbackCols, err := hclload.ExtractDeclaredColumns(createSQL)
 	if err != nil {
 		t.Logf("createStubsForFixture: extract declared columns failed: %v", err)
 	}
-	colList := "_dummy String"
-	if len(cols) > 0 {
-		parts := make([]string, len(cols))
-		for i, c := range cols {
-			parts[i] = fmt.Sprintf("`%s` %s", c.Name, c.Type)
-		}
-		colList = strings.Join(parts, ", ")
-	}
 	for _, r := range refs {
+		refCols := fallbackCols
+		isKafka := false
+		if srcSQL, kafka := findSourceFixture(r.Name); srcSQL != "" {
+			if sc, err := hclload.ExtractDeclaredColumns(srcSQL); err == nil && len(sc) > 0 {
+				refCols = sc
+			}
+			isKafka = kafka
+		}
+		colList := buildStubColList(refCols, isKafka)
 		stmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s (%s) ENGINE = Null", stubsDB, r.Name, colList)
 		if err := conn.Exec(context.Background(), stmt); err != nil {
 			t.Logf("createStubsForFixture: stub create failed for %s.%s: %v\n%s", stubsDB, r.Name, err, stmt)
@@ -227,6 +231,51 @@ func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL str
 		createSQL = strings.ReplaceAll(createSQL, quoted, "`"+stubsDB+"`.`"+r.Name+"`")
 	}
 	return createSQL
+}
+
+// kafkaVirtualColumns is the column set ClickHouse's Kafka engine
+// auto-injects on every Kafka-engine table. Stubbed sources need these
+// declared explicitly so MVs that reference `_topic`, `_partition`,
+// `_offset`, `_timestamp`, `_headers.name`, etc. pass CREATE-time
+// validation. `_headers` uses the Nested form so `_headers.name` and
+// `_headers.value` are reachable via the dot-suffix Array syntax that
+// ClickHouse exposes on real Kafka tables.
+const kafkaVirtualColumns = "`_topic` String, `_partition` UInt64, `_offset` UInt64, `_timestamp` Nullable(DateTime), `_timestamp_ms` Nullable(DateTime64(3)), `_headers` Nested(name String, value String), `_raw_message` String, `_key` String"
+
+// findSourceFixture searches the testdata corpus for the original CREATE
+// statement of a referenced source table. The corpus is laid out as
+// test/testdata/posthog-create-statements/<EngineKind>/<name>.sql with
+// unique basenames across engine subdirs, so a glob on basename suffices.
+// Returns "" when no fixture exists for refName (e.g. system tables, or
+// tables only present in production).
+func findSourceFixture(refName string) (sql string, isKafka bool) {
+	matches, err := filepath.Glob(filepath.Join("testdata/posthog-create-statements", "*", refName+".sql"))
+	if err != nil || len(matches) == 0 {
+		return "", false
+	}
+	b, err := os.ReadFile(matches[0])
+	if err != nil {
+		return "", false
+	}
+	s := string(b)
+	return s, strings.Contains(s, "ENGINE = Kafka(")
+}
+
+// buildStubColList renders a column list for the stub CREATE. For Kafka
+// sources, the engine's virtual columns are appended so MVs that read
+// them (`_topic`, `_partition`, `_headers.*`, …) parse.
+func buildStubColList(cols []hclload.DeclaredColumn, isKafka bool) string {
+	parts := make([]string, 0, len(cols)+1)
+	for _, c := range cols {
+		parts = append(parts, fmt.Sprintf("`%s` %s", c.Name, c.Type))
+	}
+	if isKafka {
+		parts = append(parts, kafkaVirtualColumns)
+	}
+	if len(parts) == 0 {
+		return "_dummy String"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func cleanupSQL(t *testing.T, dbName, createSQL string) string {
