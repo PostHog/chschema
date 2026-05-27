@@ -11,6 +11,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestApplyTLSFlags(t *testing.T) {
+	t.Run("both off leaves cfg untouched", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{}
+		require.NoError(t, applyTLSFlags(&cfg, false, false))
+		require.False(t, cfg.Secure)
+		require.False(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("secure on, skip-verify off", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{}
+		require.NoError(t, applyTLSFlags(&cfg, true, false))
+		require.True(t, cfg.Secure)
+		require.False(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("secure on, skip-verify on", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{}
+		require.NoError(t, applyTLSFlags(&cfg, true, true))
+		require.True(t, cfg.Secure)
+		require.True(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("skip-verify without secure is rejected", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{}
+		err := applyTLSFlags(&cfg, false, true)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "-tls-skip-verify requires -secure")
+	})
+}
+
 func TestParseClickHouseURI(t *testing.T) {
 	cfg, dbs, err := parseClickHouseURI("clickhouse://ro:secret@ch.example.com:9100/posthog,system")
 	require.NoError(t, err)

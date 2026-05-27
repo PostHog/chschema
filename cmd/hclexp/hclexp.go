@@ -131,6 +131,8 @@ func runIntrospect(args []string) {
 	user := fs.String("user", cfg.User, "ClickHouse user")
 	password := fs.String("password", cfg.Password, "ClickHouse password")
 	outFlag := fs.String("out", "", "output .hcl file, or a directory (one <db>.hcl per database); empty writes to stdout")
+	secure := fs.Bool("secure", cfg.Secure, "connect to ClickHouse over TLS")
+	skipVerify := fs.Bool("tls-skip-verify", cfg.TLSSkipVerify, "skip TLS certificate verification (requires -secure)")
 	_ = fs.Parse(args)
 
 	databases := splitList(*dbFlag)
@@ -141,6 +143,10 @@ func runIntrospect(args []string) {
 
 	cfg.Host, cfg.Port, cfg.User, cfg.Password = *host, *port, *user, *password
 	cfg.Database = databases[0] // connection requires a database to bind to
+	if err := applyTLSFlags(&cfg, *secure, *skipVerify); err != nil {
+		slog.Error("invalid TLS flag combination", "err", err)
+		os.Exit(2)
+	}
 
 	conn, err := config.NewConnection(cfg)
 	if err != nil {
@@ -288,6 +294,17 @@ func loadFromClickHouse(uri string) (*hclload.Schema, error) {
 		schema.Databases = append(schema.Databases, *spec)
 	}
 	return schema, nil
+}
+
+// applyTLSFlags merges the two TLS toggles into cfg, validating that
+// -tls-skip-verify is only set together with -secure.
+func applyTLSFlags(cfg *config.ClickHouseConfig, secure, skipVerify bool) error {
+	if skipVerify && !secure {
+		return fmt.Errorf("-tls-skip-verify requires -secure")
+	}
+	cfg.Secure = secure
+	cfg.TLSSkipVerify = skipVerify
+	return nil
 }
 
 // parseClickHouseURI turns clickhouse://user:password@host:port/db1,db2 into
