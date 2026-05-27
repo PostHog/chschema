@@ -232,6 +232,28 @@ func TestRenderChangeSet_MaterializedViews(t *testing.T) {
 	require.Equal(t, want, buf.String())
 }
 
+// TestWriteIntrospected_DirectoryLayout locks the shape the consuming
+// chart in posthog/charts relies on: when -out is a directory, hclexp
+// writes one <db>.hcl per database under it. The aws-cli sidecar then
+// uploads that tree to S3.
+func TestWriteIntrospected_DirectoryLayout(t *testing.T) {
+	dir := t.TempDir()
+	schema := &hclload.Schema{
+		Databases: []hclload.DatabaseSpec{
+			{Name: "posthog"},
+			{Name: "system"},
+		},
+	}
+	require.NoError(t, writeIntrospected(dir, schema))
+
+	for _, name := range []string{"posthog", "system"} {
+		p := filepath.Join(dir, name+".hcl")
+		info, err := os.Stat(p)
+		require.NoError(t, err, "expected %s", p)
+		require.False(t, info.IsDir())
+	}
+}
+
 func writeTemp(t *testing.T, name, content string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), name)
