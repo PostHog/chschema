@@ -17,6 +17,7 @@ import (
 	"github.com/posthog/chschema/internal/executor"
 	"github.com/posthog/chschema/internal/introspection"
 	"github.com/posthog/chschema/internal/loader"
+	hclload "github.com/posthog/chschema/internal/loader/hcl"
 	"github.com/posthog/chschema/test/testhelpers"
 	"github.com/stretchr/testify/require"
 )
@@ -143,8 +144,215 @@ func TestLive_EndToEnd_SchemaApply(t *testing.T) {
 	}
 }
 
+// createStubsForFixture pre-creates stub source/destination tables for a
+// CREATE MATERIALIZED VIEW / VIEW / DICTIONARY statement so the CREATE is
+// executable in isolation. ClickHouse rejects an MV CREATE when its
+// destination or any SELECT-FROM source table is missing; this helper
+// derives the dependency set via the hcl package and synthesizes minimal
+// Null-engine stubs.
+//
+// Stub schema: the column list declared on the CREATE statement itself —
+// destination column list for MVs, attribute list for dictionaries,
+// declared columns for views — applied to every referenced table. This is
+// only correct for fixtures where source and destination share a schema
+// (the common PostHog kafka_* → sharded_* shape), which is the case for
+// every fixture in test/testdata/posthog-create-statements/.
+//
+// Engine = Null: never accepts INSERTs (it discards them silently), so
+// these stubs add no storage or replication overhead. They're sufficient
+// for CREATE-time validation and for the introspector to see the object.
+//
+// Stubs are created with IF NOT EXISTS so multiple fixtures in the same
+// group sharing a source table don't collide.
+//
+// Stubs live in a sibling `<dbName>_stubs` database, not in `dbName`
+// itself. This keeps the per-test database holding only real fixture
+// objects, so a later subtest that CREATEs (for real) a table whose
+// name happens to match a stub source — e.g. `exchange_rate` is both a
+// fixture and referenced by `exchange_rate_mv` — doesn't collide.
+//
+// To make MV/View bodies actually find the stubs, we also rewrite each
+// referenced `<dbName>.<refName>` in the SQL to point at the stubs
+// database. The returned string replaces the input SQL when the caller
+// runs `conn.Exec`.
+func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, groupName, createSQL string) string {
+	t.Helper()
+	refs, err := hclload.ExtractReferencedTables(createSQL)
+	if err != nil {
+		t.Logf("createStubsForFixture: extract refs failed: %v (continuing without stubs)", err)
+		return createSQL
+	}
+	if len(refs) == 0 {
+		return createSQL
+	}
+	// Per-group stubs DB so parallel fixture groups (Dictionary,
+	// MaterializedView, View, Table all run with t.Parallel()) don't
+	// race over each other's stubs database. groupName is the directory
+	// name under test/testdata/posthog-create-statements/.
+	stubsDB := dbName + "_stubs_" + groupName
+	// Drop dependent dictionaries that reference this group's stubs
+	// DB before dropping it. A Dictionary subtest that ran earlier in
+	// this same group may have CREATEd `<dbName>.<X>_dict` with SOURCE
+	// pointing at a stub table here; ClickHouse refuses to DROP the
+	// stubs database while that dictionary still references it (code
+	// 630). The dictionary subtest has already asserted introspection
+	// of its object, so dropping the residue is safe. Filtering by
+	// source = this group's stubs DB avoids racing with the Dictionary
+	// group running in parallel.
+	dropDependentDictionaries(t, conn, dbName, stubsDB)
+	// Drop and recreate the stubs DB so each fixture sees stubs whose
+	// columns match its own declared schema. Without this, the first
+	// fixture to reference `kafka_person` would lock in its column
+	// list and a later MV with a different column list would fail
+	// the CREATE with "no matching columns in target table".
+	if err := conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+stubsDB+" SYNC"); err != nil {
+		t.Logf("createStubsForFixture: drop stubs db failed: %v", err)
+		return createSQL
+	}
+	if err := conn.Exec(context.Background(), "CREATE DATABASE "+stubsDB); err != nil {
+		t.Logf("createStubsForFixture: create stubs db failed: %v", err)
+		return createSQL
+	}
+	// Fall back to the columns declared by the fixture being CREATEd
+	// when we can't find the source's own fixture (or the source
+	// fixture has no explicit column list).
+	fallbackCols, err := hclload.ExtractDeclaredColumns(createSQL)
+	if err != nil {
+		t.Logf("createStubsForFixture: extract declared columns failed: %v", err)
+	}
+	for _, r := range refs {
+		refCols := fallbackCols
+		isKafka := false
+		if srcSQL, kafka := findSourceFixture(r.Name); srcSQL != "" {
+			if sc, err := hclload.ExtractDeclaredColumns(srcSQL); err == nil && len(sc) > 0 {
+				refCols = sc
+			}
+			isKafka = kafka
+		}
+		colList := buildStubColList(refCols, isKafka)
+		stmt := fmt.Sprintf("CREATE TABLE IF NOT EXISTS %s.%s (%s) ENGINE = Null", stubsDB, r.Name, colList)
+		if err := conn.Exec(context.Background(), stmt); err != nil {
+			t.Logf("createStubsForFixture: stub create failed for %s.%s: %v\n%s", stubsDB, r.Name, err, stmt)
+		}
+		// Repoint references in the fixture SQL from the test DB to
+		// the stubs DB. cleanupSQL already rewrote `default.X` to
+		// `dbName.X`, so we only need to handle the post-cleanup
+		// shape (bare and backtick-quoted forms). Match on a word
+		// boundary after the name to avoid clobbering `dbName.groups`
+		// inside `dbName.groups_mv`.
+		bareRe := regexp.MustCompile(`\b` + regexp.QuoteMeta(dbName+"."+r.Name) + `\b`)
+		createSQL = bareRe.ReplaceAllString(createSQL, stubsDB+"."+r.Name)
+		quoted := "`" + dbName + "`.`" + r.Name + "`"
+		createSQL = strings.ReplaceAll(createSQL, quoted, "`"+stubsDB+"`.`"+r.Name+"`")
+	}
+	return createSQL
+}
+
+// dropDependentDictionaries drops every dictionary in dbName whose
+// loading dependencies reference stubsDB. In the live-introspection
+// test loop, a Dictionary subtest may have CREATEd `<dbName>.<X>_dict`
+// with SOURCE rewritten to point at stubsDB; ClickHouse refuses to
+// drop stubsDB while that registered dependency exists (code 630).
+//
+// We use system.tables.loading_dependencies_database, NOT
+// system.dictionaries.source — the latter is empty until the dict is
+// actually loaded (and we use LIFETIME(MIN 0 MAX 0) so it never auto-
+// loads). The loading-dependency filter is essential under
+// t.Parallel(): without it we'd race with a sibling Dictionary group
+// running in parallel and drop a dict whose subtest hasn't asserted
+// introspection yet.
+//
+// Errors are logged but not fatal: failure to query or to drop a
+// specific dict is treated as best-effort — the subsequent DROP
+// DATABASE will surface any remaining dependency.
+func dropDependentDictionaries(t *testing.T, conn driver.Conn, dbName, stubsDB string) {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		`SELECT name FROM system.tables
+		 WHERE database = ?
+		   AND engine = 'Dictionary'
+		   AND has(loading_dependencies_database, ?)`,
+		dbName, stubsDB)
+	if err != nil {
+		t.Logf("dropDependentDictionaries: query system.tables failed: %v", err)
+		return
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Logf("dropDependentDictionaries: scan failed: %v", err)
+			continue
+		}
+		names = append(names, n)
+	}
+	for _, n := range names {
+		stmt := fmt.Sprintf("DROP DICTIONARY IF EXISTS %s.%s SYNC", dbName, n)
+		if err := conn.Exec(context.Background(), stmt); err != nil {
+			t.Logf("dropDependentDictionaries: drop %s.%s failed: %v", dbName, n, err)
+		}
+	}
+}
+
+// kafkaVirtualColumns is the column set ClickHouse's Kafka engine
+// auto-injects on every Kafka-engine table. Stubbed sources need these
+// declared explicitly so MVs that reference `_topic`, `_partition`,
+// `_offset`, `_timestamp`, `_headers.name`, etc. pass CREATE-time
+// validation. `_headers` uses the Nested form so `_headers.name` and
+// `_headers.value` are reachable via the dot-suffix Array syntax that
+// ClickHouse exposes on real Kafka tables.
+const kafkaVirtualColumns = "`_topic` String, `_partition` UInt64, `_offset` UInt64, `_timestamp` Nullable(DateTime), `_timestamp_ms` Nullable(DateTime64(3)), `_headers` Nested(name String, value String), `_raw_message` String, `_key` String"
+
+// findSourceFixture searches the testdata corpus for the original CREATE
+// statement of a referenced source table. The corpus is laid out as
+// test/testdata/posthog-create-statements/<EngineKind>/<name>.sql with
+// unique basenames across engine subdirs, so a glob on basename suffices.
+// Returns "" when no fixture exists for refName (e.g. system tables, or
+// tables only present in production).
+func findSourceFixture(refName string) (sql string, isKafka bool) {
+	matches, err := filepath.Glob(filepath.Join("testdata/posthog-create-statements", "*", refName+".sql"))
+	if err != nil || len(matches) == 0 {
+		return "", false
+	}
+	b, err := os.ReadFile(matches[0])
+	if err != nil {
+		return "", false
+	}
+	s := string(b)
+	return s, strings.Contains(s, "ENGINE = Kafka(")
+}
+
+// buildStubColList renders a column list for the stub CREATE. For Kafka
+// sources, the engine's virtual columns are appended so MVs that read
+// them (`_topic`, `_partition`, `_headers.*`, …) parse.
+func buildStubColList(cols []hclload.DeclaredColumn, isKafka bool) string {
+	parts := make([]string, 0, len(cols)+1)
+	for _, c := range cols {
+		parts = append(parts, fmt.Sprintf("`%s` %s", c.Name, c.Type))
+	}
+	if isKafka {
+		parts = append(parts, kafkaVirtualColumns)
+	}
+	if len(parts) == 0 {
+		return "_dummy String"
+	}
+	return strings.Join(parts, ", ")
+}
+
 func cleanupSQL(t *testing.T, dbName, createSQL string) string {
-	createSQL = strings.Replace(createSQL, "TABLE default.", "TABLE "+dbName+".", 1)
+	// Rewrite every reference to the fixture's `default` database to the
+	// isolated per-test database. This covers:
+	//   - the object being created: `CREATE TABLE/MATERIALIZED VIEW/DICTIONARY/VIEW default.X`
+	//   - destination tables on MVs: `TO default.X`
+	//   - source tables in SELECT bodies: `FROM default.X`, `JOIN default.X`
+	//   - backtick-quoted forms inside dictionary QUERY clauses: `` `default`.`X` ``
+	//
+	// We do the simplest thing that works: a global replace of every
+	// `default.` occurrence. The fixtures only ever reference the `default`
+	// database, so this is safe in this test corpus.
+	createSQL = strings.ReplaceAll(createSQL, "`default`.", "`"+dbName+"`.")
+	createSQL = strings.ReplaceAll(createSQL, "default.", dbName+".")
 	// Make every ReplicatedMergeTree ZooKeeper path unique to this test
 	// database. The fixture paths come in several shapes
 	// (/clickhouse/tables/..., /clickhouse/prod/tables/...), and a fixed

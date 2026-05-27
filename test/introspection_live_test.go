@@ -381,6 +381,12 @@ func TestLive_Introspection_AllStatements(t *testing.T) {
 					statement := cleanupSQL(t, dbName, originalSQL)
 					statement = strings.ReplaceAll(statement, "PASSWORD '[HIDDEN]'", "PASSWORD ''")
 
+					// Pre-create stub source/destination tables that the
+					// fixture references. Required for MV/View/Dictionary
+					// fixtures that read from other tables; harmless for
+					// self-contained engines (extracts an empty ref list).
+					statement = createStubsForFixture(t, conn, dbName, groupName, statement)
+
 					// Execute the statement to create the object
 					err = conn.Exec(ctx, statement)
 					require.NoError(t, err, "Failed to execute CREATE statement from file: %s", tc.Path)
@@ -394,15 +400,38 @@ func TestLive_Introspection_AllStatements(t *testing.T) {
 					// Extract table/view/dictionary name from the SQL
 					objectName := getObjectName(t, statement)
 
-					// Find the introspected object
-					foundObject := chschema_v1.FindTableByName(state.Tables, objectName)
-					require.NotNil(t, foundObject, "Object '%s' should be found after introspection", objectName)
+					// Dispatch the lookup + round-trip based on the
+					// fixture's object kind (the directory name). For
+					// Tables we run the full round-trip; for the other
+					// kinds we only verify the CREATE landed and
+					// introspection sees the object — sqlgen doesn't
+					// yet emit MV/View/Dictionary DDL.
+					switch groupName {
+					case "MaterializedView":
+						found := chschema_v1.FindMaterializedViewByName(state.MaterializedViews, objectName)
+						require.NotNil(t, found, "Materialized view '%s' should be found after introspection", objectName)
+					case "View":
+						found := chschema_v1.FindViewByName(state.Views, objectName)
+						require.NotNil(t, found, "View '%s' should be found after introspection", objectName)
+					case "Dictionary":
+						var found bool
+						for _, d := range state.Dictionaries {
+							if d.GetName() == objectName {
+								found = true
+								break
+							}
+						}
+						require.True(t, found, "Dictionary '%s' should be found after introspection", objectName)
+					default:
+						foundObject := chschema_v1.FindTableByName(state.Tables, objectName)
+						require.NotNil(t, foundObject, "Object '%s' should be found after introspection", objectName)
 
-					// Generate the CREATE statement from the introspected object
-					generatedSQL := sqlgen.GenerateCreateTable(foundObject)
+						// Generate the CREATE statement from the introspected object
+						generatedSQL := sqlgen.GenerateCreateTable(foundObject)
 
-					// Compare the simplified versions of the original and generated statements
-					require.Equal(t, simplify(statement), simplify(generatedSQL), "Generated SQL does not match original for %s", objectName)
+						// Compare the simplified versions of the original and generated statements
+						require.Equal(t, simplify(statement), simplify(generatedSQL), "Generated SQL does not match original for %s", objectName)
+					}
 				})
 			}
 		})

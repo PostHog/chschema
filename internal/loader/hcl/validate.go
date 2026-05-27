@@ -140,6 +140,192 @@ func CollectDependencies(dbs []DatabaseSpec) ([]Dependency, error) {
 	return deps, nil
 }
 
+// ExtractReferencedTables parses a CREATE statement (TABLE, MATERIALIZED
+// VIEW, VIEW, or DICTIONARY) and returns every table it references that
+// is NOT the object being created itself:
+//   - MV destination (TO dest) and SELECT FROM/JOIN sources
+//   - View SELECT FROM/JOIN sources
+//   - Dictionary SOURCE(CLICKHOUSE(TABLE 'x')) targets and
+//     SOURCE(CLICKHOUSE(QUERY 'SELECT ... FROM y')) inner-query sources
+//   - Distributed engine remote_table
+//
+// CTE names introduced by WITH ... AS are filtered out (they're
+// query-local, not real tables). The object being created itself is
+// excluded. Database-unqualified refs are returned with Database = "".
+//
+// Use this from test setup to derive the list of tables that must
+// exist before the CREATE statement is executable.
+func ExtractReferencedTables(createSQL string) ([]ObjectRef, error) {
+	stmts, err := chparser.NewParser(createSQL).ParseStmts()
+	if err != nil {
+		return nil, err
+	}
+	self := map[string]bool{}
+	cteNames := map[string]bool{}
+	var refs []ObjectRef
+
+	for _, stmt := range stmts {
+		// Identify the object being created so we can exclude it from refs.
+		switch s := stmt.(type) {
+		case *chparser.CreateTable:
+			if s.Name != nil && s.Name.Table != nil {
+				self[s.Name.Table.Name] = true
+			}
+		case *chparser.CreateMaterializedView:
+			if s.Name != nil && s.Name.Table != nil {
+				self[s.Name.Table.Name] = true
+			}
+		case *chparser.CreateView:
+			if s.Name != nil && s.Name.Table != nil {
+				self[s.Name.Table.Name] = true
+			}
+		case *chparser.CreateDictionary:
+			if s.Name != nil && s.Name.Table != nil {
+				self[s.Name.Table.Name] = true
+			}
+		}
+
+		// Collect CTE names so we don't treat them as real table refs.
+		for _, n := range chparser.FindAll(stmt, isSelectQuery) {
+			sel := n.(*chparser.SelectQuery)
+			if sel.With == nil {
+				continue
+			}
+			for _, cte := range sel.With.CTEs {
+				if id, ok := cte.Expr.(*chparser.Ident); ok {
+					cteNames[id.Name] = true
+				}
+			}
+		}
+
+		// Collect every TableIdentifier, dropping self and CTEs.
+		for _, n := range chparser.FindAll(stmt, isTableIdentifier) {
+			id := n.(*chparser.TableIdentifier)
+			if id.Table == nil {
+				continue
+			}
+			name := id.Table.Name
+			if self[name] || cteNames[name] {
+				continue
+			}
+			ref := ObjectRef{Name: name}
+			if id.Database != nil {
+				ref.Database = id.Database.Name
+			}
+			refs = append(refs, ref)
+		}
+
+		// Dictionary SOURCE(CLICKHOUSE(TABLE 'x' | QUERY 'SELECT … FROM y')).
+		// The chparser walks the AST nodes but does NOT descend into string
+		// literals; we have to look at the source args by hand.
+		if cd, ok := stmt.(*chparser.CreateDictionary); ok && cd.Engine != nil && cd.Engine.Source != nil {
+			for _, arg := range cd.Engine.Source.Args {
+				if arg == nil || arg.Name == nil {
+					continue
+				}
+				lit, isLit := arg.Value.(*chparser.StringLiteral)
+				if !isLit {
+					continue
+				}
+				switch strings.ToLower(arg.Name.Name) {
+				case "table":
+					refs = append(refs, ObjectRef{Name: lit.Literal})
+				case "query":
+					inner, err := extractSourceTables(lit.Literal)
+					if err != nil {
+						continue
+					}
+					for _, r := range inner {
+						if !self[r.Name] && !cteNames[r.Name] {
+							refs = append(refs, r)
+						}
+					}
+				}
+			}
+		}
+	}
+	return dedupeRefs(refs), nil
+}
+
+// DeclaredColumn is a single column from the object declared in a CREATE
+// statement: name + ClickHouse type expression as plain text. Used by
+// tests that need to materialize stub source tables.
+type DeclaredColumn struct {
+	Name string
+	Type string
+}
+
+// ExtractDeclaredColumns parses a CREATE statement and returns the
+// columns declared on the object being created:
+//   - CREATE TABLE / VIEW with explicit columns: the column list
+//   - CREATE MATERIALIZED VIEW: the destination column list (TO dest (…))
+//   - CREATE DICTIONARY: the attribute list (name+type only)
+//
+// Returns an empty slice (no error) when the statement carries no column
+// list (e.g. CREATE VIEW v AS SELECT … without an explicit schema).
+func ExtractDeclaredColumns(createSQL string) ([]DeclaredColumn, error) {
+	stmts, err := chparser.NewParser(createSQL).ParseStmts()
+	if err != nil {
+		return nil, err
+	}
+	for _, stmt := range stmts {
+		switch s := stmt.(type) {
+		case *chparser.CreateTable:
+			return columnsFromTableSchema(s.TableSchema), nil
+		case *chparser.CreateMaterializedView:
+			if s.Destination != nil {
+				return columnsFromTableSchema(s.Destination.TableSchema), nil
+			}
+		case *chparser.CreateView:
+			return columnsFromTableSchema(s.TableSchema), nil
+		case *chparser.CreateDictionary:
+			if s.Schema == nil {
+				return nil, nil
+			}
+			out := make([]DeclaredColumn, 0, len(s.Schema.Attributes))
+			for _, a := range s.Schema.Attributes {
+				if a == nil || a.Name == nil {
+					continue
+				}
+				out = append(out, DeclaredColumn{
+					Name: stripBackticks(a.Name.Name),
+					Type: formatNode(a.Type),
+				})
+			}
+			return out, nil
+		}
+	}
+	return nil, nil
+}
+
+func columnsFromTableSchema(ts *chparser.TableSchemaClause) []DeclaredColumn {
+	if ts == nil {
+		return nil
+	}
+	out := make([]DeclaredColumn, 0, len(ts.Columns))
+	for _, c := range ts.Columns {
+		cd, ok := c.(*chparser.ColumnDef)
+		if !ok {
+			continue
+		}
+		if cd.Name == nil {
+			continue
+		}
+		out = append(out, DeclaredColumn{
+			Name: stripBackticks(identName(cd.Name)),
+			Type: formatNode(cd.Type),
+		})
+	}
+	return out
+}
+
+func stripBackticks(s string) string {
+	if len(s) >= 2 && s[0] == '`' && s[len(s)-1] == '`' {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
 // extractSourceTables parses a materialized view's SELECT query and returns
 // every table it reads from (FROM and JOIN targets, including those nested in
 // subqueries). Names introduced by WITH ... AS common table expressions are

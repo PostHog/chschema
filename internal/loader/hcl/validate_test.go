@@ -203,3 +203,79 @@ func TestCollectDependencies_DefaultsSourceDatabase(t *testing.T) {
 	assert.Equal(t, ObjectRef{Database: "posthog", Name: "metrics"}, byKind[DepMVDest].To)
 	assert.Equal(t, ObjectRef{Database: "posthog", Name: "events_local"}, byKind[DepMVSource].To)
 }
+
+func TestExtractReferencedTables(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+		want []ObjectRef
+	}{
+		{
+			name: "create table — no refs",
+			sql:  `CREATE TABLE default.events (id UInt64) ENGINE = MergeTree ORDER BY id`,
+		},
+		{
+			name: "MV: TO dest + SELECT FROM src",
+			sql:  `CREATE MATERIALIZED VIEW default.mv TO default.dest (` + "`id`" + ` UInt64) AS SELECT id FROM default.src`,
+			want: []ObjectRef{{Database: "default", Name: "dest"}, {Database: "default", Name: "src"}},
+		},
+		{
+			name: "view: SELECT FROM",
+			sql:  `CREATE VIEW default.v AS SELECT * FROM default.events`,
+			want: []ObjectRef{{Database: "default", Name: "events"}},
+		},
+		{
+			name: "dictionary: SOURCE(CLICKHOUSE(TABLE 'x'))",
+			sql:  `CREATE DICTIONARY default.d (k UInt64, v String) PRIMARY KEY k SOURCE(CLICKHOUSE(TABLE 'src_tbl')) LIFETIME(0) LAYOUT(HASHED())`,
+			want: []ObjectRef{{Name: "src_tbl"}},
+		},
+		{
+			name: "dictionary: SOURCE(CLICKHOUSE(QUERY 'SELECT ... FROM y'))",
+			sql:  `CREATE DICTIONARY default.d (k UInt64, v String) PRIMARY KEY k SOURCE(CLICKHOUSE(QUERY 'SELECT k, v FROM default.src')) LIFETIME(0) LAYOUT(HASHED())`,
+			want: []ObjectRef{{Database: "default", Name: "src"}},
+		},
+		{
+			name: "MV with CTE: CTE name filtered out",
+			sql:  `CREATE MATERIALIZED VIEW default.mv TO default.dest AS WITH cte AS (SELECT * FROM default.real_src) SELECT * FROM cte`,
+			want: []ObjectRef{{Database: "default", Name: "dest"}, {Database: "default", Name: "real_src"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ExtractReferencedTables(tc.sql)
+			require.NoError(t, err)
+			assert.ElementsMatch(t, tc.want, got)
+		})
+	}
+}
+
+func TestExtractDeclaredColumns(t *testing.T) {
+	cases := []struct {
+		name string
+		sql  string
+		want []DeclaredColumn
+	}{
+		{
+			name: "create table",
+			sql:  "CREATE TABLE default.t (`a` UInt64, `b` String) ENGINE = MergeTree ORDER BY a",
+			want: []DeclaredColumn{{Name: "a", Type: "UInt64"}, {Name: "b", Type: "String"}},
+		},
+		{
+			name: "MV with TO dest (col list)",
+			sql:  "CREATE MATERIALIZED VIEW default.mv TO default.dest (`id` UInt64, `payload` String) AS SELECT id, payload FROM default.src",
+			want: []DeclaredColumn{{Name: "id", Type: "UInt64"}, {Name: "payload", Type: "String"}},
+		},
+		{
+			name: "dict attributes",
+			sql:  "CREATE DICTIONARY default.d (`k` UInt64, `v` String) PRIMARY KEY k SOURCE(NULL()) LIFETIME(0) LAYOUT(HASHED())",
+			want: []DeclaredColumn{{Name: "k", Type: "UInt64"}, {Name: "v", Type: "String"}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ExtractDeclaredColumns(tc.sql)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
