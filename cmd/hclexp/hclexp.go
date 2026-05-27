@@ -341,7 +341,28 @@ func parseClickHouseURI(uri string) (config.ClickHouseConfig, []string, error) {
 		databases = []string{cfg.Database}
 	}
 	cfg.Database = databases[0] // connection requires a database to bind to
+
+	q := u.Query()
+	secure := parseBoolQuery(q.Get("secure"))
+	skipVerify := parseBoolQuery(q.Get("skip-verify"))
+	if skipVerify && !secure {
+		return config.ClickHouseConfig{}, nil, fmt.Errorf("skip-verify requires secure=true in clickhouse:// URL")
+	}
+	cfg.Secure = secure
+	cfg.TLSSkipVerify = skipVerify
+
 	return cfg, databases, nil
+}
+
+// parseBoolQuery interprets a URL query value as a boolean. Empty/unknown
+// values map to false; "1"/"true"/"yes"/"on" (case-insensitive) map to true.
+func parseBoolQuery(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // renderChangeSet prints a ChangeSet as an indented, +/-/~ marked summary.

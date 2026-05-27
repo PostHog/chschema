@@ -64,6 +64,35 @@ func TestParseClickHouseURI(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestParseClickHouseURI_TLSQueryParams(t *testing.T) {
+	t.Run("plaintext stays plaintext", func(t *testing.T) {
+		cfg, _, err := parseClickHouseURI("clickhouse://u:p@h:9000/db")
+		require.NoError(t, err)
+		require.False(t, cfg.Secure)
+		require.False(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("?secure=true enables TLS", func(t *testing.T) {
+		cfg, _, err := parseClickHouseURI("clickhouse://u:p@h:9440/db?secure=true")
+		require.NoError(t, err)
+		require.True(t, cfg.Secure)
+		require.False(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("?secure=true&skip-verify=true sets both", func(t *testing.T) {
+		cfg, _, err := parseClickHouseURI("clickhouse://u:p@h:9440/db?secure=true&skip-verify=true")
+		require.NoError(t, err)
+		require.True(t, cfg.Secure)
+		require.True(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("?skip-verify=true without secure is rejected", func(t *testing.T) {
+		_, _, err := parseClickHouseURI("clickhouse://u:p@h:9440/db?skip-verify=true")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "skip-verify requires secure=true")
+	})
+}
+
 func TestLoadSide_HCLFile(t *testing.T) {
 	path := writeTemp(t, "schema.hcl", `
 database "posthog" {
