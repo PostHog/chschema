@@ -11,6 +11,36 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestApplyTLSFlags(t *testing.T) {
+	t.Run("both off leaves cfg untouched", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{}
+		require.NoError(t, applyTLSFlags(&cfg, false, false))
+		require.False(t, cfg.Secure)
+		require.False(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("secure on, skip-verify off", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{}
+		require.NoError(t, applyTLSFlags(&cfg, true, false))
+		require.True(t, cfg.Secure)
+		require.False(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("secure on, skip-verify on", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{}
+		require.NoError(t, applyTLSFlags(&cfg, true, true))
+		require.True(t, cfg.Secure)
+		require.True(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("skip-verify without secure is rejected", func(t *testing.T) {
+		cfg := config.ClickHouseConfig{}
+		err := applyTLSFlags(&cfg, false, true)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "-tls-skip-verify requires -secure")
+	})
+}
+
 func TestParseClickHouseURI(t *testing.T) {
 	cfg, dbs, err := parseClickHouseURI("clickhouse://ro:secret@ch.example.com:9100/posthog,system")
 	require.NoError(t, err)
@@ -32,6 +62,35 @@ func TestParseClickHouseURI(t *testing.T) {
 
 	_, _, err = parseClickHouseURI("clickhouse://localhost:notaport/db")
 	require.Error(t, err)
+}
+
+func TestParseClickHouseURI_TLSQueryParams(t *testing.T) {
+	t.Run("plaintext stays plaintext", func(t *testing.T) {
+		cfg, _, err := parseClickHouseURI("clickhouse://u:p@h:9000/db")
+		require.NoError(t, err)
+		require.False(t, cfg.Secure)
+		require.False(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("?secure=true enables TLS", func(t *testing.T) {
+		cfg, _, err := parseClickHouseURI("clickhouse://u:p@h:9440/db?secure=true")
+		require.NoError(t, err)
+		require.True(t, cfg.Secure)
+		require.False(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("?secure=true&skip-verify=true sets both", func(t *testing.T) {
+		cfg, _, err := parseClickHouseURI("clickhouse://u:p@h:9440/db?secure=true&skip-verify=true")
+		require.NoError(t, err)
+		require.True(t, cfg.Secure)
+		require.True(t, cfg.TLSSkipVerify)
+	})
+
+	t.Run("?skip-verify=true without secure is rejected", func(t *testing.T) {
+		_, _, err := parseClickHouseURI("clickhouse://u:p@h:9440/db?skip-verify=true")
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "skip-verify requires secure=true")
+	})
 }
 
 func TestLoadSide_HCLFile(t *testing.T) {
@@ -171,6 +230,28 @@ func TestRenderChangeSet_MaterializedViews(t *testing.T) {
       ~ query changed
 `
 	require.Equal(t, want, buf.String())
+}
+
+// TestWriteIntrospected_DirectoryLayout locks the shape the consuming
+// chart in posthog/charts relies on: when -out is a directory, hclexp
+// writes one <db>.hcl per database under it. The aws-cli sidecar then
+// uploads that tree to S3.
+func TestWriteIntrospected_DirectoryLayout(t *testing.T) {
+	dir := t.TempDir()
+	schema := &hclload.Schema{
+		Databases: []hclload.DatabaseSpec{
+			{Name: "posthog"},
+			{Name: "system"},
+		},
+	}
+	require.NoError(t, writeIntrospected(dir, schema))
+
+	for _, name := range []string{"posthog", "system"} {
+		p := filepath.Join(dir, name+".hcl")
+		info, err := os.Stat(p)
+		require.NoError(t, err, "expected %s", p)
+		require.False(t, info.IsDir())
+	}
 }
 
 func writeTemp(t *testing.T, name, content string) string {
