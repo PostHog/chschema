@@ -175,7 +175,7 @@ func TestLive_EndToEnd_SchemaApply(t *testing.T) {
 // referenced `<dbName>.<refName>` in the SQL to point at the stubs
 // database. The returned string replaces the input SQL when the caller
 // runs `conn.Exec`.
-func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL string) string {
+func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, groupName, createSQL string) string {
 	t.Helper()
 	refs, err := hclload.ExtractReferencedTables(createSQL)
 	if err != nil {
@@ -185,7 +185,21 @@ func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL str
 	if len(refs) == 0 {
 		return createSQL
 	}
-	stubsDB := dbName + "_stubs"
+	// Per-group stubs DB so parallel fixture groups (Dictionary,
+	// MaterializedView, View, Table all run with t.Parallel()) don't
+	// race over each other's stubs database. groupName is the directory
+	// name under test/testdata/posthog-create-statements/.
+	stubsDB := dbName + "_stubs_" + groupName
+	// Drop dependent dictionaries that reference this group's stubs
+	// DB before dropping it. A Dictionary subtest that ran earlier in
+	// this same group may have CREATEd `<dbName>.<X>_dict` with SOURCE
+	// pointing at a stub table here; ClickHouse refuses to DROP the
+	// stubs database while that dictionary still references it (code
+	// 630). The dictionary subtest has already asserted introspection
+	// of its object, so dropping the residue is safe. Filtering by
+	// source = this group's stubs DB avoids racing with the Dictionary
+	// group running in parallel.
+	dropDependentDictionaries(t, conn, dbName, stubsDB)
 	// Drop and recreate the stubs DB so each fixture sees stubs whose
 	// columns match its own declared schema. Without this, the first
 	// fixture to reference `kafka_person` would lock in its column
@@ -193,6 +207,7 @@ func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL str
 	// the CREATE with "no matching columns in target table".
 	if err := conn.Exec(context.Background(), "DROP DATABASE IF EXISTS "+stubsDB+" SYNC"); err != nil {
 		t.Logf("createStubsForFixture: drop stubs db failed: %v", err)
+		return createSQL
 	}
 	if err := conn.Exec(context.Background(), "CREATE DATABASE "+stubsDB); err != nil {
 		t.Logf("createStubsForFixture: create stubs db failed: %v", err)
@@ -210,6 +225,14 @@ func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL str
 		isKafka := false
 		if srcSQL, kafka := findSourceFixture(r.Name); srcSQL != "" {
 			if sc, err := hclload.ExtractDeclaredColumns(srcSQL); err == nil && len(sc) > 0 {
+				refCols = sc
+			} else if sc := extractColumnNamesPermissive(srcSQL); len(sc) > 0 {
+				// The chparser fork can't fully handle some PostHog
+				// fixtures (e.g. EPHEMERAL CAST(...) clauses in
+				// `sharded_events`). Fall back to a name-only,
+				// paren-aware regex extractor so MV/View bodies that
+				// reference those columns at least find them in the
+				// stub.
 				refCols = sc
 			}
 			isKafka = kafka
@@ -231,6 +254,151 @@ func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, createSQL str
 		createSQL = strings.ReplaceAll(createSQL, quoted, "`"+stubsDB+"`.`"+r.Name+"`")
 	}
 	return createSQL
+}
+
+// dropDependentDictionaries drops every dictionary in dbName whose
+// loading dependencies reference stubsDB. In the live-introspection
+// test loop, a Dictionary subtest may have CREATEd `<dbName>.<X>_dict`
+// with SOURCE rewritten to point at stubsDB; ClickHouse refuses to
+// drop stubsDB while that registered dependency exists (code 630).
+//
+// We use system.tables.loading_dependencies_database, NOT
+// system.dictionaries.source — the latter is empty until the dict is
+// actually loaded (and we use LIFETIME(MIN 0 MAX 0) so it never auto-
+// loads). The loading-dependency filter is essential under
+// t.Parallel(): without it we'd race with a sibling Dictionary group
+// running in parallel and drop a dict whose subtest hasn't asserted
+// introspection yet.
+//
+// Errors are logged but not fatal: failure to query or to drop a
+// specific dict is treated as best-effort — the subsequent DROP
+// DATABASE will surface any remaining dependency.
+func dropDependentDictionaries(t *testing.T, conn driver.Conn, dbName, stubsDB string) {
+	t.Helper()
+	rows, err := conn.Query(context.Background(),
+		`SELECT name FROM system.tables
+		 WHERE database = ?
+		   AND engine = 'Dictionary'
+		   AND has(loading_dependencies_database, ?)`,
+		dbName, stubsDB)
+	if err != nil {
+		t.Logf("dropDependentDictionaries: query system.tables failed: %v", err)
+		return
+	}
+	defer rows.Close()
+	var names []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			t.Logf("dropDependentDictionaries: scan failed: %v", err)
+			continue
+		}
+		names = append(names, n)
+	}
+	for _, n := range names {
+		stmt := fmt.Sprintf("DROP DICTIONARY IF EXISTS %s.%s SYNC", dbName, n)
+		if err := conn.Exec(context.Background(), stmt); err != nil {
+			t.Logf("dropDependentDictionaries: drop %s.%s failed: %v", dbName, n, err)
+		}
+	}
+}
+
+// extractColumnNamesPermissive grabs every backtick-quoted identifier
+// in the outermost (…) of a CREATE TABLE / MATERIALIZED VIEW statement
+// and returns them as Nullable(String) columns. It's a pragmatic
+// fallback for fixtures that the chparser fork can't fully parse
+// (e.g. EPHEMERAL CAST(…) clauses): the resulting stub has every
+// column the real table has, with a permissive type that satisfies
+// CREATE-time existence checks on MVs reading those columns. Runtime
+// type fidelity doesn't matter — stubs are Null-engine and never see
+// inserts or queries.
+//
+// The matcher tracks paren depth to find the outermost column list,
+// then collects each top-level chunk's leading `\`name\“.
+func extractColumnNamesPermissive(createSQL string) []hclload.DeclaredColumn {
+	open := strings.Index(createSQL, "(")
+	if open < 0 {
+		return nil
+	}
+	depth := 0
+	end := -1
+	for i := open; i < len(createSQL); i++ {
+		switch createSQL[i] {
+		case '(':
+			depth++
+		case ')':
+			depth--
+			if depth == 0 {
+				end = i
+			}
+		}
+		if end >= 0 {
+			break
+		}
+	}
+	if end < 0 {
+		return nil
+	}
+	body := createSQL[open+1 : end]
+
+	// Walk the column list at depth 0, splitting on commas. Skip text
+	// inside string literals and backtick identifiers so commas there
+	// don't terminate a chunk.
+	var cols []hclload.DeclaredColumn
+	seen := map[string]bool{}
+	start := 0
+	depth = 0
+	inBacktick := false
+	inSingleQuote := false
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		switch {
+		case inBacktick:
+			if c == '`' {
+				inBacktick = false
+			}
+		case inSingleQuote:
+			if c == '\'' && (i == 0 || body[i-1] != '\\') {
+				inSingleQuote = false
+			}
+		case c == '`':
+			inBacktick = true
+		case c == '\'':
+			inSingleQuote = true
+		case c == '(':
+			depth++
+		case c == ')':
+			depth--
+		case c == ',' && depth == 0:
+			if col, ok := firstBacktickName(body[start:i]); ok && !seen[col] {
+				seen[col] = true
+				cols = append(cols, hclload.DeclaredColumn{Name: col, Type: "Nullable(String)"})
+			}
+			start = i + 1
+		}
+	}
+	if col, ok := firstBacktickName(body[start:]); ok && !seen[col] {
+		cols = append(cols, hclload.DeclaredColumn{Name: col, Type: "Nullable(String)"})
+	}
+	return cols
+}
+
+// firstBacktickName returns the first backtick-quoted identifier in
+// chunk, after trimming leading whitespace. Used to extract a column
+// name from a single column declaration like
+//
+//	`name` Type MATERIALIZED expr CODEC(...)
+func firstBacktickName(chunk string) (string, bool) {
+	chunk = strings.TrimLeft(chunk, " \t\r\n")
+	if !strings.HasPrefix(chunk, "`") {
+		return "", false
+	}
+	rest := chunk[1:]
+	end := strings.Index(rest, "`")
+	if end < 0 {
+		return "", false
+	}
+	return rest[:end], true
 }
 
 // kafkaVirtualColumns is the column set ClickHouse's Kafka engine
