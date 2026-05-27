@@ -218,3 +218,41 @@ hclexp validate -config schema.hcl -skip-validation='*'
 `hclexp diff -sql` applies the same dependency knowledge to ordering: within
 the generated DDL, a table is created before any Distributed table that
 forwards to it, and dropped after it.
+
+## TLS / secure connections
+
+`hclexp` connects to ClickHouse in plaintext by default. To reach a
+TLS-only cluster (e.g. production on port 9440), enable TLS via flags,
+environment variables, or query parameters on the `clickhouse://` URL
+used by `hclexp diff`.
+
+| Form                          | Enable TLS              | Skip cert verification              |
+| ----------------------------- | ----------------------- | ----------------------------------- |
+| `hclexp introspect` flag      | `-secure`               | `-tls-skip-verify`                  |
+| Environment variable          | `CLICKHOUSE_SECURE=true`| `CLICKHOUSE_TLS_SKIP_VERIFY=true`   |
+| `clickhouse://` URL query     | `?secure=true`          | `?skip-verify=true`                 |
+
+`-tls-skip-verify` / `?skip-verify=true` is only valid together with
+`-secure` / `?secure=true`; passing it alone is rejected. Skip
+verification is intended for internal-CA clusters — for public CAs the
+default verification path uses the system trust store.
+
+### Examples
+
+Introspect a TLS cluster with a private CA:
+
+```sh
+hclexp introspect \
+  -host ch.prod.internal -port 9440 -user readonly \
+  -secure -tls-skip-verify \
+  -database posthog,system \
+  -out ./dump
+```
+
+Diff a local schema tree against a TLS cluster:
+
+```sh
+hclexp diff \
+  -left ./schema \
+  -right 'clickhouse://ro:secret@ch.prod.internal:9440/posthog?secure=true&skip-verify=true'
+```
