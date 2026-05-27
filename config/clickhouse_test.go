@@ -41,5 +41,31 @@ func TestGetDefaultConfig_TLSEnvVars(t *testing.T) {
 	})
 }
 
+func TestBuildOptions_TLS(t *testing.T) {
+	t.Run("plaintext leaves TLS nil", func(t *testing.T) {
+		opts := buildOptions(ClickHouseConfig{Host: "h", Port: 9000, User: "u", Database: "d"})
+		require.Nil(t, opts.TLS)
+	})
+
+	t.Run("Secure=true sets verifying TLS config", func(t *testing.T) {
+		opts := buildOptions(ClickHouseConfig{Host: "h", Port: 9440, User: "u", Database: "d", Secure: true})
+		require.NotNil(t, opts.TLS)
+		require.False(t, opts.TLS.InsecureSkipVerify)
+	})
+
+	t.Run("Secure+TLSSkipVerify sets InsecureSkipVerify", func(t *testing.T) {
+		opts := buildOptions(ClickHouseConfig{Host: "h", Port: 9440, User: "u", Database: "d", Secure: true, TLSSkipVerify: true})
+		require.NotNil(t, opts.TLS)
+		require.True(t, opts.TLS.InsecureSkipVerify)
+	})
+
+	t.Run("TLSSkipVerify alone is ignored without Secure", func(t *testing.T) {
+		// NewConnection / applyTLSFlags reject this combo at the call site;
+		// the builder itself just treats Secure as the gate.
+		opts := buildOptions(ClickHouseConfig{Host: "h", Port: 9000, User: "u", Database: "d", TLSSkipVerify: true})
+		require.Nil(t, opts.TLS)
+	})
+}
+
 // guard against accidental import shadowing
 var _ = os.Getenv
