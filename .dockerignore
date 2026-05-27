@@ -1,0 +1,23 @@
+# VCS + tooling
+.git
+.gitignore
+.github
+.claude
+.worktrees
+
+# Docs, plans, drafts — not needed in the image build context
+docs
+*.md
+
+# Build artifacts (locally built binaries, dump output)
+chschema
+hclexp
+logs
+*.sql
+
+# Tests' snapshot fixtures (large, irrelevant to the image)
+test/snapshots
+
+# Image build inputs themselves
+Dockerfile
+.dockerignore
