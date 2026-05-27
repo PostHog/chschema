@@ -260,6 +260,7 @@ type DeclaredColumn struct {
 //   - CREATE TABLE / VIEW with explicit columns: the column list
 //   - CREATE MATERIALIZED VIEW: the destination column list (TO dest (…))
 //   - CREATE DICTIONARY: the attribute list (name+type only)
+//
 // Returns an empty slice (no error) when the statement carries no column
 // list (e.g. CREATE VIEW v AS SELECT … without an explicit schema).
 func ExtractDeclaredColumns(createSQL string) ([]DeclaredColumn, error) {
