@@ -226,14 +226,6 @@ func createStubsForFixture(t *testing.T, conn driver.Conn, dbName, groupName, cr
 		if srcSQL, kafka := findSourceFixture(r.Name); srcSQL != "" {
 			if sc, err := hclload.ExtractDeclaredColumns(srcSQL); err == nil && len(sc) > 0 {
 				refCols = sc
-			} else if sc := extractColumnNamesPermissive(srcSQL); len(sc) > 0 {
-				// The chparser fork can't fully handle some PostHog
-				// fixtures (e.g. EPHEMERAL CAST(...) clauses in
-				// `sharded_events`). Fall back to a name-only,
-				// paren-aware regex extractor so MV/View bodies that
-				// reference those columns at least find them in the
-				// stub.
-				refCols = sc
 			}
 			isKafka = kafka
 		}
@@ -301,104 +293,6 @@ func dropDependentDictionaries(t *testing.T, conn driver.Conn, dbName, stubsDB s
 			t.Logf("dropDependentDictionaries: drop %s.%s failed: %v", dbName, n, err)
 		}
 	}
-}
-
-// extractColumnNamesPermissive grabs every backtick-quoted identifier
-// in the outermost (…) of a CREATE TABLE / MATERIALIZED VIEW statement
-// and returns them as Nullable(String) columns. It's a pragmatic
-// fallback for fixtures that the chparser fork can't fully parse
-// (e.g. EPHEMERAL CAST(…) clauses): the resulting stub has every
-// column the real table has, with a permissive type that satisfies
-// CREATE-time existence checks on MVs reading those columns. Runtime
-// type fidelity doesn't matter — stubs are Null-engine and never see
-// inserts or queries.
-//
-// The matcher tracks paren depth to find the outermost column list,
-// then collects each top-level chunk's leading `\`name\“.
-func extractColumnNamesPermissive(createSQL string) []hclload.DeclaredColumn {
-	open := strings.Index(createSQL, "(")
-	if open < 0 {
-		return nil
-	}
-	depth := 0
-	end := -1
-	for i := open; i < len(createSQL); i++ {
-		switch createSQL[i] {
-		case '(':
-			depth++
-		case ')':
-			depth--
-			if depth == 0 {
-				end = i
-			}
-		}
-		if end >= 0 {
-			break
-		}
-	}
-	if end < 0 {
-		return nil
-	}
-	body := createSQL[open+1 : end]
-
-	// Walk the column list at depth 0, splitting on commas. Skip text
-	// inside string literals and backtick identifiers so commas there
-	// don't terminate a chunk.
-	var cols []hclload.DeclaredColumn
-	seen := map[string]bool{}
-	start := 0
-	depth = 0
-	inBacktick := false
-	inSingleQuote := false
-	for i := 0; i < len(body); i++ {
-		c := body[i]
-		switch {
-		case inBacktick:
-			if c == '`' {
-				inBacktick = false
-			}
-		case inSingleQuote:
-			if c == '\'' && (i == 0 || body[i-1] != '\\') {
-				inSingleQuote = false
-			}
-		case c == '`':
-			inBacktick = true
-		case c == '\'':
-			inSingleQuote = true
-		case c == '(':
-			depth++
-		case c == ')':
-			depth--
-		case c == ',' && depth == 0:
-			if col, ok := firstBacktickName(body[start:i]); ok && !seen[col] {
-				seen[col] = true
-				cols = append(cols, hclload.DeclaredColumn{Name: col, Type: "Nullable(String)"})
-			}
-			start = i + 1
-		}
-	}
-	if col, ok := firstBacktickName(body[start:]); ok && !seen[col] {
-		cols = append(cols, hclload.DeclaredColumn{Name: col, Type: "Nullable(String)"})
-	}
-	return cols
-}
-
-// firstBacktickName returns the first backtick-quoted identifier in
-// chunk, after trimming leading whitespace. Used to extract a column
-// name from a single column declaration like
-//
-//	`name` Type MATERIALIZED expr CODEC(...)
-func firstBacktickName(chunk string) (string, bool) {
-	chunk = strings.TrimLeft(chunk, " \t\r\n")
-	if !strings.HasPrefix(chunk, "`") {
-		return "", false
-	}
-	rest := chunk[1:]
-	end := strings.Index(rest, "`")
-	if end < 0 {
-		return "", false
-	}
-	return rest[:end], true
 }
 
 // kafkaVirtualColumns is the column set ClickHouse's Kafka engine
