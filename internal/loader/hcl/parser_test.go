@@ -245,3 +245,31 @@ func TestParseFile_KafkaInlineSettings(t *testing.T) {
 	require.NotNil(t, kafkaEng.Extra)
 	assert.Equal(t, "foo", kafkaEng.Extra["kafka_some_future_setting"])
 }
+
+func TestParseFile_View_DefinerWithoutSQLSecurity(t *testing.T) {
+	schema, err := ParseFile(filepath.Join("testdata", "view_invalid_definer_without_sql_security.hcl"))
+	require.NoError(t, err)
+	err = Resolve(schema)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `definer requires sql_security = "definer"`)
+}
+
+func TestParseFile_View_InvalidSQLSecurityEnum(t *testing.T) {
+	schema, err := ParseFile(filepath.Join("testdata", "view_invalid_sql_security_enum.hcl"))
+	require.NoError(t, err)
+	err = Resolve(schema)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `sql_security must be one of "definer", "invoker", "none"`)
+}
+
+func TestParseFile_View_SQLSecurityCaseInsensitive(t *testing.T) {
+	schema, err := ParseFile(filepath.Join("testdata", "view_sql_security_uppercase.hcl"))
+	require.NoError(t, err)
+	require.NoError(t, Resolve(schema))
+	require.Len(t, schema.Databases[0].Views, 1)
+	v := schema.Databases[0].Views[0]
+	require.NotNil(t, v.SQLSecurity)
+	assert.Equal(t, "definer", *v.SQLSecurity)
+	require.NotNil(t, v.Definer)
+	assert.Equal(t, "alice", *v.Definer)
+}

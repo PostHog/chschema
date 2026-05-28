@@ -26,6 +26,9 @@ func Resolve(s *Schema) error {
 		if err := validateDictionaries(&s.Databases[di]); err != nil {
 			return err
 		}
+		if err := validateViews(&s.Databases[di]); err != nil {
+			return err
+		}
 	}
 	if err := validateKafkaEngines(s); err != nil {
 		return err
@@ -130,6 +133,30 @@ func validateDictionaries(db *DatabaseSpec) error {
 				// allowed
 			default:
 				return fmt.Errorf("%s.%s: range block only allowed with range_hashed or complex_key_range_hashed layouts (got %q)", db.Name, d.Name, d.Layout.Kind)
+			}
+		}
+	}
+	return nil
+}
+
+// validateViews normalises and validates parsed ViewSpec entries. The HCL
+// surface is more permissive than ClickHouse semantics; this catches
+// schema mistakes at parse time rather than at apply.
+func validateViews(db *DatabaseSpec) error {
+	for i := range db.Views {
+		v := &db.Views[i]
+		if v.SQLSecurity != nil {
+			canonical := strings.ToLower(strings.TrimSpace(*v.SQLSecurity))
+			switch canonical {
+			case "definer", "invoker", "none":
+				v.SQLSecurity = &canonical
+			default:
+				return fmt.Errorf(`%s.%s: sql_security must be one of "definer", "invoker", "none" (got %q)`, db.Name, v.Name, *v.SQLSecurity)
+			}
+		}
+		if v.Definer != nil {
+			if v.SQLSecurity == nil || *v.SQLSecurity != "definer" {
+				return fmt.Errorf(`%s.%s: definer requires sql_security = "definer"`, db.Name, v.Name)
 			}
 		}
 	}

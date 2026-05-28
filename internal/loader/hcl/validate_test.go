@@ -128,6 +128,53 @@ func TestValidate_MissingMVDest(t *testing.T) {
 	assert.Equal(t, DepMVDest, errs[0].Kind)
 }
 
+func TestValidate_ViewSourceTableMustExist(t *testing.T) {
+	dbs := []DatabaseSpec{{
+		Name:   "posthog",
+		Tables: []TableSpec{mkTable("events_local", EngineMergeTree{})},
+		Views: []ViewSpec{
+			{Name: "v", Query: "SELECT team_id FROM posthog.nonexistent"},
+		},
+	}}
+	errs := Validate(dbs, ParseSkipSet(""))
+	require.Len(t, errs, 1)
+	assert.Equal(t, ObjectRef{Database: "posthog", Name: "v"}, errs[0].Object)
+	assert.Equal(t, ObjectRef{Database: "posthog", Name: "nonexistent"}, errs[0].Missing)
+	assert.Equal(t, DepViewSource, errs[0].Kind)
+}
+
+func TestValidate_ViewSourceTableInSameSchema(t *testing.T) {
+	dbs := []DatabaseSpec{{
+		Name:   "posthog",
+		Tables: []TableSpec{mkTable("events_local", EngineMergeTree{})},
+		Views: []ViewSpec{
+			{Name: "v", Query: "SELECT team_id FROM posthog.events_local"},
+		},
+	}}
+	assert.Empty(t, Validate(dbs, ParseSkipSet("")))
+}
+
+func TestValidate_ViewSkipByName(t *testing.T) {
+	dbs := []DatabaseSpec{{
+		Name: "posthog",
+		Views: []ViewSpec{
+			{Name: "v", Query: "SELECT 1 FROM posthog.missing"},
+		},
+	}}
+	assert.Empty(t, Validate(dbs, ParseSkipSet("v")))
+}
+
+func TestValidate_ViewCTENameNotASource(t *testing.T) {
+	dbs := []DatabaseSpec{{
+		Name:   "posthog",
+		Tables: []TableSpec{mkTable("events_local", EngineMergeTree{})},
+		Views: []ViewSpec{
+			{Name: "v", Query: "WITH stats AS (SELECT team_id FROM posthog.events_local) SELECT * FROM stats"},
+		},
+	}}
+	assert.Empty(t, Validate(dbs, ParseSkipSet("")))
+}
+
 func TestValidate_MissingDistributedRemote(t *testing.T) {
 	dbs := []DatabaseSpec{
 		mkDBMixed("posthog",

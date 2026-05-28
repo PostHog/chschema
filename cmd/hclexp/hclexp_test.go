@@ -232,6 +232,35 @@ func TestRenderChangeSet_MaterializedViews(t *testing.T) {
 	require.Equal(t, want, buf.String())
 }
 
+func TestRenderChangeSet_Views(t *testing.T) {
+	cs := hclload.ChangeSet{
+		Databases: []hclload.DatabaseChange{
+			{
+				Database:  "posthog",
+				AddViews:  []hclload.ViewSpec{{Name: "new_v", Query: "SELECT 1"}},
+				DropViews: []string{"old_v"},
+				AlterViews: []hclload.ViewDiff{
+					{Name: "modified_q", QueryChange: &hclload.StringChange{Old: ptrStr("SELECT 1"), New: ptrStr("SELECT 2")}},
+					{Name: "recreated", Recreate: true},
+				},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	renderChangeSet(&buf, cs)
+
+	want := `database "posthog"
+  + view new_v
+  - view old_v
+  ~ view modified_q
+      ~ query changed
+  ~ view recreated
+      ! requires recreation (column_aliases / sql_security / definer / cluster changed)
+`
+	require.Equal(t, want, buf.String())
+}
+
 // TestWriteIntrospected_DirectoryLayout locks the shape the consuming
 // chart in posthog/charts relies on: when -out is a directory, hclexp
 // writes one <db>.hcl per database under it. The aws-cli sidecar then

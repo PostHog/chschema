@@ -329,6 +329,67 @@ func mkMV(name, toTable, query string) MaterializedViewSpec {
 	return MaterializedViewSpec{Name: name, ToTable: toTable, Query: query}
 }
 
+func mkView(name, query string) ViewSpec {
+	return ViewSpec{Name: name, Query: query}
+}
+
+func TestDiff_ViewAddDrop(t *testing.T) {
+	from := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{mkView("v_old", "SELECT 1")}}}}
+	to := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{mkView("v_new", "SELECT 2")}}}}
+	cs := Diff(from, to)
+	require.False(t, cs.IsEmpty())
+	require.Len(t, cs.Databases, 1)
+	dc := cs.Databases[0]
+	assert.Equal(t, []string{"v_old"}, dc.DropViews)
+	require.Len(t, dc.AddViews, 1)
+	assert.Equal(t, "v_new", dc.AddViews[0].Name)
+}
+
+func TestDiff_ViewQueryOnlyChange(t *testing.T) {
+	from := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{mkView("v", "SELECT 1")}}}}
+	to := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{mkView("v", "SELECT 2")}}}}
+	cs := Diff(from, to)
+	require.Len(t, cs.Databases[0].AlterViews, 1)
+	vd := cs.Databases[0].AlterViews[0]
+	require.NotNil(t, vd.QueryChange)
+	assert.False(t, vd.Recreate)
+	assert.Nil(t, vd.Comment)
+}
+
+func TestDiff_ViewCommentOnlyChange(t *testing.T) {
+	vFrom := mkView("v", "SELECT 1")
+	vFrom.Comment = ptr("old")
+	vTo := mkView("v", "SELECT 1")
+	vTo.Comment = ptr("new")
+	from := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{vFrom}}}}
+	to := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{vTo}}}}
+	cs := Diff(from, to)
+	vd := cs.Databases[0].AlterViews[0]
+	assert.Nil(t, vd.QueryChange)
+	require.NotNil(t, vd.Comment)
+	assert.False(t, vd.Recreate)
+}
+
+func TestDiff_ViewShapeChangeForcesRecreate(t *testing.T) {
+	vFrom := mkView("v", "SELECT 1")
+	vFrom.ColumnAliases = []string{"a"}
+	vTo := mkView("v", "SELECT 1")
+	vTo.ColumnAliases = []string{"a", "b"}
+	from := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{vFrom}}}}
+	to := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{vTo}}}}
+	cs := Diff(from, to)
+	vd := cs.Databases[0].AlterViews[0]
+	assert.True(t, vd.Recreate)
+	assert.True(t, vd.IsUnsafe())
+}
+
+func TestDiff_IdenticalViewsEmpty(t *testing.T) {
+	v := mkView("v", "SELECT 1")
+	from := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{v}}}}
+	to := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{v}}}}
+	assert.True(t, Diff(from, to).IsEmpty())
+}
+
 func mkDBWithMVs(name string, mvs ...MaterializedViewSpec) DatabaseSpec {
 	return DatabaseSpec{Name: name, MaterializedViews: mvs}
 }

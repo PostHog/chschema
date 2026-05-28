@@ -16,13 +16,14 @@ state, and round-tripped against a live cluster.
 
 1. **Introspect** — connect to a live ClickHouse instance and dump its
    databases as HCL (to stdout, a file, or a directory). Round-trips
-   tables, materialized views, dictionaries, and named collections.
+   tables, materialized views, plain views, dictionaries, and named
+   collections.
 2. **Load & resolve** — read an HCL schema (a single file or a stack of
    layer directories), apply inheritance/patching, and emit the resolved,
    flat schema as canonical HCL.
 3. **Validate** — check that every cross-object reference (MV sources +
-   destination, Distributed `remote_*`) in a resolved schema is
-   satisfied, without connecting to a cluster.
+   destination, view sources, Distributed `remote_*`) in a resolved
+   schema is satisfied, without connecting to a cluster.
 4. **Diff** — compare two schemas (HCL sources or live clusters, in any
    combination) and report the changes — or the migration DDL — between
    them.
@@ -93,6 +94,7 @@ the ClickHouse SQL parser, so columns (types, defaults, codecs, comments,
 `MATERIALIZED`/`ALIAS`/`EPHEMERAL`), indexes, constraints, engine +
 parameters, `ORDER BY`, `PARTITION BY`, `SAMPLE BY`, `PRIMARY KEY`, `TTL`,
 and `SETTINGS` all come back populated. Materialized views (TO-form),
+plain views (with `column_aliases`, `sql_security`, `definer`, comment),
 dictionaries (every supported source + layout kind), and named
 collections are dumped in the same pass.
 
@@ -392,7 +394,44 @@ being silently mishandled:
 - inner-engine materialized views (`CREATE MATERIALIZED VIEW ... ENGINE = ...`)
 - refreshable materialized views (`REFRESH EVERY|AFTER ...`)
 - window views
-- plain (non-materialized) views — skipped during introspection for now
+
+### Views
+
+A `view` block declares a ClickHouse **plain** (non-materialized) view — a
+saved `SELECT` evaluated on every read of the view.
+
+```hcl
+database "posthog" {
+  view "team_event_counts" {
+    query = "SELECT team_id, count() AS n FROM posthog.events GROUP BY team_id"
+
+    column_aliases = ["team_id", "n"]
+
+    sql_security = "definer"
+    definer      = "alice"
+
+    cluster = "posthog"
+    comment = "team-level event counter"
+  }
+}
+```
+
+| Attribute        | Required | Meaning |
+|------------------|----------|---------|
+| `query`          | yes      | the `AS SELECT ...` body (verbatim text) |
+| `column_aliases` | no       | `CREATE VIEW v (a, b, ...) AS ...` |
+| `sql_security`   | no       | `SQL SECURITY` clause: `definer`, `invoker`, or `none` (canonical lowercase; case-insensitive on parse) |
+| `definer`        | no       | `DEFINER = <user>` or `DEFINER = current_user`; only valid alongside `sql_security = "definer"` |
+| `cluster`        | no       | `ON CLUSTER` target |
+| `comment`        | no       | view comment |
+
+`hclexp diff` reports a body change as in-place `ALTER TABLE ... MODIFY
+QUERY`; a comment-only change becomes `ALTER TABLE ... MODIFY COMMENT`;
+any change to `column_aliases` / `sql_security` / `definer` / `cluster`
+requires drop-and-recreate and is flagged unsafe.
+
+**Not supported.** Live views, refreshable materialized views, and window
+views fail introspection with a clear error.
 
 ### Dictionaries
 

@@ -71,6 +71,15 @@ func TestLoadLayers_CollisionWithoutOverrideErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "override")
 }
 
+func TestLoadLayers_ViewRedeclareAcrossLayers(t *testing.T) {
+	_, err := LoadLayers([]string{
+		layerPath("view_redeclare", "base"),
+		layerPath("view_redeclare", "env_dev"),
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `view "v" redeclared across layers`)
+}
+
 func TestLoadLayers_PatchPropagatesThroughExtend(t *testing.T) {
 	schema, err := LoadLayers([]string{
 		layerPath("patch_with_extend", "base"),

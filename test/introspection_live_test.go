@@ -12,6 +12,7 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/posthog/chschema/gen/chschema_v1"
 	"github.com/posthog/chschema/internal/introspection"
+	hclload "github.com/posthog/chschema/internal/loader/hcl"
 	"github.com/posthog/chschema/internal/sqlgen"
 	"github.com/posthog/chschema/internal/utils"
 	"github.com/posthog/chschema/test/testhelpers"
@@ -413,6 +414,20 @@ func TestLive_Introspection_AllStatements(t *testing.T) {
 					case "View":
 						found := chschema_v1.FindViewByName(state.Views, objectName)
 						require.NotNil(t, found, "View '%s' should be found after introspection", objectName)
+
+						// Also assert the new hcl-loader path captures the view
+						// (this is the path consumed by `hclexp introspect`).
+						hclState, err := hclload.Introspect(ctx, conn, dbName)
+						require.NoError(t, err, "hcl introspect for View assertion")
+						var v *hclload.ViewSpec
+						for i := range hclState.Views {
+							if hclState.Views[i].Name == objectName {
+								v = &hclState.Views[i]
+								break
+							}
+						}
+						require.NotNil(t, v, "view %q should be in hcl introspection result", objectName)
+						require.NotEmpty(t, v.Query, "view query must be captured")
 					case "Dictionary":
 						var found bool
 						for _, d := range state.Dictionaries {

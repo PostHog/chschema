@@ -589,6 +589,127 @@ func TestSQLGen_Dictionary_AttributeSQL_AllFlags(t *testing.T) {
 	}
 }
 
+func TestSQLGen_CreateView_Bare(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		AddViews: []ViewSpec{{Name: "v", Query: "SELECT 1"}},
+	}}}
+	got := GenerateSQL(cs)
+	require.Len(t, got.Statements, 1)
+	assert.Equal(t, "CREATE VIEW posthog.v AS SELECT 1", got.Statements[0])
+}
+
+func TestSQLGen_CreateView_FullForm(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		AddViews: []ViewSpec{{
+			Name:          "v",
+			Query:         "SELECT team_id, count() AS n FROM events GROUP BY team_id",
+			ColumnAliases: []string{"team_id", "n"},
+			SQLSecurity:   ptr("definer"),
+			Definer:       ptr("alice"),
+			Cluster:       ptr("posthog"),
+			Comment:       ptr("team-level"),
+		}},
+	}}}
+	got := GenerateSQL(cs)
+	require.Len(t, got.Statements, 1)
+	assert.Equal(t,
+		`CREATE VIEW posthog.v ON CLUSTER posthog (team_id, n) DEFINER = alice SQL SECURITY DEFINER AS SELECT team_id, count() AS n FROM events GROUP BY team_id COMMENT 'team-level'`,
+		got.Statements[0])
+}
+
+func TestSQLGen_DropPlainView(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database:  "posthog",
+		DropViews: []string{"old_v"},
+	}}}
+	got := GenerateSQL(cs)
+	require.Len(t, got.Statements, 1)
+	assert.Equal(t, "DROP VIEW posthog.old_v", got.Statements[0])
+}
+
+func TestSQLGen_AlterView_ModifyQuery(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		AlterViews: []ViewDiff{{
+			Name:        "v",
+			QueryChange: &StringChange{Old: ptr("SELECT 1"), New: ptr("SELECT 2")},
+		}},
+	}}}
+	got := GenerateSQL(cs)
+	require.Len(t, got.Statements, 1)
+	assert.Equal(t, "ALTER TABLE posthog.v MODIFY QUERY SELECT 2", got.Statements[0])
+}
+
+func TestSQLGen_AlterView_ModifyComment(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		AlterViews: []ViewDiff{{
+			Name:    "v",
+			Comment: &StringChange{Old: ptr("old"), New: ptr("new")},
+		}},
+	}}}
+	got := GenerateSQL(cs)
+	require.Len(t, got.Statements, 1)
+	assert.Equal(t, "ALTER TABLE posthog.v MODIFY COMMENT 'new'", got.Statements[0])
+}
+
+func TestSQLGen_AlterView_RecreateIsUnsafe(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		AlterViews: []ViewDiff{{
+			Name:     "v",
+			Recreate: true,
+		}},
+	}}}
+	got := GenerateSQL(cs)
+	assert.Empty(t, got.Statements)
+	require.Len(t, got.Unsafe, 1)
+	assert.Equal(t, "v", got.Unsafe[0].Table)
+	assert.Contains(t, got.Unsafe[0].Reason, "recreating")
+}
+
+func TestSQLGen_ViewCreatedAfterSourceTable(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		AddTables: []TableSpec{{
+			Name:    "events",
+			Columns: []ColumnSpec{{Name: "team_id", Type: "Int64"}},
+			OrderBy: []string{"team_id"},
+			Engine:  &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}},
+		}},
+		AddViews: []ViewSpec{{Name: "v", Query: "SELECT team_id FROM posthog.events"}},
+	}}}
+	got := GenerateSQL(cs)
+	joined := strings.Join(got.Statements, "\n")
+	tIdx := strings.Index(joined, "CREATE TABLE posthog.events")
+	vIdx := strings.Index(joined, "CREATE VIEW posthog.v")
+	require.GreaterOrEqual(t, tIdx, 0)
+	require.GreaterOrEqual(t, vIdx, 0)
+	assert.Less(t, tIdx, vIdx, "view must be created after its source table")
+}
+
+func TestSQLGen_ViewDroppedBeforeSourceTable(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		DropTables: []TableSpec{{
+			Name:    "events",
+			Columns: []ColumnSpec{{Name: "team_id", Type: "Int64"}},
+			OrderBy: []string{"team_id"},
+			Engine:  &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}},
+		}},
+		DropViews: []string{"v"},
+	}}}
+	got := GenerateSQL(cs)
+	joined := strings.Join(got.Statements, "\n")
+	vIdx := strings.Index(joined, "DROP VIEW posthog.v")
+	tIdx := strings.Index(joined, "DROP TABLE")
+	require.GreaterOrEqual(t, vIdx, 0)
+	require.GreaterOrEqual(t, tIdx, 0)
+	assert.Less(t, vIdx, tIdx, "view must be dropped before its source table")
+}
+
 func TestSQLGen_Dictionary_DirectLayoutOmitsLifetime(t *testing.T) {
 	// ClickHouse rejects LIFETIME on direct/complex_key_direct layouts.
 	// Even if a spec carries one, sqlgen must skip it.

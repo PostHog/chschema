@@ -22,6 +22,11 @@ type DatabaseSpec struct {
 	// Dictionaries are a third sibling collection. Like MVs, they do not
 	// participate in the table inheritance system.
 	Dictionaries []DictionarySpec `hcl:"dictionary,block"`
+
+	// Views are plain (non-materialized) views. Like MVs and dictionaries
+	// they live as a sibling collection and do not participate in the
+	// table inheritance system.
+	Views []ViewSpec `hcl:"view,block"`
 }
 
 // MaterializedViewSpec models a ClickHouse materialized view in its
@@ -36,6 +41,26 @@ type MaterializedViewSpec struct {
 	Query   string       `hcl:"query"`            // the AS SELECT ... body
 	Cluster *string      `hcl:"cluster,optional"` // ON CLUSTER
 	Comment *string      `hcl:"comment,optional"`
+}
+
+// ViewSpec models a ClickHouse plain (non-materialized) view: a saved
+// SELECT executed on every read of the view. The Query is stored
+// verbatim as text. Live views, refreshable materialized views, and
+// window views are unsupported and rejected with a clear error during
+// introspection (they parse into different AST types).
+//
+// SQLSecurity is the canonical lowercase form of the SQL SECURITY
+// clause: one of "definer", "invoker", or "none". Definer is the user
+// the view runs as; required iff SQLSecurity == "definer" with a
+// named user. The literal "current_user" is accepted unquoted.
+type ViewSpec struct {
+	Name          string   `hcl:"name,label"`
+	Query         string   `hcl:"query"`
+	ColumnAliases []string `hcl:"column_aliases,optional"`
+	SQLSecurity   *string  `hcl:"sql_security,optional"`
+	Definer       *string  `hcl:"definer,optional"`
+	Cluster       *string  `hcl:"cluster,optional"`
+	Comment       *string  `hcl:"comment,optional"`
 }
 
 // PatchTableSpec is a strictly additive cross-layer modification of a table.

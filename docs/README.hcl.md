@@ -24,8 +24,8 @@ is just three layer directories passed to the loader in that order.
 ## Top-level blocks
 
 Every file declares one or more `database` blocks. Within a database, the
-allowed children are `table`, `patch_table`, and (later) `materialized_view`,
-`view`, `dictionary`.
+allowed children are `table`, `patch_table`, `materialized_view`, `view`,
+and `dictionary`.
 
 ```hcl
 database "posthog" {
@@ -197,6 +197,8 @@ Some objects can only be created after the objects they reference exist:
 
 - A **`materialized_view`** reads from a source table (named in its `query`)
   and writes into its `to_table` destination. Both must exist first.
+- A **`view`** (plain, non-materialized) reads from the source tables named
+  in its `query`. All of them must exist first.
 - A **`distributed`-engine table** forwards to the table named by
   `remote_database` / `remote_table`, which must exist first.
 
@@ -218,6 +220,44 @@ hclexp validate -config schema.hcl -skip-validation='*'
 `hclexp diff -sql` applies the same dependency knowledge to ordering: within
 the generated DDL, a table is created before any Distributed table that
 forwards to it, and dropped after it.
+
+## `view`
+
+A `view` block declares a ClickHouse **plain** (non-materialized) view — a
+saved `SELECT` that's evaluated on every read of the view.
+
+```hcl
+database "posthog" {
+  view "team_event_counts" {
+    query = "SELECT team_id, count() AS n FROM posthog.events GROUP BY team_id"
+
+    column_aliases = ["team_id", "n"]   // optional CREATE VIEW v (a, b) AS ...
+
+    sql_security = "definer"            // optional: definer | invoker | none
+    definer      = "alice"              // required iff sql_security == "definer" with a named user
+
+    cluster = "posthog"                 // optional ON CLUSTER
+    comment = "team-level event counter"
+  }
+}
+```
+
+| Attribute        | Required | Meaning |
+|------------------|----------|---------|
+| `query`          | yes      | the `AS SELECT ...` body (verbatim text) |
+| `column_aliases` | no       | `CREATE VIEW v (a, b, ...) AS ...` |
+| `sql_security`   | no       | `SQL SECURITY` clause: `definer`, `invoker`, or `none` (canonical lowercase; case-insensitive on parse) |
+| `definer`        | no       | `DEFINER = <user>` or `DEFINER = current_user`; only valid alongside `sql_security = "definer"` |
+| `cluster`        | no       | `ON CLUSTER` target |
+| `comment`        | no       | view comment |
+
+`hclexp diff` reports a body change as in-place `ALTER TABLE ... MODIFY
+QUERY`; a comment-only change becomes `ALTER TABLE ... MODIFY COMMENT`;
+any change to `column_aliases` / `sql_security` / `definer` / `cluster`
+requires drop-and-recreate and is flagged unsafe.
+
+**Not supported.** Live views, refreshable materialized views, and window
+views fail introspection with a clear error.
 
 ## TLS / secure connections
 

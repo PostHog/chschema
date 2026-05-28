@@ -300,7 +300,7 @@ func (r *fakeRows) Err() error { return nil }
 // TestProcessIntrospectRows_Dispatch exercises the statement-type dispatch in
 // processIntrospectRows: a CREATE TABLE, a CREATE MATERIALIZED VIEW (TO form),
 // and a plain CREATE VIEW must all be processed in one call without error, and
-// each must land in the correct collection (or be silently skipped for views).
+// each must land in the correct collection.
 func TestProcessIntrospectRows_Dispatch(t *testing.T) {
 	rows := &fakeRows{rows: []struct{ name, sql string }{
 		{
@@ -325,7 +325,6 @@ func TestProcessIntrospectRows_Dispatch(t *testing.T) {
 	err := processIntrospectRows(db, "db", rows)
 	require.NoError(t, err)
 
-	// One table, one MV; the plain view is silently skipped.
 	require.Len(t, db.Tables, 1, "expected exactly one table")
 	assert.Equal(t, "events", db.Tables[0].Name)
 
@@ -333,6 +332,63 @@ func TestProcessIntrospectRows_Dispatch(t *testing.T) {
 	assert.Equal(t, "metrics_mv", db.MaterializedViews[0].Name)
 	assert.Equal(t, "db.metrics", db.MaterializedViews[0].ToTable)
 	assert.Contains(t, db.MaterializedViews[0].Query, "team_id")
+
+	require.Len(t, db.Views, 1, "expected exactly one view")
+	assert.Equal(t, "events_view", db.Views[0].Name)
+	assert.Contains(t, db.Views[0].Query, "FROM db.events")
+}
+
+func TestProcessIntrospectRows_PlainView(t *testing.T) {
+	rows := &fakeRows{rows: []struct{ name, sql string }{
+		{
+			name: "v_simple",
+			sql:  "CREATE VIEW posthog.v_simple AS SELECT team_id FROM posthog.events",
+		},
+	}}
+	db := &DatabaseSpec{Name: "posthog"}
+	require.NoError(t, processIntrospectRows(db, "posthog", rows))
+	require.Empty(t, db.Tables)
+	require.Empty(t, db.MaterializedViews)
+	require.Len(t, db.Views, 1)
+	assert.Equal(t, "v_simple", db.Views[0].Name)
+	assert.Contains(t, db.Views[0].Query, "SELECT")
+	assert.Contains(t, db.Views[0].Query, "FROM posthog.events")
+}
+
+func TestProcessIntrospectRows_ViewWithColumnAliasesAndComment(t *testing.T) {
+	rows := &fakeRows{rows: []struct{ name, sql string }{
+		{
+			name: "v_aliased",
+			sql: "CREATE VIEW posthog.v_aliased (team_id, n) " +
+				"AS SELECT team_id, count() AS c FROM posthog.events GROUP BY team_id " +
+				"COMMENT 'aliased view'",
+		},
+	}}
+	db := &DatabaseSpec{Name: "posthog"}
+	require.NoError(t, processIntrospectRows(db, "posthog", rows))
+	require.Len(t, db.Views, 1)
+	assert.Equal(t, []string{"team_id", "n"}, db.Views[0].ColumnAliases)
+	require.NotNil(t, db.Views[0].Comment)
+	assert.Equal(t, "aliased view", *db.Views[0].Comment)
+}
+
+func TestProcessIntrospectRows_ViewWithSQLSecurityDefiner(t *testing.T) {
+	// chparser as of the currently-pinned fork doesn't model DEFINER / SQL
+	// SECURITY on CREATE VIEW; buildViewFromCreateView falls back to a
+	// regex on the input text for those clauses.
+	rows := &fakeRows{rows: []struct{ name, sql string }{
+		{
+			name: "v_sec",
+			sql:  "CREATE VIEW posthog.v_sec DEFINER = alice SQL SECURITY DEFINER AS SELECT 1",
+		},
+	}}
+	db := &DatabaseSpec{Name: "posthog"}
+	require.NoError(t, processIntrospectRows(db, "posthog", rows))
+	require.Len(t, db.Views, 1)
+	require.NotNil(t, db.Views[0].SQLSecurity, "SQLSecurity not captured")
+	assert.Equal(t, "definer", *db.Views[0].SQLSecurity)
+	require.NotNil(t, db.Views[0].Definer, "Definer not captured")
+	assert.Equal(t, "alice", *db.Views[0].Definer)
 }
 
 func TestParseCodecExpression(t *testing.T) {

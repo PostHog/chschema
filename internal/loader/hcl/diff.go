@@ -26,6 +26,10 @@ type DatabaseChange struct {
 	AddDictionaries   []DictionarySpec // emitted via CREATE OR REPLACE DICTIONARY
 	DropDictionaries  []string         // emitted via DROP DICTIONARY
 	AlterDictionaries []DictionaryDiff
+
+	AddViews   []ViewSpec // emitted via CREATE VIEW
+	DropViews  []string   // emitted via DROP VIEW
+	AlterViews []ViewDiff
 }
 
 // DictionaryDiff describes a change to a dictionary. ClickHouse has no
@@ -59,6 +63,25 @@ func (mvd MaterializedViewDiff) IsEmpty() bool {
 func (mvd MaterializedViewDiff) IsUnsafe() bool {
 	return mvd.Recreate
 }
+
+// ViewDiff is the set of mutations to a single existing plain view. A
+// query-only change is applied in place via ALTER TABLE ... MODIFY
+// QUERY. A comment-only change is applied via ALTER TABLE ... MODIFY
+// COMMENT. Any change to ColumnAliases / SQLSecurity / Definer /
+// Cluster requires recreating the view (DROP + CREATE) and is flagged
+// unsafe.
+type ViewDiff struct {
+	Name        string
+	QueryChange *StringChange
+	Comment     *StringChange
+	Recreate    bool
+}
+
+func (vd ViewDiff) IsEmpty() bool {
+	return vd.QueryChange == nil && vd.Comment == nil && !vd.Recreate
+}
+
+func (vd ViewDiff) IsUnsafe() bool { return vd.Recreate }
 
 // TableDiff is the set of mutations to a single existing table. Any unset
 // field means "no change in that aspect."
@@ -140,6 +163,8 @@ func (dc DatabaseChange) IsEmpty() bool {
 	return len(dc.AddTables) == 0 && len(dc.DropTables) == 0 && len(dc.AlterTables) == 0 &&
 		len(dc.AddMaterializedViews) == 0 && len(dc.DropMaterializedViews) == 0 &&
 		len(dc.AlterMaterializedViews) == 0 &&
+		len(dc.AddViews) == 0 && len(dc.DropViews) == 0 &&
+		len(dc.AlterViews) == 0 &&
 		len(dc.AddDictionaries) == 0 && len(dc.DropDictionaries) == 0 &&
 		len(dc.AlterDictionaries) == 0
 }
@@ -187,6 +212,7 @@ func Diff(from, to *Schema) ChangeSet {
 				Database:             name,
 				AddTables:            append([]TableSpec(nil), t.Tables...),
 				AddMaterializedViews: append([]MaterializedViewSpec(nil), t.MaterializedViews...),
+				AddViews:             append([]ViewSpec(nil), t.Views...),
 			}
 		case !tOK:
 			dc = DatabaseChange{Database: name}
@@ -195,6 +221,9 @@ func Diff(from, to *Schema) ChangeSet {
 			}
 			for _, mv := range f.MaterializedViews {
 				dc.DropMaterializedViews = append(dc.DropMaterializedViews, mv.Name)
+			}
+			for _, v := range f.Views {
+				dc.DropViews = append(dc.DropViews, v.Name)
 			}
 		default:
 			dc = diffDatabase(name, f, t)
@@ -283,6 +312,29 @@ func diffDatabase(name string, from, to *DatabaseSpec) DatabaseChange {
 		}
 	}
 
+	fromViews := indexViews(from.Views)
+	toViews := indexViews(to.Views)
+	for _, n := range sortedKeys(toViews) {
+		if _, ok := fromViews[n]; !ok {
+			dc.AddViews = append(dc.AddViews, *toViews[n])
+		}
+	}
+	for _, n := range sortedKeys(fromViews) {
+		if _, ok := toViews[n]; !ok {
+			dc.DropViews = append(dc.DropViews, n)
+		}
+	}
+	for _, n := range sortedKeys(fromViews) {
+		t, ok := toViews[n]
+		if !ok {
+			continue
+		}
+		vd := diffView(fromViews[n], t)
+		if !vd.IsEmpty() {
+			dc.AlterViews = append(dc.AlterViews, vd)
+		}
+	}
+
 	fromDicts := indexDictionaries(from.Dictionaries)
 	toDicts := indexDictionaries(to.Dictionaries)
 	for _, n := range sortedKeys(toDicts) {
@@ -363,6 +415,36 @@ func dictLayoutEqual(a, b *DictionaryLayoutSpec) bool {
 		return a == b
 	}
 	return a.Kind == b.Kind && reflect.DeepEqual(a.Decoded, b.Decoded)
+}
+
+func indexViews(views []ViewSpec) map[string]*ViewSpec {
+	out := make(map[string]*ViewSpec, len(views))
+	for i := range views {
+		out[views[i].Name] = &views[i]
+	}
+	return out
+}
+
+// diffView compares two plain views with the same name. Query and Comment
+// can be modified in place; ColumnAliases, SQLSecurity, Definer, and
+// Cluster changes require DROP + CREATE.
+func diffView(from, to *ViewSpec) ViewDiff {
+	vd := ViewDiff{Name: to.Name}
+	if !reflect.DeepEqual(from.ColumnAliases, to.ColumnAliases) ||
+		!reflect.DeepEqual(from.SQLSecurity, to.SQLSecurity) ||
+		!reflect.DeepEqual(from.Definer, to.Definer) ||
+		!reflect.DeepEqual(from.Cluster, to.Cluster) {
+		vd.Recreate = true
+		return vd
+	}
+	if from.Query != to.Query {
+		q1, q2 := from.Query, to.Query
+		vd.QueryChange = &StringChange{Old: &q1, New: &q2}
+	}
+	if !reflect.DeepEqual(from.Comment, to.Comment) {
+		vd.Comment = &StringChange{Old: from.Comment, New: to.Comment}
+	}
+	return vd
 }
 
 func indexMaterializedViews(mvs []MaterializedViewSpec) map[string]*MaterializedViewSpec {
@@ -599,4 +681,7 @@ func sortDatabaseChange(dc *DatabaseChange) {
 	sort.Slice(dc.AlterDictionaries, func(i, j int) bool {
 		return dc.AlterDictionaries[i].Name < dc.AlterDictionaries[j].Name
 	})
+	sort.Slice(dc.AddViews, func(i, j int) bool { return dc.AddViews[i].Name < dc.AddViews[j].Name })
+	sort.Strings(dc.DropViews)
+	sort.Slice(dc.AlterViews, func(i, j int) bool { return dc.AlterViews[i].Name < dc.AlterViews[j].Name })
 }

@@ -70,14 +70,43 @@ func writeDatabase(body *hclwrite.Body, db DatabaseSpec) {
 		writeMaterializedView(mvBlock.Body(), mv)
 	}
 
+	views := append([]ViewSpec(nil), db.Views...)
+	sort.Slice(views, func(i, j int) bool { return views[i].Name < views[j].Name })
+	for i, v := range views {
+		if len(tables) > 0 || len(mvs) > 0 || i > 0 {
+			body.AppendNewline()
+		}
+		vBlock := body.AppendNewBlock("view", []string{v.Name})
+		writeView(vBlock.Body(), v)
+	}
+
 	dicts := append([]DictionarySpec(nil), db.Dictionaries...)
 	sort.Slice(dicts, func(i, j int) bool { return dicts[i].Name < dicts[j].Name })
 	for i, d := range dicts {
-		if len(tables) > 0 || len(mvs) > 0 || i > 0 {
+		if len(tables) > 0 || len(mvs) > 0 || len(views) > 0 || i > 0 {
 			body.AppendNewline()
 		}
 		dBlock := body.AppendNewBlock("dictionary", []string{d.Name})
 		writeDictionary(dBlock.Body(), d)
+	}
+}
+
+func writeView(body *hclwrite.Body, v ViewSpec) {
+	body.SetAttributeValue("query", cty.StringVal(v.Query))
+	if len(v.ColumnAliases) > 0 {
+		body.SetAttributeValue("column_aliases", stringList(v.ColumnAliases))
+	}
+	if v.SQLSecurity != nil {
+		body.SetAttributeValue("sql_security", cty.StringVal(*v.SQLSecurity))
+	}
+	if v.Definer != nil {
+		body.SetAttributeValue("definer", cty.StringVal(*v.Definer))
+	}
+	if v.Cluster != nil {
+		body.SetAttributeValue("cluster", cty.StringVal(*v.Cluster))
+	}
+	if v.Comment != nil {
+		body.SetAttributeValue("comment", cty.StringVal(*v.Comment))
 	}
 }
 
