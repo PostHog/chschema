@@ -472,6 +472,11 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 			return fmt.Sprintf("SummingMergeTree((%s))", strings.Join(v.SumColumns, ", ")), nil
 		}
 		return "SummingMergeTree()", nil
+	case EngineReplicatedSummingMergeTree:
+		if len(v.SumColumns) > 0 {
+			return fmt.Sprintf("ReplicatedSummingMergeTree('%s', '%s', (%s))", v.ZooPath, v.ReplicaName, strings.Join(v.SumColumns, ", ")), nil
+		}
+		return fmt.Sprintf("ReplicatedSummingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
 	case EngineCollapsingMergeTree:
 		return fmt.Sprintf("CollapsingMergeTree(%s)", v.SignColumn), nil
 	case EngineReplicatedCollapsingMergeTree:
