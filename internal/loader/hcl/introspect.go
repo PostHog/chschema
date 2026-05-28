@@ -64,15 +64,7 @@ func processIntrospectRows(db *DatabaseSpec, database string, rows rowScanner) e
 		if err := rows.Scan(&name, &createSQL); err != nil {
 			return fmt.Errorf("scan system.tables: %w", err)
 		}
-		// chparser as of the current pin rejects DEFINER / SQL SECURITY /
-		// COMMENT on plain CREATE VIEW (tracked at
-		// https://github.com/orian/clickhouse-sql-parser/issues/6). Pre-
-		// strip those clauses so the rest of the statement parses; we
-		// stitch the captured values back onto the resulting ViewSpec
-		// below.
-		extras, parseSQL := stripViewExtras(createSQL)
-
-		stmt, err := parseCreateStatement(parseSQL)
+		stmt, err := parseCreateStatement(createSQL)
 		if err != nil {
 			return fmt.Errorf("parse create_table_query for %s.%s: %w", database, name, err)
 		}
@@ -99,7 +91,7 @@ func processIntrospectRows(db *DatabaseSpec, database string, rows rowScanner) e
 			d.Name = name
 			db.Dictionaries = append(db.Dictionaries, d)
 		case *chparser.CreateView:
-			v, err := buildViewFromCreateView(s, extras)
+			v, err := buildViewFromCreateView(s)
 			if err != nil {
 				return fmt.Errorf("introspect view %s.%s: %w", database, name, err)
 			}
@@ -217,56 +209,10 @@ func buildMaterializedViewFromCreateSQL(createSQL string) (MaterializedViewSpec,
 // buildMaterializedViewFromCreateMV walks an already-parsed CREATE
 // MATERIALIZED VIEW AST. Only the `TO <table>` form is supported;
 // inner-engine and refreshable MVs are rejected with a clear error.
-// viewExtras carries the clauses that chparser doesn't yet parse on
-// CREATE VIEW (see orian/clickhouse-sql-parser#6). They're captured
-// from the raw SQL by stripViewExtras and merged onto the ViewSpec
-// after the cleaned statement is parsed.
-type viewExtras struct {
-	SQLSecurity *string
-	Definer     *string
-	Comment     *string
-}
-
-var (
-	reCreateViewPrefix = regexp.MustCompile(`(?i)^\s*CREATE\s+(OR\s+REPLACE\s+)?VIEW\b`)
-	reViewDefiner      = regexp.MustCompile(`(?i)\s*DEFINER\s*=\s*([A-Za-z_][A-Za-z0-9_]*|CURRENT_USER)\b`)
-	reViewSQLSecurity  = regexp.MustCompile(`(?i)\s*SQL\s+SECURITY\s+(DEFINER|INVOKER|NONE)\b`)
-	reViewCommentTail  = regexp.MustCompile(`(?is)\s*COMMENT\s+'((?:[^']|'')*)'\s*$`)
-)
-
-// stripViewExtras pulls DEFINER / SQL SECURITY / trailing COMMENT off a
-// CREATE VIEW statement so the remainder parses cleanly with the current
-// chparser. Returns the parsed-out clauses and the cleaned SQL. For
-// non-view statements it's a no-op.
-func stripViewExtras(sql string) (viewExtras, string) {
-	if !reCreateViewPrefix.MatchString(sql) {
-		return viewExtras{}, sql
-	}
-	var ex viewExtras
-	if m := reViewDefiner.FindStringSubmatchIndex(sql); m != nil {
-		d := sql[m[2]:m[3]]
-		ex.Definer = &d
-		sql = sql[:m[0]] + sql[m[1]:]
-	}
-	if m := reViewSQLSecurity.FindStringSubmatchIndex(sql); m != nil {
-		s := strings.ToLower(sql[m[2]:m[3]])
-		ex.SQLSecurity = &s
-		sql = sql[:m[0]] + sql[m[1]:]
-	}
-	if m := reViewCommentTail.FindStringSubmatchIndex(sql); m != nil {
-		raw := sql[m[2]:m[3]]
-		c := strings.ReplaceAll(raw, "''", "'")
-		ex.Comment = &c
-		sql = sql[:m[0]]
-	}
-	return ex, sql
-}
-
 // buildViewFromCreateView walks a parsed CREATE VIEW AST and produces a
-// ViewSpec, merging in the extras captured by stripViewExtras. The
-// SELECT body is rendered back to text via formatNode, matching the way
-// MV bodies are captured.
-func buildViewFromCreateView(cv *chparser.CreateView, extras viewExtras) (ViewSpec, error) {
+// ViewSpec. The SELECT body is rendered back to text via formatNode,
+// matching the way MV bodies are captured.
+func buildViewFromCreateView(cv *chparser.CreateView) (ViewSpec, error) {
 	v := ViewSpec{}
 
 	if cv.SubQuery != nil && cv.SubQuery.Select != nil {
@@ -293,18 +239,16 @@ func buildViewFromCreateView(cv *chparser.CreateView, extras viewExtras) (ViewSp
 		}
 	}
 
-	// Merge the regex-extracted extras. AST-side Comment takes precedence
-	// if chparser ever starts populating it.
 	if cv.Comment != nil {
 		v.Comment = strPtr(unquoteString(cv.Comment.Literal))
-	} else if extras.Comment != nil {
-		v.Comment = extras.Comment
 	}
-	if extras.SQLSecurity != nil {
-		v.SQLSecurity = extras.SQLSecurity
+	if cv.Definer != nil {
+		d := stripBackticks(cv.Definer.Name)
+		v.Definer = &d
 	}
-	if extras.Definer != nil {
-		v.Definer = extras.Definer
+	if cv.SQLSecurity != "" {
+		s := strings.ToLower(cv.SQLSecurity)
+		v.SQLSecurity = &s
 	}
 
 	return v, nil
