@@ -69,6 +69,11 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 		}
 	}
 	for _, dc := range cs.Databases {
+		for _, v := range dc.AddViews {
+			out.Statements = append(out.Statements, createViewSQL(dc.Database, v))
+		}
+	}
+	for _, dc := range cs.Databases {
 		for _, d := range dictionariesByName(dc.AddDictionaries) {
 			out.Statements = append(out.Statements, createDictionarySQL(dc.Database, d))
 		}
@@ -98,6 +103,23 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 		}
 	}
 	for _, dc := range cs.Databases {
+		for _, vd := range dc.AlterViews {
+			if vd.Recreate {
+				out.Unsafe = append(out.Unsafe, UnsafeChange{
+					Database: dc.Database, Table: vd.Name,
+					Reason: "view column_aliases / sql_security / definer / cluster change requires recreating the view",
+				})
+				continue
+			}
+			if vd.QueryChange != nil && vd.QueryChange.New != nil {
+				out.Statements = append(out.Statements, modifyQuerySQL(dc.Database, vd.Name, *vd.QueryChange.New))
+			}
+			if vd.Comment != nil && vd.Comment.New != nil {
+				out.Statements = append(out.Statements, modifyCommentSQL(dc.Database, vd.Name, *vd.Comment.New))
+			}
+		}
+	}
+	for _, dc := range cs.Databases {
 		for _, dd := range dc.AlterDictionaries {
 			out.Unsafe = append(out.Unsafe, UnsafeChange{
 				Database: dc.Database,
@@ -122,6 +144,13 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 
 	for _, dc := range cs.Databases {
 		for _, name := range dc.DropMaterializedViews {
+			out.Statements = append(out.Statements, dropViewSQL(dc.Database, name))
+		}
+	}
+	for _, dc := range cs.Databases {
+		names := append([]string(nil), dc.DropViews...)
+		sort.Strings(names)
+		for _, name := range names {
 			out.Statements = append(out.Statements, dropViewSQL(dc.Database, name))
 		}
 	}
@@ -258,13 +287,47 @@ func createMaterializedViewSQL(database string, mv MaterializedViewSpec) string 
 	return b.String()
 }
 
-// modifyQuerySQL renders an in-place query update for a materialized view.
+// modifyQuerySQL renders an in-place query update for a materialized view
+// or plain view (the syntax is identical: ALTER TABLE ... MODIFY QUERY).
 func modifyQuerySQL(database, name, query string) string {
 	return fmt.Sprintf("ALTER TABLE %s.%s MODIFY QUERY %s", database, name, query)
 }
 
+// modifyCommentSQL renders an in-place comment update via ALTER TABLE.
+// ClickHouse accepts this form on plain views.
+func modifyCommentSQL(database, name, comment string) string {
+	return fmt.Sprintf("ALTER TABLE %s.%s MODIFY COMMENT %s", database, name, quoteString(comment))
+}
+
 func dropViewSQL(database, name string) string {
 	return fmt.Sprintf("DROP VIEW %s.%s", database, name)
+}
+
+// createViewSQL renders the full CREATE VIEW statement for a ViewSpec.
+// Field order follows the ClickHouse grammar:
+//
+//	CREATE VIEW [ON CLUSTER c] db.name [(aliases)] [DEFINER = u]
+//	  [SQL SECURITY ...] AS <query> [COMMENT '...']
+func createViewSQL(database string, v ViewSpec) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "CREATE VIEW %s.%s", database, v.Name)
+	if v.Cluster != nil {
+		fmt.Fprintf(&b, " ON CLUSTER %s", *v.Cluster)
+	}
+	if len(v.ColumnAliases) > 0 {
+		fmt.Fprintf(&b, " (%s)", strings.Join(v.ColumnAliases, ", "))
+	}
+	if v.Definer != nil {
+		fmt.Fprintf(&b, " DEFINER = %s", *v.Definer)
+	}
+	if v.SQLSecurity != nil {
+		fmt.Fprintf(&b, " SQL SECURITY %s", strings.ToUpper(*v.SQLSecurity))
+	}
+	fmt.Fprintf(&b, " AS %s", v.Query)
+	if v.Comment != nil {
+		fmt.Fprintf(&b, " COMMENT %s", quoteString(*v.Comment))
+	}
+	return b.String()
 }
 
 func createTableSQL(database string, t TableSpec) string {
