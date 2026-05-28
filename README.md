@@ -12,16 +12,25 @@ state, and round-tripped against a live cluster.
 
 ## What hclexp does
 
-`hclexp` has three modes:
+`hclexp` has four modes:
 
 1. **Introspect** — connect to a live ClickHouse instance and dump its
-   tables as HCL (to stdout, a file, or a directory).
+   databases as HCL (to stdout, a file, or a directory). Round-trips
+   tables, materialized views, dictionaries, and named collections.
 2. **Load & resolve** — read an HCL schema (a single file or a stack of
    layer directories), apply inheritance/patching, and emit the resolved,
    flat schema as canonical HCL.
-3. **Diff** — compare two schemas (HCL sources or live clusters, in any
+3. **Validate** — check that every cross-object reference (MV sources +
+   destination, Distributed `remote_*`) in a resolved schema is
+   satisfied, without connecting to a cluster.
+4. **Diff** — compare two schemas (HCL sources or live clusters, in any
    combination) and report the changes — or the migration DDL — between
    them.
+
+Connections can be plaintext (default) or TLS (see
+**[TLS / secure connections](#tls--secure-connections)**). `hclexp` also
+ships as a minimal container image (see **[Container image](#container-image)**)
+for use as a deployment-time schema-dump hook.
 
 ## Build
 
@@ -32,13 +41,19 @@ go build -o hclexp ./cmd/hclexp
 ClickHouse connection defaults come from environment variables and can be
 overridden by flags:
 
-| Variable             | Default          |
-|----------------------|------------------|
-| `CLICKHOUSE_HOST`    | `localhost`      |
-| `CLICKHOUSE_PORT`    | `9000`           |
-| `CLICKHOUSE_DB`      | `migration_test` |
-| `CLICKHOUSE_USER`    | `user1`          |
-| `CLICKHOUSE_PASSWORD`| `pass1`          |
+| Variable                      | Default          |
+|-------------------------------|------------------|
+| `CLICKHOUSE_HOST`             | `localhost`      |
+| `CLICKHOUSE_PORT`             | `9000`           |
+| `CLICKHOUSE_DB`               | `migration_test` |
+| `CLICKHOUSE_USER`             | `user1`          |
+| `CLICKHOUSE_PASSWORD`         | `pass1`          |
+| `CLICKHOUSE_SECURE`           | `false`          |
+| `CLICKHOUSE_TLS_SKIP_VERIFY`  | `false`          |
+
+For TLS-only clusters (typically port `9440`), set `CLICKHOUSE_SECURE=true`
+— or pass `-secure` on the CLI, or `?secure=true` on the diff URL form.
+See **[TLS / secure connections](#tls--secure-connections)** below.
 
 ## Introspect a live database
 
@@ -55,22 +70,31 @@ hclexp introspect -database posthog -out posthog.hcl
 # Override connection details
 hclexp introspect -host ch.example.com -port 9000 -user ro -password secret \
   -database posthog -out ./schema/
+
+# TLS-only cluster on port 9440, internal CA → skip cert verification
+hclexp introspect -host ch.prod.internal -port 9440 -user readonly \
+  -secure -tls-skip-verify -database posthog -out ./dump/
 ```
 
 **Flags:**
 
 - `-database` — comma-separated list of databases to introspect (required)
 - `-host`, `-port`, `-user`, `-password` — connection overrides
+- `-secure` — connect over TLS (matches `CLICKHOUSE_SECURE`)
+- `-tls-skip-verify` — skip server-cert verification (requires `-secure`;
+  matches `CLICKHOUSE_TLS_SKIP_VERIFY`)
 - `-out` — output target:
   - omitted → write HCL to stdout
   - a directory → write one `<database>.hcl` per database
   - any other path → write all databases to that single file
 
-Introspection reads each table's `create_table_query` and parses it with
+Introspection reads each object's `create_table_query` and parses it with
 the ClickHouse SQL parser, so columns (types, defaults, codecs, comments,
-`MATERIALIZED`/`ALIAS`), indexes, constraints, engine + parameters,
-`ORDER BY`, `PARTITION BY`, `SAMPLE BY`, `PRIMARY KEY`, `TTL`, and
-`SETTINGS` all come back populated.
+`MATERIALIZED`/`ALIAS`/`EPHEMERAL`), indexes, constraints, engine +
+parameters, `ORDER BY`, `PARTITION BY`, `SAMPLE BY`, `PRIMARY KEY`, `TTL`,
+and `SETTINGS` all come back populated. Materialized views (TO-form),
+dictionaries (every supported source + layout kind), and named
+collections are dumped in the same pass.
 
 ## Load & resolve an HCL schema
 
@@ -114,14 +138,20 @@ hclexp diff -left  clickhouse://localhost:9000/posthog \
 # Emit migration DDL (left -> right) instead of a summary
 hclexp diff -left ./schema/posthog.hcl \
             -right clickhouse://localhost:9000/posthog -sql
+
+# Diff against a TLS-only cluster with an internal CA
+hclexp diff -left ./schema/posthog.hcl \
+            -right 'clickhouse://ro:secret@ch.prod.internal:9440/posthog?secure=true&skip-verify=true'
 ```
 
 **Side specs** (`-left` / `-right`): each is one of
 
 - a single `.hcl` file
 - comma-separated layer directories (loaded + resolved in order)
-- `clickhouse://[user[:password]@]host:port/db1[,db2]` — introspected
-  live; missing connection pieces fall back to the `CLICKHOUSE_*` defaults
+- `clickhouse://[user[:password]@]host:port/db1[,db2][?secure=true[&skip-verify=true]]`
+  — introspected live; missing connection pieces fall back to the
+  `CLICKHOUSE_*` defaults. The optional `secure` / `skip-verify` query
+  params switch on TLS (see below).
 
 **Flags:**
 
@@ -141,6 +171,113 @@ database "posthog"
       + column event String
       ~ column team_id: UInt32 -> UInt64
       + setting index_granularity = 8192
+```
+
+## Validate dependencies
+
+`hclexp validate` checks that every cross-object reference in a resolved
+schema can actually be satisfied — without connecting to ClickHouse.
+
+It's the static guard the diff/apply path relies on:
+
+- A **`materialized_view`** reads from source tables (named in its `query`)
+  and writes into `to_table`. Both must be declared somewhere in the
+  loaded schema.
+- A **`distributed`-engine table** forwards to the table named by
+  `remote_database` / `remote_table`, which must also be declared.
+
+Missing references — or references into a database that wasn't loaded —
+fail with a non-zero exit code. The MV `query` is parsed to discover its
+source tables; `WITH ... AS` CTE names are not treated as table references.
+
+```sh
+# Validate a single-file schema
+hclexp validate -config ./schema/posthog.hcl
+
+# Validate a layer stack
+hclexp validate -layer ./schema/base,./schema/env_us
+
+# Skip dependency checks for specific objects, or all of them
+hclexp validate -config ./schema/posthog.hcl -skip-validation=events_mv,events_dist
+hclexp validate -config ./schema/posthog.hcl -skip-validation='*'
+```
+
+`hclexp diff -sql` applies the same dependency knowledge to DDL ordering:
+within the generated migration, a table is created before any
+Distributed/MV/Dictionary that depends on it, and dropped after.
+
+## TLS / secure connections
+
+`hclexp` connects in plaintext by default. To reach a TLS-only cluster
+(typically port `9440`), enable TLS via any of three equivalent forms:
+
+| Form                          | Enable TLS                | Skip cert verification              |
+| ----------------------------- | ------------------------- | ----------------------------------- |
+| `hclexp introspect` flag      | `-secure`                 | `-tls-skip-verify`                  |
+| Environment variable          | `CLICKHOUSE_SECURE=true`  | `CLICKHOUSE_TLS_SKIP_VERIFY=true`   |
+| `clickhouse://` URL query     | `?secure=true`            | `?skip-verify=true`                 |
+
+- Defaults are `false` — existing invocations behave identically.
+- `-tls-skip-verify` / `?skip-verify=true` is only valid together with
+  `-secure` / `?secure=true`; passing it alone is rejected to prevent
+  silent misconfiguration.
+- For public-CA certs the default verification path uses the system
+  trust store; `-tls-skip-verify` is for internal/self-signed CAs.
+
+```sh
+# Introspect a TLS cluster with a private CA
+hclexp introspect \
+  -host ch.prod.internal -port 9440 -user readonly \
+  -secure -tls-skip-verify \
+  -database posthog,system \
+  -out ./dump
+
+# Diff local HCL against a TLS cluster
+hclexp diff \
+  -left ./schema \
+  -right 'clickhouse://ro:secret@ch.prod.internal:9440/posthog?secure=true&skip-verify=true'
+```
+
+## Container image
+
+`hclexp` ships as a minimal multi-arch container image — distroless, no
+shell, no AWS CLI, no extras. It's built and pushed on every `main` push
+and Git tag.
+
+- Registry: [`docker.io/posthog/chschema`](https://hub.docker.com/r/posthog/chschema)
+  (planned: a parallel mirror to PostHog's private ECR at
+  `795637471508.dkr.ecr.us-east-1.amazonaws.com/posthog/chschema` once the
+  publisher IAM role is provisioned)
+- Architectures: `linux/amd64`, `linux/arm64`
+- Tags:
+  - `main` push → `sha-<short>` + `latest`
+  - `vX.Y.Z` tag → `X.Y.Z`, `X.Y`, `X`
+
+```sh
+# Print usage
+docker run --rm posthog/chschema:latest -help
+
+# Introspect into a host directory
+docker run --rm \
+  -e CLICKHOUSE_HOST=ch.prod.internal -e CLICKHOUSE_PORT=9440 \
+  -e CLICKHOUSE_USER=readonly -e CLICKHOUSE_PASSWORD=secret \
+  -e CLICKHOUSE_SECURE=true -e CLICKHOUSE_TLS_SKIP_VERIFY=true \
+  -v "$PWD/dump:/dump" \
+  posthog/chschema:latest \
+  introspect -database posthog,system -out /dump
+```
+
+The image is intended to be paired with `amazon/aws-cli` (or any other
+uploader) via a shared `emptyDir` volume in the consuming workload. The
+deployment pattern that drives the design lives in
+[`posthog/charts`](https://github.com/PostHog/charts) — `hclexp` writes
+HCL to the shared volume, the sidecar pushes it to S3.
+
+To build the image locally:
+
+```sh
+docker build -t hclexp:dev .
+docker run --rm hclexp:dev -help
 ```
 
 ## HCL schema format
