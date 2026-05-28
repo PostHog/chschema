@@ -96,3 +96,33 @@ func TestWrite_RoundTrip_KafkaWithCollection(t *testing.T) {
 func TestWrite_RoundTrip_KafkaInlineSettings(t *testing.T) {
 	roundTrip(t, filepath.Join("testdata", "kafka_inline_settings.hcl"))
 }
+
+func TestDumpSchema_RendersViewBlocks(t *testing.T) {
+	want := ViewSpec{
+		Name:          "metrics",
+		Query:         "SELECT team_id, count() AS n FROM events GROUP BY team_id",
+		ColumnAliases: []string{"team_id", "n"},
+		SQLSecurity:   ptr("definer"),
+		Definer:       ptr("alice"),
+		Comment:       ptr("team-level event counter"),
+	}
+	s := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{want}}}}
+
+	var buf bytes.Buffer
+	require.NoError(t, Write(&buf, s))
+
+	// Output should contain the block header. The remaining attributes
+	// are alignment-formatted by hclwrite, so we round-trip back through
+	// ParseFile to assert structural equivalence.
+	got := buf.String()
+	assert.Contains(t, got, `view "metrics" {`)
+
+	tmp := filepath.Join(t.TempDir(), "schema.hcl")
+	require.NoError(t, os.WriteFile(tmp, buf.Bytes(), 0o600))
+	reparsed, err := ParseFile(tmp)
+	require.NoError(t, err)
+	require.NoError(t, Resolve(reparsed))
+	require.Len(t, reparsed.Databases, 1)
+	require.Len(t, reparsed.Databases[0].Views, 1)
+	assert.Equal(t, want, reparsed.Databases[0].Views[0])
+}
