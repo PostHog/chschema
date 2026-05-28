@@ -13,6 +13,7 @@ const (
 	DepMVSource          = "mv_source"          // a materialized view reads from this table
 	DepMVDest            = "mv_dest"            // a materialized view writes into this table
 	DepDistributedRemote = "distributed_remote" // a Distributed table forwards to this table
+	DepViewSource        = "view_source"        // a plain view reads from this table
 )
 
 // ObjectRef identifies a schema object (table or materialized view) by its
@@ -135,6 +136,20 @@ func CollectDependencies(dbs []DatabaseSpec) ([]Dependency, error) {
 				To:   ObjectRef{Database: dist.RemoteDatabase, Name: dist.RemoteTable},
 				Kind: DepDistributedRemote,
 			})
+		}
+
+		for _, v := range db.Views {
+			from := ObjectRef{Database: db.Name, Name: v.Name}
+			sources, err := extractSourceTables(v.Query)
+			if err != nil {
+				return nil, fmt.Errorf("view %s: parsing query: %w", from, err)
+			}
+			for _, src := range sources {
+				if src.Database == "" {
+					src.Database = db.Name
+				}
+				deps = append(deps, Dependency{From: from, To: src, Kind: DepViewSource})
+			}
 		}
 	}
 	return deps, nil
@@ -408,6 +423,9 @@ func Validate(dbs []DatabaseSpec, skip SkipSet) []ValidationError {
 		for _, mv := range db.MaterializedViews {
 			declared[ObjectRef{Database: db.Name, Name: mv.Name}] = true
 		}
+		for _, v := range db.Views {
+			declared[ObjectRef{Database: db.Name, Name: v.Name}] = true
+		}
 	}
 
 	deps, err := CollectDependencies(dbs)
@@ -458,6 +476,8 @@ func depPhrase(kind string) string {
 		return "materialized view destination table"
 	case DepDistributedRemote:
 		return "Distributed table remote table"
+	case DepViewSource:
+		return "view source table"
 	default:
 		return "dependency"
 	}
