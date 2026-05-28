@@ -244,17 +244,17 @@ hclexp diff \
 shell, no AWS CLI, no extras. It's built and pushed on every `main` push
 and Git tag.
 
-- Registry: `<account>.dkr.ecr.us-east-1.amazonaws.com/posthog/chschema`
-  (PostHog's private ECR; the workflow resolves the registry hostname
-  at push time from the AWS account it assumes a role into)
+- Registry: [`ghcr.io/posthog/chschema`](https://github.com/PostHog/chschema/pkgs/container/chschema)
+  (GitHub Container Registry; the chschema repo is public, so the image
+  is publicly pullable without authentication)
 - Architectures: `linux/amd64`, `linux/arm64`
 - Tags:
   - `main` push → `main` + `sha-<short>` + `latest`
   - `vX.Y.Z` tag → `X.Y.Z`, `X.Y`, `X`
 
 ```sh
-# Print usage (substitute the ECR hostname for your account)
-docker run --rm <account>.dkr.ecr.us-east-1.amazonaws.com/posthog/chschema:latest -help
+# Print usage
+docker run --rm ghcr.io/posthog/chschema:latest -help
 
 # Introspect into a host directory
 docker run --rm \
@@ -262,7 +262,7 @@ docker run --rm \
   -e CLICKHOUSE_USER=readonly -e CLICKHOUSE_PASSWORD=secret \
   -e CLICKHOUSE_SECURE=true -e CLICKHOUSE_TLS_SKIP_VERIFY=true \
   -v "$PWD/dump:/dump" \
-  <account>.dkr.ecr.us-east-1.amazonaws.com/posthog/chschema:latest \
+  ghcr.io/posthog/chschema:latest \
   introspect -database posthog,system -out /dump
 ```
 
