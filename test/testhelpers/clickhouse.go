@@ -2,11 +2,11 @@ package testhelpers
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
-	"strconv"
 	"sync"
 	"testing"
-	"unsafe"
 
 	"github.com/google/go-cmp/cmp"
 	"github.com/posthog/chschema/config"
@@ -62,24 +62,38 @@ func PingClickHouse(conn driver.Conn) error {
 	return conn.Ping(ctx)
 }
 
-// CreateTestDatabase creates a unique test database for isolation
+// CreateTestDatabase creates a uniquely-named test database and registers
+// a t.Cleanup that drops it synchronously.
+//
+// The unique suffix is 64 random bits from crypto/rand. Earlier versions
+// derived the suffix from `unsafe.Pointer(t)`, which is unreliable: Go
+// may reuse heap addresses for *testing.T after earlier tests complete,
+// so two tests that happen to land on the same address get the same
+// dbName. That manifested as intermittent "Replica /clickhouse/<db>/...
+// already exists" failures on ReplicatedMergeTree fixtures shared by
+// multiple tests (e.g. query_log_archive, sharded_events in
+// TestEnd2End vs. TestLive_Introspection_AllStatements) because their
+// ZK paths embed dbName.
+//
+// Cleanup uses DROP DATABASE ... SYNC so the database's ZooKeeper
+// metadata is released before the test returns — without SYNC,
+// ClickHouse delays the drop by `database_atomic_delay_before_drop_table_sec`
+// (default 480s), which leaves Replica entries lingering and racing
+// later tests that happen to pick a colliding name.
 func CreateTestDatabase(t *testing.T, conn driver.Conn) string {
-	dbName := fmt.Sprintf("chschema_test_%s", t.Name())
-	// Replace any invalid characters for database names
-	dbName = "chschema_test_" + strconv.FormatInt(int64(uintptr(unsafe.Pointer(t))), 36)
+	var rb [8]byte
+	if _, err := rand.Read(rb[:]); err != nil {
+		t.Fatalf("CreateTestDatabase: read random suffix: %v", err)
+	}
+	dbName := "chschema_test_" + hex.EncodeToString(rb[:])
 
 	ctx := context.Background()
-	query := fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", dbName)
-
-	err := conn.Exec(ctx, query)
-	if err != nil {
+	if err := conn.Exec(ctx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", dbName)); err != nil {
 		t.Fatalf("Failed to create test database %s: %v", dbName, err)
 	}
 
-	// Register cleanup
 	t.Cleanup(func() {
-		dropQuery := fmt.Sprintf("DROP DATABASE IF EXISTS %s", dbName)
-		_ = conn.Exec(context.Background(), dropQuery)
+		_ = conn.Exec(context.Background(), fmt.Sprintf("DROP DATABASE IF EXISTS %s SYNC", dbName))
 	})
 
 	return dbName
