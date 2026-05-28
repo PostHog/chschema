@@ -48,6 +48,18 @@ func TestParseEngineString(t *testing.T) {
 		},
 		{"summing_merge_tree_empty", "SummingMergeTree", EngineSummingMergeTree{}},
 		{
+			"replicated_summing_merge_tree",
+			"ReplicatedSummingMergeTree('/p', '{replica}', count) ORDER BY id",
+			EngineReplicatedSummingMergeTree{
+				ZooPath: "/p", ReplicaName: "{replica}", SumColumns: []string{"count"},
+			},
+		},
+		{
+			"replicated_summing_merge_tree_no_columns",
+			"ReplicatedSummingMergeTree('/p', '{replica}')",
+			EngineReplicatedSummingMergeTree{ZooPath: "/p", ReplicaName: "{replica}"},
+		},
+		{
 			"collapsing_merge_tree",
 			"CollapsingMergeTree(sign) ORDER BY id",
 			EngineCollapsingMergeTree{SignColumn: "sign"},
