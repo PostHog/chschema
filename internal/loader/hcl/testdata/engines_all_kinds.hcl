@@ -35,6 +35,15 @@ database "posthog" {
     }
   }
 
+  table "t_replicated_summing_merge_tree" {
+    column "id" { type = "UUID" }
+    engine "replicated_summing_merge_tree" {
+      zoo_path     = "/clickhouse/tables/{shard}/t_rsmt"
+      replica_name = "{replica}"
+      sum_columns  = ["a", "b"]
+    }
+  }
+
   table "t_collapsing_merge_tree" {
     column "id" { type = "UUID" }
     engine "collapsing_merge_tree" {

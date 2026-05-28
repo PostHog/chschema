@@ -437,6 +437,24 @@ func TestLive_Introspection_AllStatements(t *testing.T) {
 							}
 						}
 						require.True(t, found, "Dictionary '%s' should be found after introspection", objectName)
+					case "ReplicatedSummingMergeTree":
+						// Legacy chschema_v1 protobuf path doesn't model this
+						// engine (the proto contract is frozen — see
+						// CLAUDE.md). Verify via the hcl-loader path that
+						// hclexp itself uses.
+						hclState, err := hclload.Introspect(ctx, conn, dbName)
+						require.NoError(t, err, "hcl introspect for ReplicatedSummingMergeTree assertion")
+						var ts *hclload.TableSpec
+						for i := range hclState.Tables {
+							if hclState.Tables[i].Name == objectName {
+								ts = &hclState.Tables[i]
+								break
+							}
+						}
+						require.NotNil(t, ts, "table %q should be in hcl introspection result", objectName)
+						require.NotNil(t, ts.Engine)
+						_, ok := ts.Engine.Decoded.(hclload.EngineReplicatedSummingMergeTree)
+						require.True(t, ok, "expected EngineReplicatedSummingMergeTree, got %T", ts.Engine.Decoded)
 					default:
 						foundObject := chschema_v1.FindTableByName(state.Tables, objectName)
 						require.NotNil(t, foundObject, "Object '%s' should be found after introspection", objectName)

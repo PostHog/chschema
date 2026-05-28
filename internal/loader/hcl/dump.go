@@ -185,6 +185,12 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 		if len(v.SumColumns) > 0 {
 			b.SetAttributeValue("sum_columns", stringList(v.SumColumns))
 		}
+	case EngineReplicatedSummingMergeTree:
+		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
+		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
+		if len(v.SumColumns) > 0 {
+			b.SetAttributeValue("sum_columns", stringList(v.SumColumns))
+		}
 	case EngineCollapsingMergeTree:
 		b.SetAttributeValue("sign_column", cty.StringVal(v.SignColumn))
 	case EngineReplicatedCollapsingMergeTree:

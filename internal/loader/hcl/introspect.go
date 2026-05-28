@@ -468,6 +468,15 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		return ee, allSettings, nil
 	case "SummingMergeTree":
 		return EngineSummingMergeTree{SumColumns: params}, allSettings, nil
+	case "ReplicatedSummingMergeTree":
+		if len(params) < 2 {
+			return nil, nil, fmt.Errorf("ReplicatedSummingMergeTree needs at least (zoo_path, replica_name[, sum_columns...])")
+		}
+		ee := EngineReplicatedSummingMergeTree{ZooPath: params[0], ReplicaName: params[1]}
+		if len(params) > 2 {
+			ee.SumColumns = params[2:]
+		}
+		return ee, allSettings, nil
 	case "CollapsingMergeTree":
 		if len(params) != 1 {
 			return nil, nil, fmt.Errorf("CollapsingMergeTree needs (sign_column)")
@@ -720,6 +729,19 @@ func ParseEngineString(engineFull string) (Engine, error) {
 			return nil, fmt.Errorf("ReplicatedAggregatingMergeTree needs (zoo_path, replica_name); got %v", p)
 		}
 		return EngineReplicatedAggregatingMergeTree{ZooPath: p[0], ReplicaName: p[1]}, nil
+	case strings.HasPrefix(decl, "ReplicatedSummingMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if len(p) < 2 {
+			return nil, fmt.Errorf("ReplicatedSummingMergeTree needs at least (zoo_path, replica_name[, sum_columns...]); got %v", p)
+		}
+		e := EngineReplicatedSummingMergeTree{ZooPath: p[0], ReplicaName: p[1]}
+		if len(p) > 2 {
+			e.SumColumns = p[2:]
+		}
+		return e, nil
 	case strings.HasPrefix(decl, "ReplacingMergeTree"):
 		p, err := extractEngineParams(decl)
 		if err != nil {

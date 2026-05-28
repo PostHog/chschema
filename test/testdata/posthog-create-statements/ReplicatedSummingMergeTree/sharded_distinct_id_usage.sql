@@ -1,0 +1,1 @@
+CREATE TABLE default.sharded_distinct_id_usage (`team_id` Int64, `distinct_id` String, `count` UInt64) ENGINE = ReplicatedSummingMergeTree('/clickhouse/tables/{shard}/posthog.distinct_id_usage', '{replica}', count) ORDER BY (team_id, distinct_id) SETTINGS index_granularity = 8192

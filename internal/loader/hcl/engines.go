@@ -45,6 +45,16 @@ type EngineSummingMergeTree struct {
 
 func (EngineSummingMergeTree) Kind() string { return "summing_merge_tree" }
 
+type EngineReplicatedSummingMergeTree struct {
+	ZooPath     string   `hcl:"zoo_path"`
+	ReplicaName string   `hcl:"replica_name"`
+	SumColumns  []string `hcl:"sum_columns,optional"`
+}
+
+func (EngineReplicatedSummingMergeTree) Kind() string {
+	return "replicated_summing_merge_tree"
+}
+
 type EngineCollapsingMergeTree struct {
 	SignColumn string `hcl:"sign_column"`
 }
@@ -162,6 +172,10 @@ func DecodeEngine(spec *EngineSpec) (Engine, error) {
 		target = e
 	case "summing_merge_tree":
 		var e EngineSummingMergeTree
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
+	case "replicated_summing_merge_tree":
+		var e EngineReplicatedSummingMergeTree
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
 	case "collapsing_merge_tree":

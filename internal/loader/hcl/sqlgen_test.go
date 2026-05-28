@@ -725,3 +725,34 @@ func TestSQLGen_Dictionary_DirectLayoutOmitsLifetime(t *testing.T) {
 	assert.NotContains(t, got, "LIFETIME", "direct layout must not emit LIFETIME")
 	assert.Contains(t, got, "LAYOUT(DIRECT())")
 }
+
+func TestSQLGen_Engine_ReplicatedSummingMergeTree(t *testing.T) {
+	t.Run("with sum_columns", func(t *testing.T) {
+		clause, extra := engineSQL(EngineReplicatedSummingMergeTree{
+			ZooPath:     "/clickhouse/tables/{shard}/distinct_id_usage",
+			ReplicaName: "{replica}",
+			SumColumns:  []string{"count"},
+		})
+		assert.Equal(t, "ReplicatedSummingMergeTree('/clickhouse/tables/{shard}/distinct_id_usage', '{replica}', (count))", clause)
+		assert.Nil(t, extra)
+	})
+
+	t.Run("without sum_columns", func(t *testing.T) {
+		clause, extra := engineSQL(EngineReplicatedSummingMergeTree{
+			ZooPath:     "/clickhouse/tables/{shard}/distinct_id_usage",
+			ReplicaName: "{replica}",
+		})
+		assert.Equal(t, "ReplicatedSummingMergeTree('/clickhouse/tables/{shard}/distinct_id_usage', '{replica}')", clause)
+		assert.Nil(t, extra)
+	})
+
+	t.Run("with multiple sum_columns", func(t *testing.T) {
+		clause, extra := engineSQL(EngineReplicatedSummingMergeTree{
+			ZooPath:     "/zk",
+			ReplicaName: "r",
+			SumColumns:  []string{"a", "b"},
+		})
+		assert.Equal(t, "ReplicatedSummingMergeTree('/zk', 'r', (a, b))", clause)
+		assert.Nil(t, extra)
+	})
+}

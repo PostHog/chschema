@@ -109,6 +109,7 @@ attributes depend on the kind.
 | `replacing_merge_tree`                | —                                                  | `version_column`       |
 | `replicated_replacing_merge_tree`     | `zoo_path`, `replica_name`                         | `version_column`       |
 | `summing_merge_tree`                  | —                                                  | `sum_columns = [...]`  |
+| `replicated_summing_merge_tree`       | `zoo_path`, `replica_name`                         | `sum_columns = [...]`  |
 | `collapsing_merge_tree`               | `sign_column`                                      | —                      |
 | `replicated_collapsing_merge_tree`    | `zoo_path`, `replica_name`, `sign_column`          | —                      |
 | `aggregating_merge_tree`              | —                                                  | —                      |
