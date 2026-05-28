@@ -394,6 +394,24 @@ func renderChangeSet(w io.Writer, cs hclload.ChangeSet) {
 				fmt.Fprintf(w, "      ~ query changed\n")
 			}
 		}
+		for _, v := range dc.AddViews {
+			fmt.Fprintf(w, "  + view %s\n", v.Name)
+		}
+		for _, name := range dc.DropViews {
+			fmt.Fprintf(w, "  - view %s\n", name)
+		}
+		for _, vd := range dc.AlterViews {
+			fmt.Fprintf(w, "  ~ view %s\n", vd.Name)
+			if vd.Recreate {
+				fmt.Fprintf(w, "      ! requires recreation (column_aliases / sql_security / definer / cluster changed)\n")
+			}
+			if vd.QueryChange != nil {
+				fmt.Fprintf(w, "      ~ query changed\n")
+			}
+			if vd.Comment != nil {
+				fmt.Fprintf(w, "      ~ comment changed\n")
+			}
+		}
 		for _, d := range dc.AddDictionaries {
 			fmt.Fprintf(w, "  + dictionary %s\n", d.Name)
 		}
