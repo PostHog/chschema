@@ -35,7 +35,7 @@ jobs:
 
     - name: Image metadata (tags + labels)
       id: meta
-      uses: docker/metadata-action@8e5442c4ef9f78752691e2d8f8d19755c6f78c81 # v5.5.1
+      uses: docker/metadata-action@8e5442c4ef9f78752691e2d8f8d19755c6f78e81 # v5.5.1
       with:
         images: 795637471508.dkr.ecr.us-east-1.amazonaws.com/posthog/chschema
         tags: |
