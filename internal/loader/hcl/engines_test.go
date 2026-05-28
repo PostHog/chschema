@@ -42,6 +42,12 @@ func TestParseFile_AllEngineKinds(t *testing.T) {
 		SumColumns: []string{"a", "b"},
 	}, byName["t_summing_merge_tree"])
 
+	assert.Equal(t, EngineReplicatedSummingMergeTree{
+		ZooPath:     "/clickhouse/tables/{shard}/t_rsmt",
+		ReplicaName: "{replica}",
+		SumColumns:  []string{"a", "b"},
+	}, byName["t_replicated_summing_merge_tree"])
+
 	assert.Equal(t, EngineCollapsingMergeTree{
 		SignColumn: "sign",
 	}, byName["t_collapsing_merge_tree"])
@@ -98,6 +104,7 @@ func TestEngine_KindMethods(t *testing.T) {
 		{EngineReplacingMergeTree{}, "replacing_merge_tree"},
 		{EngineReplicatedReplacingMergeTree{}, "replicated_replacing_merge_tree"},
 		{EngineSummingMergeTree{}, "summing_merge_tree"},
+		{EngineReplicatedSummingMergeTree{}, "replicated_summing_merge_tree"},
 		{EngineCollapsingMergeTree{}, "collapsing_merge_tree"},
 		{EngineReplicatedCollapsingMergeTree{}, "replicated_collapsing_merge_tree"},
 		{EngineAggregatingMergeTree{}, "aggregating_merge_tree"},
