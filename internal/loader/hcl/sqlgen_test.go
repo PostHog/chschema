@@ -670,6 +670,46 @@ func TestSQLGen_AlterView_RecreateIsUnsafe(t *testing.T) {
 	assert.Contains(t, got.Unsafe[0].Reason, "recreating")
 }
 
+func TestSQLGen_ViewCreatedAfterSourceTable(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		AddTables: []TableSpec{{
+			Name:    "events",
+			Columns: []ColumnSpec{{Name: "team_id", Type: "Int64"}},
+			OrderBy: []string{"team_id"},
+			Engine:  &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}},
+		}},
+		AddViews: []ViewSpec{{Name: "v", Query: "SELECT team_id FROM posthog.events"}},
+	}}}
+	got := GenerateSQL(cs)
+	joined := strings.Join(got.Statements, "\n")
+	tIdx := strings.Index(joined, "CREATE TABLE posthog.events")
+	vIdx := strings.Index(joined, "CREATE VIEW posthog.v")
+	require.GreaterOrEqual(t, tIdx, 0)
+	require.GreaterOrEqual(t, vIdx, 0)
+	assert.Less(t, tIdx, vIdx, "view must be created after its source table")
+}
+
+func TestSQLGen_ViewDroppedBeforeSourceTable(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		DropTables: []TableSpec{{
+			Name:    "events",
+			Columns: []ColumnSpec{{Name: "team_id", Type: "Int64"}},
+			OrderBy: []string{"team_id"},
+			Engine:  &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}},
+		}},
+		DropViews: []string{"v"},
+	}}}
+	got := GenerateSQL(cs)
+	joined := strings.Join(got.Statements, "\n")
+	vIdx := strings.Index(joined, "DROP VIEW posthog.v")
+	tIdx := strings.Index(joined, "DROP TABLE")
+	require.GreaterOrEqual(t, vIdx, 0)
+	require.GreaterOrEqual(t, tIdx, 0)
+	assert.Less(t, vIdx, tIdx, "view must be dropped before its source table")
+}
+
 func TestSQLGen_Dictionary_DirectLayoutOmitsLifetime(t *testing.T) {
 	// ClickHouse rejects LIFETIME on direct/complex_key_direct layouts.
 	// Even if a spec carries one, sqlgen must skip it.
