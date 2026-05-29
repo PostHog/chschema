@@ -765,3 +765,125 @@ func TestDiff_NamedCollections_HIDDEN_OnTargetSide(t *testing.T) {
 	assert.Empty(t, cs.NamedCollections[0].SetParams)
 	assert.Equal(t, []string{"k"}, cs.NamedCollections[0].SkippedRedactedParams)
 }
+
+// --- Virtual-column diff guard -----------------------------------------
+
+// kafkaTable builds a Kafka-engined TableSpec for the virtual-column tests.
+func kafkaTable(name string, cols ...ColumnSpec) TableSpec {
+	return TableSpec{
+		Name:    name,
+		Columns: cols,
+		Engine:  &EngineSpec{Kind: "kafka", Decoded: EngineKafka{}},
+	}
+}
+
+func TestDiff_VirtualColumnGuard_LeakedVirtualOnFrom_SuppressedDrop(t *testing.T) {
+	// from has _offset (leaked from a future system.columns-based introspector).
+	// to has only real columns. Naive diff would emit DROP COLUMN _offset,
+	// which CH rejects. Guard suppresses it.
+	from := &Schema{Databases: []DatabaseSpec{{
+		Name: "default",
+		Tables: []TableSpec{kafkaTable("ev",
+			ColumnSpec{Name: "team_id", Type: "UInt32"},
+			ColumnSpec{Name: "_offset", Type: "UInt64"}, // leaked
+		)},
+	}}}
+	to := &Schema{Databases: []DatabaseSpec{{
+		Name: "default",
+		Tables: []TableSpec{kafkaTable("ev",
+			ColumnSpec{Name: "team_id", Type: "UInt32"},
+		)},
+	}}}
+	cs := Diff(from, to)
+	assert.True(t, cs.IsEmpty(), "virtual leak should not surface as a DROP")
+}
+
+func TestDiff_VirtualColumnGuard_DeclaredOnBothSides_TypeChangeStillSurfaces(t *testing.T) {
+	// User legitimately declared _key on both sides (e.g. via
+	// kafka_map_virtual_columns_on_write). A type change must still
+	// produce a MODIFY COLUMN — the guard must NOT silence declared-vs-
+	// declared diffs.
+	from := &Schema{Databases: []DatabaseSpec{{
+		Name: "default",
+		Tables: []TableSpec{kafkaTable("ev",
+			ColumnSpec{Name: "_key", Type: "String"},
+		)},
+	}}}
+	to := &Schema{Databases: []DatabaseSpec{{
+		Name: "default",
+		Tables: []TableSpec{kafkaTable("ev",
+			ColumnSpec{Name: "_key", Type: "FixedString(8)"},
+		)},
+	}}}
+	cs := Diff(from, to)
+	require.Len(t, cs.Databases, 1)
+	require.Len(t, cs.Databases[0].AlterTables, 1)
+	require.Len(t, cs.Databases[0].AlterTables[0].ModifyColumns, 1)
+	mc := cs.Databases[0].AlterTables[0].ModifyColumns[0]
+	assert.Equal(t, "_key", mc.Name)
+	assert.Equal(t, "String", mc.OldType)
+	assert.Equal(t, "FixedString(8)", mc.NewType)
+}
+
+func TestDiff_VirtualColumnGuard_NonVirtualNamesUnaffected(t *testing.T) {
+	// A real column drop on a Kafka table must still surface — the guard
+	// only filters names that match the engine's virtual set.
+	from := &Schema{Databases: []DatabaseSpec{{
+		Name: "default",
+		Tables: []TableSpec{kafkaTable("ev",
+			ColumnSpec{Name: "team_id", Type: "UInt32"},
+			ColumnSpec{Name: "event", Type: "String"},
+		)},
+	}}}
+	to := &Schema{Databases: []DatabaseSpec{{
+		Name: "default",
+		Tables: []TableSpec{kafkaTable("ev",
+			ColumnSpec{Name: "team_id", Type: "UInt32"},
+		)},
+	}}}
+	cs := Diff(from, to)
+	require.Len(t, cs.Databases, 1)
+	require.Len(t, cs.Databases[0].AlterTables, 1)
+	assert.Equal(t, []string{"event"}, cs.Databases[0].AlterTables[0].DropColumns)
+}
+
+func TestDiff_VirtualColumnGuard_DistributedTransitive(t *testing.T) {
+	// _part is virtual on a Distributed-over-MergeTree (transitive). A
+	// stray declared _part on `from` only must not surface as a DROP.
+	mt := func(name string) TableSpec {
+		return TableSpec{
+			Name:   name,
+			Engine: &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}},
+		}
+	}
+	dist := func(name string, cols ...ColumnSpec) TableSpec {
+		return TableSpec{
+			Name:    name,
+			Columns: cols,
+			Engine: &EngineSpec{Kind: "distributed", Decoded: EngineDistributed{
+				RemoteDatabase: "default", RemoteTable: "ev_local",
+			}},
+		}
+	}
+	from := &Schema{Databases: []DatabaseSpec{{
+		Name: "default",
+		Tables: []TableSpec{
+			mt("ev_local"),
+			dist("ev_dist",
+				ColumnSpec{Name: "team_id", Type: "UInt32"},
+				ColumnSpec{Name: "_part", Type: "String"}, // leaked transitive
+			),
+		},
+	}}}
+	to := &Schema{Databases: []DatabaseSpec{{
+		Name: "default",
+		Tables: []TableSpec{
+			mt("ev_local"),
+			dist("ev_dist",
+				ColumnSpec{Name: "team_id", Type: "UInt32"},
+			),
+		},
+	}}}
+	cs := Diff(from, to)
+	assert.True(t, cs.IsEmpty(), "transitive virtual leak should not surface as a DROP on Distributed")
+}

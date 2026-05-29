@@ -1,6 +1,7 @@
 package hcl
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -267,6 +268,49 @@ func TestSQLGen_DropView(t *testing.T) {
 		{Database: "posthog", DropMaterializedViews: []string{"metrics_mv"}},
 	}})
 	assert.Equal(t, []string{"DROP VIEW posthog.metrics_mv"}, out.Statements)
+}
+
+// TestSQLGen_FourTierMVExtend exercises the Kafka -> MV -> local -> Distributed
+// pipeline where all four objects share columns via one abstract base. It is
+// the end-to-end check that `extend` on materialized_view emits the inherited
+// column list in the generated DDL.
+func TestSQLGen_FourTierMVExtend(t *testing.T) {
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_mv_extend.hcl"))
+	require.NoError(t, err)
+	require.NoError(t, Resolve(schema))
+
+	out := GenerateSQL(Diff(nil, schema))
+	require.Empty(t, out.Unsafe)
+	require.Len(t, out.Statements, 4)
+	joined := strings.Join(out.Statements, "\n")
+
+	assert.Contains(t, joined, "CREATE TABLE default.events_kafka")
+	assert.Contains(t, joined, "CREATE TABLE default.events_local")
+	assert.Contains(t, joined, "CREATE TABLE default.events_distributed")
+	assert.Contains(t, joined, "CREATE MATERIALIZED VIEW default.events_mv")
+
+	// Every inherited column appears on all four objects (3 tables emit
+	// multi-line CREATE column lists, MV emits inline; assert per-column
+	// count = 4 against the joined output).
+	for _, col := range []string{"timestamp DateTime64(3)", "team_id UInt32", "event String", "properties String CODEC(ZSTD(3))"} {
+		assert.Equal(t, 4, strings.Count(joined, col), "column fragment %q should appear once per object", col)
+	}
+
+	// MV emits the column list inline between TO <table> and AS.
+	assert.Contains(t, joined, "TO events_local (timestamp DateTime64(3), team_id UInt32, event String, properties String CODEC(ZSTD(3))) AS SELECT")
+
+	// db.Cluster cascades to ON CLUSTER on every emitted object.
+	assert.Equal(t, 4, strings.Count(joined, "ON CLUSTER main"))
+
+	// Distributed table is created after the local table it points at;
+	// MV is created after both source (Kafka) and destination (local).
+	localIdx := strings.Index(joined, "CREATE TABLE default.events_local")
+	distIdx := strings.Index(joined, "CREATE TABLE default.events_distributed")
+	mvIdx := strings.Index(joined, "CREATE MATERIALIZED VIEW default.events_mv")
+	kafkaIdx := strings.Index(joined, "CREATE TABLE default.events_kafka")
+	assert.Less(t, localIdx, distIdx, "local must precede Distributed")
+	assert.Less(t, localIdx, mvIdx, "local (MV destination) must precede MV")
+	assert.Less(t, kafkaIdx, mvIdx, "kafka (MV source) must precede MV")
 }
 
 func TestSQLGen_MaterializedViewRecreateUnsafe(t *testing.T) {

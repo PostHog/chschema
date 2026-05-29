@@ -326,3 +326,136 @@ func TestExtractDeclaredColumns(t *testing.T) {
 		})
 	}
 }
+
+// --- MV column validation (heuristic) ----------------------------------
+
+// mvKafkaFixture builds a single-DB schema with a Kafka source table and
+// an MV writing to a (non-existent in v1 fixtures) destination — the
+// destination's existence is checked by the dependency pass, not the
+// column pass, so we declare a stub destination too.
+func mvKafkaFixture(query string, sourceCols ...ColumnSpec) []DatabaseSpec {
+	dest := TableSpec{
+		Name:    "events_local",
+		Columns: sourceCols,
+		Engine:  &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}},
+	}
+	src := TableSpec{
+		Name:    "events_kafka",
+		Columns: sourceCols,
+		Engine: &EngineSpec{Kind: "kafka", Decoded: EngineKafka{
+			BrokerList: ptr("k:9092"), TopicList: ptr("ev"),
+			GroupName: ptr("g"), Format: ptr("JSONEachRow"),
+		}},
+	}
+	mv := MaterializedViewSpec{
+		Name:    "events_mv",
+		ToTable: "events_local",
+		Query:   query,
+	}
+	return []DatabaseSpec{{
+		Name:              "default",
+		Tables:            []TableSpec{src, dest},
+		MaterializedViews: []MaterializedViewSpec{mv},
+	}}
+}
+
+func TestValidate_MVColumn_VirtualRefAccepted(t *testing.T) {
+	dbs := mvKafkaFixture(
+		"SELECT _offset, team_id FROM events_kafka",
+		ColumnSpec{Name: "team_id", Type: "UInt32"},
+	)
+	errs := Validate(dbs, SkipSet{})
+	for _, e := range errs {
+		assert.NotEqual(t, KindMVColumn, e.Kind, "real Kafka virtual must not be flagged: %s", e.Reason)
+	}
+}
+
+func TestValidate_MVColumn_BogusVirtualRefFlagged(t *testing.T) {
+	dbs := mvKafkaFixture(
+		"SELECT _offsett, team_id FROM events_kafka",
+		ColumnSpec{Name: "team_id", Type: "UInt32"},
+	)
+	errs := Validate(dbs, SkipSet{})
+	var mvErr *ValidationError
+	for i := range errs {
+		if errs[i].Kind == KindMVColumn {
+			mvErr = &errs[i]
+		}
+	}
+	require.NotNil(t, mvErr, "typo'd virtual should be flagged")
+	assert.Contains(t, mvErr.Reason, "_offsett")
+	assert.Equal(t, "events_mv", mvErr.Object.Name)
+}
+
+func TestValidate_MVColumn_HeadersDottedRefAccepted(t *testing.T) {
+	dbs := mvKafkaFixture(
+		"SELECT _headers.name, team_id FROM events_kafka",
+		ColumnSpec{Name: "team_id", Type: "UInt32"},
+	)
+	errs := Validate(dbs, SkipSet{})
+	for _, e := range errs {
+		assert.NotEqual(t, KindMVColumn, e.Kind, "_headers.name is a real Kafka virtual: %s", e.Reason)
+	}
+}
+
+func TestValidate_MVColumn_DeclaredColumnNotFlagged(t *testing.T) {
+	// _meta is declared on the source — should pass even though it starts
+	// with `_` and is not a Kafka virtual.
+	dbs := mvKafkaFixture(
+		"SELECT _meta, team_id FROM events_kafka",
+		ColumnSpec{Name: "team_id", Type: "UInt32"},
+		ColumnSpec{Name: "_meta", Type: "String"},
+	)
+	errs := Validate(dbs, SkipSet{})
+	for _, e := range errs {
+		assert.NotEqual(t, KindMVColumn, e.Kind, "declared column must not be flagged: %s", e.Reason)
+	}
+}
+
+func TestValidate_MVColumn_SelectStarSkipped(t *testing.T) {
+	dbs := mvKafkaFixture(
+		"SELECT * FROM events_kafka",
+		ColumnSpec{Name: "team_id", Type: "UInt32"},
+	)
+	errs := Validate(dbs, SkipSet{})
+	for _, e := range errs {
+		assert.NotEqual(t, KindMVColumn, e.Kind, "SELECT * must skip the column check: %s", e.Reason)
+	}
+}
+
+func TestValidate_MVColumn_JoinSkipped(t *testing.T) {
+	// JOIN with second source ⇒ attribution ambiguous ⇒ bail.
+	dbs := mvKafkaFixture(
+		"SELECT _offsett, team_id FROM events_kafka JOIN events_local USING team_id",
+		ColumnSpec{Name: "team_id", Type: "UInt32"},
+	)
+	errs := Validate(dbs, SkipSet{})
+	for _, e := range errs {
+		assert.NotEqual(t, KindMVColumn, e.Kind, "JOIN must skip the column check: %s", e.Reason)
+	}
+}
+
+func TestValidate_MVColumn_AliasNotFlagged(t *testing.T) {
+	// An aliased projection like `countState() AS _agg_count` introduces
+	// the name `_agg_count` — it's an output binding, not a source ref.
+	dbs := mvKafkaFixture(
+		"SELECT countState() AS _agg_count, team_id FROM events_kafka GROUP BY team_id",
+		ColumnSpec{Name: "team_id", Type: "UInt32"},
+	)
+	errs := Validate(dbs, SkipSet{})
+	for _, e := range errs {
+		assert.NotEqual(t, KindMVColumn, e.Kind, "alias name must not be flagged as a source ref: %s", e.Reason)
+	}
+}
+
+func TestValidate_MVColumn_SkipSetWorks(t *testing.T) {
+	dbs := mvKafkaFixture(
+		"SELECT _offsett, team_id FROM events_kafka",
+		ColumnSpec{Name: "team_id", Type: "UInt32"},
+	)
+	skip := ParseSkipSet("events_mv")
+	errs := Validate(dbs, skip)
+	for _, e := range errs {
+		assert.NotEqual(t, KindMVColumn, e.Kind, "skip should suppress mv_column: %s", e.Reason)
+	}
+}
