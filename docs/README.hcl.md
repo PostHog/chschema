@@ -117,9 +117,54 @@ attributes depend on the kind.
 | `distributed`                         | `cluster_name`, `remote_database`, `remote_table`  | `sharding_key`         |
 | `log`                                 | —                                                  | —                      |
 | `kafka`                               | `broker_list = [...]`, `topic`, `consumer_group`, `format` | —              |
+| `time_series` (experimental)          | —                                                  | `settings`, `tags_to_columns`, nested `samples`/`tags`/`metrics` blocks |
 
 Unknown kinds and missing required attributes are rejected at parse time
 with file/line positions.
+
+### `time_series` engine
+
+Models ClickHouse's [TimeSeries](https://clickhouse.com/docs/en/engines/table-engines/special/time_series) engine for Prometheus-style metrics. Three sibling target tables (samples/tags/metrics) are declared via nested sub-blocks; each takes either an external `target = "db.table"` reference or an inline `inner {}` block with column list + nested engine.
+
+```hcl
+table "prom_metrics" {
+  column "metric_name" { type = "LowCardinality(String)" }
+  # ... outer columns ...
+
+  engine "time_series" {
+    settings = {
+      id_generator = "sipHash64(metric_name, all_tags)"
+    }
+    tags_to_columns = {
+      instance = "instance"
+      job      = "job"
+    }
+    samples { target = "default.prom_metrics_data" }
+    tags    { target = "default.prom_metrics_tags" }
+    metrics { target = "default.prom_metrics_metrics" }
+  }
+}
+```
+
+- Each target sub-block is optional. Omitted = CH default inner targets (CH auto-generates them).
+- Exactly one of `target` or `inner` per sub-block.
+- Inner-form engines restricted to MergeTree-family kinds.
+- ALTER-able settings: `id_generator`, `filter_by_min_time_and_max_time`. Every other setting and every target change requires recreating the table (flagged `-- UNSAFE`).
+- HCL authors always write `samples`; the `DATA` alias CH supports is preserved on dump-side only via a `KeywordHint` round-trip.
+
+Inner form for a single target:
+
+```hcl
+samples {
+  inner {
+    column "id"        { type = "UUID" }
+    column "timestamp" { type = "DateTime64(3)" }
+    column "value"     { type = "Float64" }
+    engine "merge_tree" {}
+    order_by = ["id", "timestamp"]
+  }
+}
+```
 
 ## `patch_table`
 

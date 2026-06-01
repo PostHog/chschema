@@ -259,6 +259,55 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 		if len(v.Extra) > 0 {
 			b.SetAttributeValue("extra", stringMap(v.Extra))
 		}
+	case EngineTimeSeries:
+		if len(v.Settings) > 0 {
+			b.SetAttributeValue("settings", stringMap(v.Settings))
+		}
+		if len(v.TagsToColumns) > 0 {
+			b.SetAttributeValue("tags_to_columns", stringMap(v.TagsToColumns))
+		}
+		for _, sub := range []struct {
+			label string
+			t     *TimeSeriesTarget
+		}{
+			{"samples", v.Samples},
+			{"tags", v.Tags},
+			{"metrics", v.Metrics},
+		} {
+			if sub.t == nil {
+				continue
+			}
+			tBlock := b.AppendNewBlock(sub.label, nil)
+			tb := tBlock.Body()
+			if sub.t.Target != nil {
+				tb.SetAttributeValue("target", cty.StringVal(*sub.t.Target))
+				continue
+			}
+			if sub.t.Inner == nil {
+				continue
+			}
+			innerBlock := tb.AppendNewBlock("inner", nil)
+			ib := innerBlock.Body()
+			for _, c := range sub.t.Inner.Columns {
+				colBlock := ib.AppendNewBlock("column", []string{c.Name})
+				colBlock.Body().SetAttributeValue("type", cty.StringVal(c.Type))
+			}
+			if sub.t.Inner.Engine != nil && sub.t.Inner.Engine.Decoded != nil {
+				writeEngine(ib, sub.t.Inner.Engine.Decoded)
+			}
+			if len(sub.t.Inner.PrimaryKey) > 0 {
+				ib.SetAttributeValue("primary_key", stringList(sub.t.Inner.PrimaryKey))
+			}
+			if len(sub.t.Inner.OrderBy) > 0 {
+				ib.SetAttributeValue("order_by", stringList(sub.t.Inner.OrderBy))
+			}
+			if sub.t.Inner.PartitionBy != nil {
+				ib.SetAttributeValue("partition_by", cty.StringVal(*sub.t.Inner.PartitionBy))
+			}
+			if len(sub.t.Inner.Settings) > 0 {
+				ib.SetAttributeValue("settings", stringMap(sub.t.Inner.Settings))
+			}
+		}
 	}
 }
 

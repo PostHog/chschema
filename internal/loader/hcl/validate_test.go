@@ -459,3 +459,68 @@ func TestValidate_MVColumn_SkipSetWorks(t *testing.T) {
 		assert.NotEqual(t, KindMVColumn, e.Kind, "skip should suppress mv_column: %s", e.Reason)
 	}
 }
+
+func TestValidate_TimeSeries_ExternalTargetMustExist(t *testing.T) {
+	tgt := "db.samples_does_not_exist"
+	dbs := []DatabaseSpec{{Name: "db",
+		Tables: []TableSpec{{Name: "m",
+			Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+			Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+				Samples: &TimeSeriesTarget{Target: &tgt},
+			}},
+		}},
+	}}
+	errs := Validate(dbs, SkipSet{})
+	var ferr *ValidationError
+	for i := range errs {
+		if errs[i].Kind == DepTimeSeriesTarget {
+			ferr = &errs[i]
+			break
+		}
+	}
+	require.NotNil(t, ferr, "external TimeSeries target should be flagged")
+	assert.Equal(t, "db.samples_does_not_exist", ferr.Missing.String())
+}
+
+func TestValidate_TimeSeries_InnerTargetNoDependency(t *testing.T) {
+	dbs := []DatabaseSpec{{Name: "db",
+		Tables: []TableSpec{{Name: "m",
+			Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+			Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+				Samples: &TimeSeriesTarget{Inner: &TimeSeriesInnerTable{
+					Columns: []ColumnSpec{{Name: "id", Type: "UUID"}},
+					Engine:  &EngineSpec{Decoded: EngineMergeTree{}},
+				}},
+			}},
+		}},
+	}}
+	errs := Validate(dbs, SkipSet{})
+	for _, e := range errs {
+		assert.NotEqual(t, DepTimeSeriesTarget, e.Kind, "inner-form target should create no dep")
+	}
+}
+
+func TestValidate_TimeSeries_AllTargetsExist_OK(t *testing.T) {
+	tgtData := "db.m_data"
+	tgtTags := "db.m_tags"
+	tgtMetrics := "db.m_metrics"
+	dbs := []DatabaseSpec{{Name: "db",
+		Tables: []TableSpec{
+			{Name: "m",
+				Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+				Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+					Samples: &TimeSeriesTarget{Target: &tgtData},
+					Tags:    &TimeSeriesTarget{Target: &tgtTags},
+					Metrics: &TimeSeriesTarget{Target: &tgtMetrics},
+				}},
+			},
+			{Name: "m_data", Engine: &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}}},
+			{Name: "m_tags", Engine: &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}}},
+			{Name: "m_metrics", Engine: &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}}},
+		},
+	}}
+	errs := Validate(dbs, SkipSet{})
+	for _, e := range errs {
+		assert.NotEqual(t, DepTimeSeriesTarget, e.Kind, "all targets exist; no errors expected: %s", e.Reason)
+	}
+}

@@ -608,6 +608,34 @@ func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 		}
 	}
 
+	// TimeSeries gets a smarter engine-diff path: changes to two specific
+	// SETTINGS (id_generator, filter_by_min_time_and_max_time) are
+	// ALTER-able in CH; everything else (other settings, target swaps,
+	// tags_to_columns) is a recreate. This split lets the user evolve the
+	// two alterable settings without losing the table.
+	if fromTS, fromOK := engineOf(*from).(EngineTimeSeries); fromOK {
+		if toTS, toOK := engineOf(*to).(EngineTimeSeries); toOK {
+			diffTimeSeries(&td, from.Engine, to.Engine, fromTS, toTS)
+			td.OrderByChange = diffStringSlice(from.OrderBy, to.OrderBy)
+			td.PartitionByChange = diffStringPtr(from.PartitionBy, to.PartitionBy)
+			td.SampleByChange = diffStringPtr(from.SampleBy, to.SampleBy)
+			td.TTLChange = diffStringPtr(from.TTL, to.TTL)
+			// Merge in table-level Settings (independent of engine settings
+			// on TimeSeries). We append rather than overwrite so the engine
+			// settings populated by diffTimeSeries above aren't dropped.
+			added, removed, changed := diffSettings(from.Settings, to.Settings)
+			for k, v := range added {
+				if td.SettingsAdded == nil {
+					td.SettingsAdded = map[string]string{}
+				}
+				td.SettingsAdded[k] = v
+			}
+			td.SettingsRemoved = append(td.SettingsRemoved, removed...)
+			td.SettingsChanged = append(td.SettingsChanged, changed...)
+			return td
+		}
+	}
+
 	td.EngineChange = diffEngine(from.Engine, to.Engine)
 	td.OrderByChange = diffStringSlice(from.OrderBy, to.OrderBy)
 	td.PartitionByChange = diffStringPtr(from.PartitionBy, to.PartitionBy)
@@ -620,6 +648,64 @@ func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 	td.SettingsChanged = changed
 
 	return td
+}
+
+// timeSeriesAlterableSettings names the SETTINGS keys CH supports via
+// ALTER TABLE ... MODIFY SETTING on a TimeSeries table.
+var timeSeriesAlterableSettings = map[string]bool{
+	"id_generator":                    true,
+	"filter_by_min_time_and_max_time": true,
+}
+
+// diffTimeSeries fills td.SettingsAdded/Removed/Changed for the two
+// ALTER-able TimeSeries settings, and marks the rest of the engine diff
+// as a recreate via EngineChange.
+func diffTimeSeries(td *TableDiff, fromSpec, toSpec *EngineSpec, from, to EngineTimeSeries) {
+	bakedDiffers := false
+	for k, vNew := range to.Settings {
+		vOld, ok := from.Settings[k]
+		if !ok {
+			if timeSeriesAlterableSettings[k] {
+				if td.SettingsAdded == nil {
+					td.SettingsAdded = map[string]string{}
+				}
+				td.SettingsAdded[k] = vNew
+			} else {
+				bakedDiffers = true
+			}
+			continue
+		}
+		if vOld != vNew {
+			if timeSeriesAlterableSettings[k] {
+				td.SettingsChanged = append(td.SettingsChanged, SettingChange{Key: k, OldValue: vOld, NewValue: vNew})
+			} else {
+				bakedDiffers = true
+			}
+		}
+	}
+	for k := range from.Settings {
+		if _, ok := to.Settings[k]; ok {
+			continue
+		}
+		if timeSeriesAlterableSettings[k] {
+			td.SettingsRemoved = append(td.SettingsRemoved, k)
+		} else {
+			bakedDiffers = true
+		}
+	}
+
+	if !reflect.DeepEqual(from.TagsToColumns, to.TagsToColumns) {
+		bakedDiffers = true
+	}
+	if !reflect.DeepEqual(from.Samples, to.Samples) ||
+		!reflect.DeepEqual(from.Tags, to.Tags) ||
+		!reflect.DeepEqual(from.Metrics, to.Metrics) {
+		bakedDiffers = true
+	}
+
+	if bakedDiffers {
+		td.EngineChange = &EngineChange{Old: from, New: to}
+	}
 }
 
 func indexColumns(cols []ColumnSpec) map[string]*ColumnSpec {

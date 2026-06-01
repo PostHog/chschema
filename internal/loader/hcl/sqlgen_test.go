@@ -800,3 +800,83 @@ func TestSQLGen_Engine_ReplicatedSummingMergeTree(t *testing.T) {
 		assert.Nil(t, extra)
 	})
 }
+
+func TestSQLGen_TimeSeries_External_DataAlias(t *testing.T) {
+	tgtData := "default.m_data"
+	tgtTags := "default.m_tags"
+	tgtMetrics := "default.m_metrics"
+	ts := TableSpec{Name: "m",
+		Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+		Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+			Samples:     &TimeSeriesTarget{Target: &tgtData},
+			Tags:        &TimeSeriesTarget{Target: &tgtTags},
+			Metrics:     &TimeSeriesTarget{Target: &tgtMetrics},
+			KeywordHint: "DATA",
+		}},
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "default", AddTables: []TableSpec{ts},
+	}}})
+	require.Len(t, out.Statements, 1)
+	stmt := out.Statements[0]
+	assert.Contains(t, stmt, "ENGINE = TimeSeries")
+	assert.Contains(t, stmt, "DATA default.m_data")
+	assert.Contains(t, stmt, "TAGS default.m_tags")
+	assert.Contains(t, stmt, "METRICS default.m_metrics")
+	assert.NotContains(t, stmt, "SAMPLES")
+}
+
+func TestSQLGen_TimeSeries_External_DefaultsToSamplesKeyword(t *testing.T) {
+	tgt := "default.m_data"
+	ts := TableSpec{Name: "m",
+		Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+		Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+			Samples: &TimeSeriesTarget{Target: &tgt},
+		}},
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "default", AddTables: []TableSpec{ts},
+	}}})
+	stmt := out.Statements[0]
+	assert.Contains(t, stmt, "SAMPLES default.m_data")
+	assert.NotContains(t, stmt, "DATA default.m_data")
+}
+
+func TestSQLGen_TimeSeries_Inner(t *testing.T) {
+	inner := &TimeSeriesInnerTable{
+		Columns: []ColumnSpec{
+			{Name: "id", Type: "UUID"},
+			{Name: "timestamp", Type: "DateTime64(3)"},
+			{Name: "value", Type: "Float64"},
+		},
+		Engine:  &EngineSpec{Decoded: EngineMergeTree{}},
+		OrderBy: []string{"id", "timestamp"},
+	}
+	ts := TableSpec{Name: "m",
+		Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+		Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+			Samples: &TimeSeriesTarget{Inner: inner},
+		}},
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "default", AddTables: []TableSpec{ts},
+	}}})
+	stmt := out.Statements[0]
+	assert.Contains(t, stmt, "SAMPLES INNER COLUMNS (id UUID, timestamp DateTime64(3), value Float64)")
+	assert.Contains(t, stmt, "SAMPLES INNER ENGINE = MergeTree()")
+	assert.Contains(t, stmt, "ORDER BY (id, timestamp)")
+}
+
+func TestSQLGen_TimeSeries_TagsToColumnsFolded(t *testing.T) {
+	ts := TableSpec{Name: "m",
+		Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+		Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+			TagsToColumns: map[string]string{"instance": "instance", "job": "job"},
+		}},
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "default", AddTables: []TableSpec{ts},
+	}}})
+	stmt := out.Statements[0]
+	assert.Contains(t, stmt, "tags_to_columns = {'instance':'instance', 'job':'job'}")
+}
