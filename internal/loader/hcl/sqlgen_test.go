@@ -880,3 +880,56 @@ func TestSQLGen_TimeSeries_TagsToColumnsFolded(t *testing.T) {
 	stmt := out.Statements[0]
 	assert.Contains(t, stmt, "tags_to_columns = {'instance':'instance', 'job':'job'}")
 }
+
+func TestSQLGen_Buffer_BareArgs(t *testing.T) {
+	ts := TableSpec{Name: "buf",
+		Columns: []ColumnSpec{{Name: "id", Type: "UUID"}},
+		Engine: &EngineSpec{Kind: "buffer", Decoded: EngineBuffer{
+			Database: "", Table: "dest", NumLayers: 16,
+			MinTime: 10, MaxTime: 100,
+			MinRows: 10000, MaxRows: 1000000,
+			MinBytes: 10000000, MaxBytes: 100000000,
+		}},
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "default", AddTables: []TableSpec{ts},
+	}}})
+	assert.Contains(t, out.Statements[0], "ENGINE = Buffer('', 'dest', 16, 10, 100, 10000, 1000000, 10000000, 100000000)")
+}
+
+func TestSQLGen_Buffer_WithFlushTriplet(t *testing.T) {
+	ft, fr, fb := int64(30), int64(200), int64(50000)
+	ts := TableSpec{Name: "buf",
+		Columns: []ColumnSpec{{Name: "id", Type: "UUID"}},
+		Engine: &EngineSpec{Kind: "buffer", Decoded: EngineBuffer{
+			Database: "default", Table: "dest", NumLayers: 1,
+			MinTime: 5, MaxTime: 60, MinRows: 100, MaxRows: 10000,
+			MinBytes: 1000, MaxBytes: 100000,
+			FlushTime: &ft, FlushRows: &fr, FlushBytes: &fb,
+		}},
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "default", AddTables: []TableSpec{ts},
+	}}})
+	assert.Contains(t, out.Statements[0], "Buffer('default', 'dest', 1, 5, 60, 100, 10000, 1000, 100000, 30, 200, 50000)")
+}
+
+func TestSQLGen_Null_Memory_Merge(t *testing.T) {
+	for _, c := range []struct {
+		dec    Engine
+		expect string
+	}{
+		{EngineNull{}, "ENGINE = Null()"},
+		{EngineMemory{}, "ENGINE = Memory()"},
+		{EngineMerge{DBRegex: "default", TableRegex: "^shard_.*"}, "ENGINE = Merge('default', '^shard_.*')"},
+	} {
+		ts := TableSpec{Name: "t",
+			Columns: []ColumnSpec{{Name: "id", Type: "UUID"}},
+			Engine:  &EngineSpec{Kind: c.dec.Kind(), Decoded: c.dec},
+		}
+		out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+			Database: "default", AddTables: []TableSpec{ts},
+		}}})
+		assert.Contains(t, out.Statements[0], c.expect)
+	}
+}

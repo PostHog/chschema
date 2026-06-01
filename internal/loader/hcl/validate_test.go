@@ -524,3 +524,47 @@ func TestValidate_TimeSeries_AllTargetsExist_OK(t *testing.T) {
 		assert.NotEqual(t, DepTimeSeriesTarget, e.Kind, "all targets exist; no errors expected: %s", e.Reason)
 	}
 }
+
+func TestValidate_Buffer_DestMustExist(t *testing.T) {
+	dbs := []DatabaseSpec{{Name: "db",
+		Tables: []TableSpec{{Name: "buf",
+			Columns: []ColumnSpec{{Name: "id", Type: "UUID"}},
+			Engine: &EngineSpec{Kind: "buffer", Decoded: EngineBuffer{
+				Database: "", Table: "missing_dest",
+				NumLayers: 1, MinTime: 1, MaxTime: 10,
+				MinRows: 1, MaxRows: 10, MinBytes: 1, MaxBytes: 10,
+			}},
+		}},
+	}}
+	errs := Validate(dbs, SkipSet{})
+	var ferr *ValidationError
+	for i := range errs {
+		if errs[i].Kind == DepBufferDestination {
+			ferr = &errs[i]
+		}
+	}
+	require.NotNil(t, ferr, "Buffer should require its destination table")
+	assert.Equal(t, "db.missing_dest", ferr.Missing.String())
+}
+
+func TestValidate_Buffer_DestExists_OK(t *testing.T) {
+	dbs := []DatabaseSpec{{Name: "db",
+		Tables: []TableSpec{
+			{Name: "buf",
+				Columns: []ColumnSpec{{Name: "id", Type: "UUID"}},
+				Engine: &EngineSpec{Kind: "buffer", Decoded: EngineBuffer{
+					Database: "", Table: "dest",
+					NumLayers: 1, MinTime: 1, MaxTime: 10,
+					MinRows: 1, MaxRows: 10, MinBytes: 1, MaxBytes: 10,
+				}},
+			},
+			{Name: "dest",
+				Engine: &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}},
+			},
+		},
+	}}
+	errs := Validate(dbs, SkipSet{})
+	for _, e := range errs {
+		assert.NotEqual(t, DepBufferDestination, e.Kind, "dest exists; no error: %s", e.Reason)
+	}
+}

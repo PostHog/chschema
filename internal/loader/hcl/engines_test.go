@@ -74,6 +74,27 @@ func TestParseFile_AllEngineKinds(t *testing.T) {
 
 	assert.Equal(t, EngineLog{}, byName["t_log"])
 
+	assert.Equal(t, EngineNull{}, byName["t_null"])
+	assert.Equal(t, EngineMemory{}, byName["t_memory"])
+	assert.Equal(t, EngineMerge{
+		DBRegex:    "default",
+		TableRegex: "^shard_.*",
+	}, byName["t_merge"])
+
+	flushTime := int64(30)
+	assert.Equal(t, EngineBuffer{
+		Database:  "",
+		Table:     "t_merge_tree",
+		NumLayers: 16,
+		MinTime:   10,
+		MaxTime:   100,
+		MinRows:   10000,
+		MaxRows:   1000000,
+		MinBytes:  10000000,
+		MaxBytes:  100000000,
+		FlushTime: &flushTime,
+	}, byName["t_buffer"])
+
 	assert.Equal(t, EngineKafka{
 		BrokerList: ptr("kafka:9092"),
 		TopicList:  ptr("events"),
@@ -146,6 +167,10 @@ func TestEngine_KindMethods(t *testing.T) {
 		{EngineLog{}, "log"},
 		{EngineKafka{}, "kafka"},
 		{EngineTimeSeries{}, "time_series"},
+		{EngineNull{}, "null"},
+		{EngineMemory{}, "memory"},
+		{EngineMerge{}, "merge"},
+		{EngineBuffer{}, "buffer"},
 	}
 	for _, c := range cases {
 		assert.Equal(t, c.want, c.engine.Kind())

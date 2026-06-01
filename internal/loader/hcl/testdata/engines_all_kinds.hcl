@@ -98,6 +98,40 @@ database "posthog" {
     }
   }
 
+  table "t_null" {
+    column "id" { type = "UUID" }
+    engine "null" {}
+  }
+
+  table "t_memory" {
+    column "id" { type = "UUID" }
+    engine "memory" {}
+  }
+
+  table "t_merge" {
+    column "id" { type = "UUID" }
+    engine "merge" {
+      db_regex    = "default"
+      table_regex = "^shard_.*"
+    }
+  }
+
+  table "t_buffer" {
+    column "id" { type = "UUID" }
+    engine "buffer" {
+      database    = ""
+      table       = "t_merge_tree"
+      num_layers  = 16
+      min_time    = 10
+      max_time    = 100
+      min_rows    = 10000
+      max_rows    = 1000000
+      min_bytes   = 10000000
+      max_bytes   = 100000000
+      flush_time  = 30
+    }
+  }
+
   table "t_time_series" {
     column "metric_name" { type = "LowCardinality(String)" }
     engine "time_series" {

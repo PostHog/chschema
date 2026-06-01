@@ -14,6 +14,7 @@ const (
 	DepMVDest            = "mv_dest"            // a materialized view writes into this table
 	DepDistributedRemote = "distributed_remote" // a Distributed table forwards to this table
 	DepTimeSeriesTarget  = "ts_target"          // a TimeSeries table references an external samples/tags/metrics target
+	DepBufferDestination = "buffer_dest"        // a Buffer table forwards writes into this table
 	DepViewSource        = "view_source"        // a plain view reads from this table
 
 	// KindMVColumn flags a materialized view that references a column its
@@ -154,6 +155,19 @@ func CollectDependencies(dbs []DatabaseSpec) ([]Dependency, error) {
 						Kind: DepTimeSeriesTarget,
 					})
 				}
+			case EngineBuffer:
+				// Buffer forwards writes to (database, table). Empty
+				// database means current — defaults to the buffer's own
+				// database (matches CH's currentDatabase() semantic).
+				destDB := eng.Database
+				if destDB == "" {
+					destDB = db.Name
+				}
+				deps = append(deps, Dependency{
+					From: ObjectRef{Database: db.Name, Name: t.Name},
+					To:   ObjectRef{Database: destDB, Name: eng.Table},
+					Kind: DepBufferDestination,
+				})
 			}
 		}
 
@@ -750,6 +764,8 @@ func depPhrase(kind string) string {
 		return "view source table"
 	case DepTimeSeriesTarget:
 		return "TimeSeries target table"
+	case DepBufferDestination:
+		return "Buffer destination table"
 	default:
 		return "dependency"
 	}

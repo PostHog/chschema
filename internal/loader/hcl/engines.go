@@ -93,6 +93,52 @@ type EngineLog struct{}
 
 func (EngineLog) Kind() string { return "log" }
 
+// EngineNull discards every write. Often used as a MV source that fans
+// out into multiple downstream MVs without storing rows itself.
+type EngineNull struct{}
+
+func (EngineNull) Kind() string { return "null" }
+
+// EngineMemory holds rows in RAM; non-durable, lost on restart. Common
+// in test pipelines and short-lived staging tables.
+type EngineMemory struct{}
+
+func (EngineMemory) Kind() string { return "memory" }
+
+// EngineMerge is a read-only union over multiple physical tables matched
+// by regex. CH syntax: Merge(db_regex, table_regex).
+type EngineMerge struct {
+	DBRegex    string `hcl:"db_regex"`
+	TableRegex string `hcl:"table_regex"`
+}
+
+func (EngineMerge) Kind() string { return "merge" }
+
+// EngineBuffer wraps another table with an in-memory write buffer that
+// flushes periodically based on time/row/byte thresholds. CH syntax:
+//
+//	Buffer(database, table, num_layers, min_time, max_time, min_rows, max_rows, min_bytes, max_bytes [, flush_time [, flush_rows [, flush_bytes]]])
+//
+// The optional flush_* triplet is captured as pointers; nil = not set
+// (CH defaults apply).
+type EngineBuffer struct {
+	Database  string `hcl:"database"`
+	Table     string `hcl:"table"`
+	NumLayers int64  `hcl:"num_layers"`
+	MinTime   int64  `hcl:"min_time"`
+	MaxTime   int64  `hcl:"max_time"`
+	MinRows   int64  `hcl:"min_rows"`
+	MaxRows   int64  `hcl:"max_rows"`
+	MinBytes  int64  `hcl:"min_bytes"`
+	MaxBytes  int64  `hcl:"max_bytes"`
+
+	FlushTime  *int64 `hcl:"flush_time,optional"`
+	FlushRows  *int64 `hcl:"flush_rows,optional"`
+	FlushBytes *int64 `hcl:"flush_bytes,optional"`
+}
+
+func (EngineBuffer) Kind() string { return "buffer" }
+
 type EngineKafka struct {
 	// Collection is the named-collection reference. Mutually exclusive
 	// with every other field; when set, no inline setting may be set.
@@ -384,6 +430,22 @@ func DecodeEngine(spec *EngineSpec) (Engine, error) {
 		target = e
 	case "log":
 		var e EngineLog
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
+	case "null":
+		var e EngineNull
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
+	case "memory":
+		var e EngineMemory
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
+	case "merge":
+		var e EngineMerge
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
+	case "buffer":
+		var e EngineBuffer
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
 	case "kafka":
