@@ -3,10 +3,10 @@ module github.com/posthog/chschema
 go 1.25
 
 require (
-	github.com/AfterShip/clickhouse-sql-parser v0.5.1
 	github.com/ClickHouse/clickhouse-go/v2 v2.40.3
 	github.com/google/go-cmp v0.7.0
 	github.com/hashicorp/hcl/v2 v2.24.0
+	github.com/orian/clickhouse-sql-parser v0.0.0-20260601143443-2d5bbc5ac581
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1
 	github.com/zclconf/go-cty v1.16.3
@@ -46,5 +46,3 @@ require (
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
-
-replace github.com/AfterShip/clickhouse-sql-parser => github.com/orian/clickhouse-sql-parser v0.0.0-20260601104648-4521cd37e69b

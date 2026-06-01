@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	chparser "github.com/AfterShip/clickhouse-sql-parser/parser"
+	chparser "github.com/orian/clickhouse-sql-parser/parser"
 )
 
 // buildDictionaryFromCreateSQL parses a CREATE DICTIONARY statement and

@@ -5,7 +5,7 @@ import (
 	"sort"
 	"strings"
 
-	chparser "github.com/AfterShip/clickhouse-sql-parser/parser"
+	chparser "github.com/orian/clickhouse-sql-parser/parser"
 )
 
 // Dependency kinds.

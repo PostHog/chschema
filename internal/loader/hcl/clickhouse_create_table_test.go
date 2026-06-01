@@ -47,8 +47,8 @@ type createTableCase struct {
 	wantContains []string
 	skipLive     bool
 	// skipIntrospect skips the case in the round-trip introspection test
-	// when the upstream ClickHouse SQL parser (AfterShip/clickhouse-sql-parser
-	// v0.5.1) can't parse the create_table_query CH produces. Currently:
+	// when the upstream ClickHouse SQL parser (orian/clickhouse-sql-parser)
+	// can't parse the create_table_query CH produces. Currently:
 	// bare EPHEMERAL (no expression) and CONSTRAINT … ASSUME.
 	skipIntrospect bool
 }

@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	chparser "github.com/AfterShip/clickhouse-sql-parser/parser"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	chparser "github.com/orian/clickhouse-sql-parser/parser"
 )
 
 // IntrospectNamedCollections returns every named collection the live
