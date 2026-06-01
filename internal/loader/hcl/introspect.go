@@ -8,8 +8,8 @@ import (
 	"strconv"
 	"strings"
 
-	chparser "github.com/AfterShip/clickhouse-sql-parser/parser"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
+	chparser "github.com/orian/clickhouse-sql-parser/parser"
 )
 
 // rowScanner is the minimal subset of driver.Rows used by the introspection
@@ -27,7 +27,7 @@ type rowScanner interface {
 // the declaration order ClickHouse reports.
 //
 // The function reads `create_table_query` for each table and parses it with
-// a ClickHouse SQL parser (AfterShip/clickhouse-sql-parser). All
+// a ClickHouse SQL parser (orian/clickhouse-sql-parser). All
 // per-table data is derived from that AST: columns (including TTL, CODEC,
 // default/materialized/ephemeral/alias, comment), indexes, constraints,
 // engine, ORDER BY, PARTITION BY, SAMPLE BY, table TTL, SETTINGS, and
