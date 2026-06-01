@@ -887,3 +887,95 @@ func TestDiff_VirtualColumnGuard_DistributedTransitive(t *testing.T) {
 	cs := Diff(from, to)
 	assert.True(t, cs.IsEmpty(), "transitive virtual leak should not surface as a DROP on Distributed")
 }
+
+func TestDiff_TimeSeries_IdGeneratorChange_ALTERed(t *testing.T) {
+	mk := func(idGen string) *Schema {
+		return &Schema{Databases: []DatabaseSpec{{
+			Name: "db",
+			Tables: []TableSpec{{Name: "m",
+				Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+				Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+					Settings: map[string]string{"id_generator": idGen},
+				}},
+			}},
+		}}}
+	}
+	cs := Diff(mk("sipHash64(metric_name)"), mk("sipHash64(metric_name, all_tags)"))
+	require.Len(t, cs.Databases, 1)
+	require.Len(t, cs.Databases[0].AlterTables, 1)
+	td := cs.Databases[0].AlterTables[0]
+	require.Len(t, td.SettingsChanged, 1)
+	assert.Equal(t, "id_generator", td.SettingsChanged[0].Key)
+	assert.False(t, td.IsUnsafe(), "id_generator change is in-place")
+}
+
+func TestDiff_TimeSeries_BakedSettingChange_Recreate(t *testing.T) {
+	mk := func(val string) *Schema {
+		return &Schema{Databases: []DatabaseSpec{{
+			Name: "db",
+			Tables: []TableSpec{{Name: "m",
+				Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+				Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+					Settings: map[string]string{"store_min_time_and_max_time": val},
+				}},
+			}},
+		}}}
+	}
+	cs := Diff(mk("0"), mk("1"))
+	require.Len(t, cs.Databases, 1)
+	require.Len(t, cs.Databases[0].AlterTables, 1)
+	td := cs.Databases[0].AlterTables[0]
+	assert.True(t, td.IsUnsafe(), "non-alterable setting change should be recreate")
+}
+
+func TestDiff_TimeSeries_TargetChange_Recreate(t *testing.T) {
+	mk := func(target string) *Schema {
+		return &Schema{Databases: []DatabaseSpec{{
+			Name: "db",
+			Tables: []TableSpec{{Name: "m",
+				Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+				Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+					Samples: &TimeSeriesTarget{Target: &target},
+				}},
+			}},
+		}}}
+	}
+	cs := Diff(mk("db.old"), mk("db.new"))
+	require.Len(t, cs.Databases, 1)
+	require.Len(t, cs.Databases[0].AlterTables, 1)
+	assert.True(t, cs.Databases[0].AlterTables[0].IsUnsafe())
+}
+
+func TestDiff_TimeSeries_TagsToColumnsChange_Recreate(t *testing.T) {
+	mk := func(m map[string]string) *Schema {
+		return &Schema{Databases: []DatabaseSpec{{
+			Name: "db",
+			Tables: []TableSpec{{Name: "m",
+				Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+				Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+					TagsToColumns: m,
+				}},
+			}},
+		}}}
+	}
+	cs := Diff(mk(map[string]string{"instance": "instance"}), mk(map[string]string{"instance": "instance", "job": "job"}))
+	td := cs.Databases[0].AlterTables[0]
+	assert.True(t, td.IsUnsafe())
+}
+
+func TestDiff_TimeSeries_NoChange(t *testing.T) {
+	tgt := "db.m_data"
+	mk := func() *Schema {
+		return &Schema{Databases: []DatabaseSpec{{
+			Name: "db",
+			Tables: []TableSpec{{Name: "m",
+				Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+				Engine: &EngineSpec{Kind: "time_series", Decoded: EngineTimeSeries{
+					Samples: &TimeSeriesTarget{Target: &tgt},
+				}},
+			}},
+		}}}
+	}
+	cs := Diff(mk(), mk())
+	assert.True(t, cs.IsEmpty(), "no change should produce empty diff")
+}
