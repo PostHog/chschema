@@ -212,6 +212,23 @@ func resolveDatabase(db *DatabaseSpec) error {
 		}
 	}
 
+	// MV resolution must happen BEFORE the abstract-table drop below, so
+	// abstract parents are still present in db.Tables / indexByName when
+	// each extending MV looks them up.
+	mvIndex := make(map[string]bool, len(db.MaterializedViews))
+	for i := range db.MaterializedViews {
+		name := db.MaterializedViews[i].Name
+		if mvIndex[name] {
+			return fmt.Errorf("%s: duplicate materialized_view %q", db.Name, name)
+		}
+		mvIndex[name] = true
+	}
+	for i := range db.MaterializedViews {
+		if err := resolveMaterializedView(db, i, indexByName, mvIndex); err != nil {
+			return err
+		}
+	}
+
 	kept := db.Tables[:0]
 	for _, t := range db.Tables {
 		if !t.Abstract {
@@ -220,14 +237,28 @@ func resolveDatabase(db *DatabaseSpec) error {
 	}
 	db.Tables = kept
 
-	// Cascade the database-level cluster default into each table that
-	// hasn't set its own. Done after abstracts are dropped so we never
-	// touch tables that won't be emitted.
+	keptMVs := db.MaterializedViews[:0]
+	for _, mv := range db.MaterializedViews {
+		if !mv.Abstract {
+			keptMVs = append(keptMVs, mv)
+		}
+	}
+	db.MaterializedViews = keptMVs
+
+	// Cascade the database-level cluster default into each table and MV
+	// that hasn't set its own. Done after abstracts are dropped so we
+	// never touch objects that won't be emitted.
 	if db.Cluster != nil {
 		for i := range db.Tables {
 			if db.Tables[i].Cluster == nil {
 				v := *db.Cluster
 				db.Tables[i].Cluster = &v
+			}
+		}
+		for i := range db.MaterializedViews {
+			if db.MaterializedViews[i].Cluster == nil {
+				v := *db.Cluster
+				db.MaterializedViews[i].Cluster = &v
 			}
 		}
 	}
@@ -241,6 +272,14 @@ func resolveDatabase(db *DatabaseSpec) error {
 		}
 		if err := validateConstraints(db.Name, t); err != nil {
 			return err
+		}
+	}
+	for _, mv := range db.MaterializedViews {
+		if mv.ToTable == "" {
+			return fmt.Errorf("%s.%s: materialized_view requires to_table", db.Name, mv.Name)
+		}
+		if mv.Query == "" {
+			return fmt.Errorf("%s.%s: materialized_view requires query", db.Name, mv.Name)
 		}
 	}
 	return nil
@@ -321,6 +360,56 @@ func resolveTable(db *DatabaseSpec, idx int, indexByName map[string]int, resolve
 	}
 	t.Extend = nil
 	resolved[t.Name] = true
+	return nil
+}
+
+// resolveMaterializedView merges an MV's `extend` parent (an abstract
+// table) into the MV. Only column/cluster/comment flow from the parent;
+// engine, order_by, etc. are table-only concepts. Must run before
+// abstract tables are dropped from db.Tables.
+func resolveMaterializedView(db *DatabaseSpec, idx int, tableIndex map[string]int, mvIndex map[string]bool) error {
+	mv := &db.MaterializedViews[idx]
+	if mv.Extend == nil {
+		return nil
+	}
+	parentName := *mv.Extend
+	if mvIndex[parentName] {
+		return fmt.Errorf("%s.%s: materialized_view cannot extend another materialized_view %q (extend an abstract table instead)", db.Name, mv.Name, parentName)
+	}
+	parentIdx, ok := tableIndex[parentName]
+	if !ok {
+		return fmt.Errorf("%s.%s: extend references unknown table %q", db.Name, mv.Name, parentName)
+	}
+	parent := &db.Tables[parentIdx]
+	if !parent.Abstract {
+		return fmt.Errorf("%s.%s: extend target %q must be an abstract table", db.Name, mv.Name, parentName)
+	}
+
+	if len(parent.Columns) > 0 || len(mv.Columns) > 0 {
+		merged := make([]ColumnSpec, 0, len(parent.Columns)+len(mv.Columns))
+		seen := make(map[string]bool, len(parent.Columns)+len(mv.Columns))
+		for _, c := range parent.Columns {
+			seen[c.Name] = true
+			merged = append(merged, c)
+		}
+		for _, c := range mv.Columns {
+			if seen[c.Name] {
+				return fmt.Errorf("%s.%s: column %q collides with inherited column", db.Name, mv.Name, c.Name)
+			}
+			seen[c.Name] = true
+			merged = append(merged, c)
+		}
+		mv.Columns = merged
+	}
+	if mv.Cluster == nil && parent.Cluster != nil {
+		v := *parent.Cluster
+		mv.Cluster = &v
+	}
+	if mv.Comment == nil && parent.Comment != nil {
+		v := *parent.Comment
+		mv.Comment = &v
+	}
+	mv.Extend = nil
 	return nil
 }
 

@@ -171,6 +171,49 @@ table "events_local"       { extend = "_event_base"; engine "merge_tree" {}; ...
 table "events_distributed" { extend = "_event_base"; engine "distributed" { ... } }
 ```
 
+### Inheritance on `materialized_view`
+
+A `materialized_view` may also `extend` an `abstract = true` table. The MV
+inherits the parent's `column` list (and `cluster` / `comment` if it
+hasn't set its own). Engine, `order_by`, etc. are table-only and not
+inherited. Extending a concrete (non-abstract) table or another MV is an
+error.
+
+When to reach for it: an MV that **declares its own output shape** — most
+commonly an aggregating MV whose `AggregateFunction(...)` columns must
+agree with the destination table. The destination and the MV share one
+base, the source table does not.
+
+```hcl
+table "team_metrics_base" {
+  abstract = true
+  column "hour"         { type = "DateTime" }
+  column "team_id"      { type = "UInt32" }
+  column "events"       { type = "AggregateFunction(count, UInt64)" }
+}
+
+table "team_metrics" {
+  extend = "team_metrics_base"
+  engine "aggregating_merge_tree" {}
+  order_by = ["hour", "team_id"]
+}
+
+materialized_view "team_metrics_mv" {
+  extend   = "team_metrics_base"
+  to_table = "team_metrics"
+  query    = "SELECT toStartOfHour(timestamp) AS hour, team_id, countState() AS events FROM events_kafka GROUP BY hour, team_id"
+}
+```
+
+For a passthrough MV that just mirrors columns from source to destination,
+omit both the column list and `extend` — ClickHouse derives the MV's
+schema from the `SELECT`. See the FAQ for the full worked passthrough vs.
+aggregating comparison.
+
+An `abstract = true` materialized_view is accepted for symmetry (it is
+dropped after resolution, like an abstract table), but has no common use
+case — MVs are usually concrete glue.
+
 ## Resolution pipeline
 
 When the loader processes a layered set, this pipeline runs:
@@ -259,6 +302,46 @@ requires drop-and-recreate and is flagged unsafe.
 
 **Not supported.** Live views, refreshable materialized views, and window
 views fail introspection with a clear error.
+
+## Virtual columns
+
+ClickHouse exposes implicit columns on tables of certain engines — names
+like `_part` on MergeTree, `_offset`/`_timestamp` on Kafka, `_shard_num`
+on Distributed. `hclexp` knows about them per engine:
+
+| Engine                | Virtual columns                                                                                       |
+| --------------------- | ----------------------------------------------------------------------------------------------------- |
+| MergeTree family      | `_part`, `_part_index`, `_part_uuid`, `_partition_id`, `_partition_value`, `_sample_factor`, `_part_offset` |
+| Kafka                 | `_topic`, `_key`, `_offset`, `_partition`, `_timestamp`, `_timestamp_ms`, `_headers.name`, `_headers.value` (+`_raw_message`, `_error` when `handle_error_mode = "stream"`) |
+| Distributed           | `_shard_num`, **plus the virtuals of its remote table** (transitive; chains and cycles handled)        |
+| Log, all others       | none                                                                                                  |
+
+This awareness shows up in three places:
+
+1. **MV source-column validation** (`hclexp validate`). When a materialized
+   view's `query` has a single resolvable source (no JOIN/UNION/CTE/
+   subquery/`SELECT *`), the validator walks identifier references whose
+   names begin with `_` and flags any that aren't provided by the source —
+   declared columns plus the engine's virtual set. A bare `_offsett` on a
+   Kafka source is flagged; a legitimate `_offset`/`_timestamp` /
+   `_headers.name` passes. Skip per-MV with `-skip-validation=<mv-name>`.
+
+2. **Diff guard** (`hclexp diff`). A column name recognised as virtual on
+   one side is suppressed from ADD/DROP DDL only when the other side has
+   not declared it — preventing CH-illegal `DROP COLUMN _offset` from a
+   stray introspector leak, while still surfacing `MODIFY COLUMN` when
+   both sides explicitly declared the column (the `_key FixedString(8)`
+   case from `kafka_map_virtual_columns_on_write`).
+
+3. **Schema-as-source-of-truth**. A user can declare a column whose name
+   matches a virtual (e.g. `column "_key" { type = "FixedString(8)" }` on
+   a Kafka table) — the declared definition wins over the virtual at
+   every consumer site.
+
+Out of scope in v1: MergeTree's version-gated virtuals (`_block_number`,
+`_block_offset`, `_row_exists`) — these depend on ClickHouse version /
+table settings (lightweight deletes) and would risk false positives on
+older deployments. Declare them explicitly in HCL when you need them.
 
 ## TLS / secure connections
 

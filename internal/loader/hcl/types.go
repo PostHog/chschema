@@ -15,8 +15,9 @@ type DatabaseSpec struct {
 	Patches []PatchTableSpec `hcl:"patch_table,block" diff:"-"`
 
 	// MaterializedViews are a sibling collection to Tables, not a flavored
-	// TableSpec. MVs do not participate in the table inheritance system
-	// (extend / abstract / patch_table).
+	// TableSpec. They may `extend` an `abstract = true` table to inherit
+	// its column list (and optionally cluster/comment); `patch_table` does
+	// not apply to MVs.
 	MaterializedViews []MaterializedViewSpec `hcl:"materialized_view,block"`
 
 	// Dictionaries are a third sibling collection. Like MVs, they do not
@@ -35,11 +36,19 @@ type DatabaseSpec struct {
 // (ENGINE = ...), refreshable MVs (REFRESH ...), and window views are not
 // supported and are rejected with a clear error during introspection.
 type MaterializedViewSpec struct {
-	Name    string       `hcl:"name,label"`
-	ToTable string       `hcl:"to_table"`         // TO <db.>table target (required)
-	Columns []ColumnSpec `hcl:"column,block"`     // explicit column list (may be empty)
-	Query   string       `hcl:"query"`            // the AS SELECT ... body
-	Cluster *string      `hcl:"cluster,optional"` // ON CLUSTER
+	Name string `hcl:"name,label"`
+
+	// Inheritance fields. Consumed during resolution; not part of the
+	// schema for diff purposes. Extend names an abstract table whose
+	// columns (and optionally cluster/comment) are merged into this MV.
+	// Abstract MVs are dropped before diff, like abstract tables.
+	Extend   *string `hcl:"extend,optional"   diff:"-"`
+	Abstract bool    `hcl:"abstract,optional" diff:"-"`
+
+	ToTable string       `hcl:"to_table,optional"` // TO <db.>table target (required when not abstract)
+	Columns []ColumnSpec `hcl:"column,block"`      // explicit column list (may be empty; merged with parent on extend)
+	Query   string       `hcl:"query,optional"`    // the AS SELECT ... body (required when not abstract)
+	Cluster *string      `hcl:"cluster,optional"`  // ON CLUSTER
 	Comment *string      `hcl:"comment,optional"`
 }
 

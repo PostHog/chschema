@@ -295,14 +295,41 @@ func dropDependentDictionaries(t *testing.T, conn driver.Conn, dbName, stubsDB s
 	}
 }
 
-// kafkaVirtualColumns is the column set ClickHouse's Kafka engine
-// auto-injects on every Kafka-engine table. Stubbed sources need these
-// declared explicitly so MVs that reference `_topic`, `_partition`,
-// `_offset`, `_timestamp`, `_headers.name`, etc. pass CREATE-time
-// validation. `_headers` uses the Nested form so `_headers.name` and
-// `_headers.value` are reachable via the dot-suffix Array syntax that
-// ClickHouse exposes on real Kafka tables.
-const kafkaVirtualColumns = "`_topic` String, `_partition` UInt64, `_offset` UInt64, `_timestamp` Nullable(DateTime), `_timestamp_ms` Nullable(DateTime64(3)), `_headers` Nested(name String, value String), `_raw_message` String, `_key` String"
+// renderVirtualsForCreate emits a CREATE-statement column-list fragment
+// for the engine's virtual columns. Folds `_headers.name`/`_headers.value`
+// (the dot-access form the loader models) back into a single
+// `_headers Nested(name String, value String)` declaration so the CREATE
+// statement parses against real ClickHouse. Returns "" when the engine
+// contributes no virtuals.
+func renderVirtualsForCreate(e hclload.Engine) string {
+	cols := hclload.VirtualColumnsFor(e, nil)
+	if len(cols) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(cols))
+	var headersInner []string
+	for _, c := range cols {
+		if rest, ok := strings.CutPrefix(c.Name, "_headers."); ok {
+			headersInner = append(headersInner, fmt.Sprintf("%s %s", rest, stripArrayWrapper(c.Type)))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("`%s` %s", c.Name, c.Type))
+	}
+	if len(headersInner) > 0 {
+		parts = append(parts, fmt.Sprintf("`_headers` Nested(%s)", strings.Join(headersInner, ", ")))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// stripArrayWrapper turns "Array(String)" into "String"; ClickHouse's
+// Nested columns implicitly wrap each field in Array, so the dot-access
+// type the loader emits (Array(X)) must be unwrapped for the Nested form.
+func stripArrayWrapper(t string) string {
+	if rest, ok := strings.CutPrefix(t, "Array("); ok && strings.HasSuffix(rest, ")") {
+		return rest[:len(rest)-1]
+	}
+	return t
+}
 
 // findSourceFixture searches the testdata corpus for the original CREATE
 // statement of a referenced source table. The corpus is laid out as
@@ -332,7 +359,13 @@ func buildStubColList(cols []hclload.DeclaredColumn, isKafka bool) string {
 		parts = append(parts, fmt.Sprintf("`%s` %s", c.Name, c.Type))
 	}
 	if isKafka {
-		parts = append(parts, kafkaVirtualColumns)
+		// Stub source: emit the maximal Kafka virtual set (stream mode)
+		// so MVs referencing _raw_message / _error parse against the
+		// stub regardless of the real source's handle_error_mode.
+		stream := "stream"
+		if v := renderVirtualsForCreate(hclload.EngineKafka{HandleErrorMode: &stream}); v != "" {
+			parts = append(parts, v)
+		}
 	}
 	if len(parts) == 0 {
 		return "_dummy String"
