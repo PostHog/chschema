@@ -562,6 +562,11 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 		return fmt.Sprintf("Distributed('%s', '%s', '%s')", v.ClusterName, v.RemoteDatabase, v.RemoteTable), nil
 	case EngineLog:
 		return "Log()", nil
+	case EngineJoin:
+		// CH expects bare (unquoted) strictness, type, and key columns:
+		// Join(ANY, LEFT, k1, k2, ...).
+		parts := append([]string{v.Strictness, v.JoinType}, v.Keys...)
+		return fmt.Sprintf("Join(%s)", strings.Join(parts, ", ")), nil
 	case EngineKafka:
 		if v.Collection != nil {
 			// Named collection form: Kafka(<collection>); no settings emitted.

@@ -471,6 +471,15 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		return ee, allSettings, nil
 	case "Log":
 		return EngineLog{}, allSettings, nil
+	case "Join":
+		if len(params) < 3 {
+			return nil, nil, fmt.Errorf("Join needs (strictness, type, key[, key...])")
+		}
+		return EngineJoin{
+			Strictness: params[0],
+			JoinType:   params[1],
+			Keys:       params[2:],
+		}, allSettings, nil
 	case "Kafka":
 		k, err := buildKafkaEngine(params, allSettings)
 		if err != nil {

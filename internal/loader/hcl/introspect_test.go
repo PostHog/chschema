@@ -671,3 +671,31 @@ func TestIntrospect_TimeSeries_ProductionPromMetrics(t *testing.T) {
 	assert.Equal(t, "DATA", e.KeywordHint)
 	assert.Equal(t, "posthog.prom_metrics_data", *e.Samples.Target)
 }
+
+func TestIntrospect_Join_SingleKey(t *testing.T) {
+	sql := "CREATE TABLE db.j (`id` UInt64, `value` String) ENGINE = Join(ANY, LEFT, id)"
+	db := &DatabaseSpec{Name: "db"}
+	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"j", sql}}}))
+	e := db.Tables[0].Engine.Decoded.(EngineJoin)
+	assert.Equal(t, "ANY", e.Strictness)
+	assert.Equal(t, "LEFT", e.JoinType)
+	assert.Equal(t, []string{"id"}, e.Keys)
+}
+
+func TestIntrospect_Join_MultiKey(t *testing.T) {
+	sql := "CREATE TABLE db.j (`a` UInt64, `b` UInt64, `v` String) ENGINE = Join(ALL, INNER, a, b)"
+	db := &DatabaseSpec{Name: "db"}
+	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"j", sql}}}))
+	e := db.Tables[0].Engine.Decoded.(EngineJoin)
+	assert.Equal(t, "ALL", e.Strictness)
+	assert.Equal(t, "INNER", e.JoinType)
+	assert.Equal(t, []string{"a", "b"}, e.Keys)
+}
+
+func TestIntrospect_Join_RejectsTooFewArgs(t *testing.T) {
+	sql := "CREATE TABLE db.j (`id` UInt64) ENGINE = Join(ANY, LEFT)"
+	db := &DatabaseSpec{Name: "db"}
+	err := processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"j", sql}}})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Join needs")
+}

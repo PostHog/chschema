@@ -81,6 +81,12 @@ func TestParseFile_AllEngineKinds(t *testing.T) {
 		Format:     ptr("JSONEachRow"),
 	}, byName["t_kafka"])
 
+	assert.Equal(t, EngineJoin{
+		Strictness: "ANY",
+		JoinType:   "LEFT",
+		Keys:       []string{"user_id", "session_id"},
+	}, byName["t_join"])
+
 	tgtData := "default.t_time_series_data"
 	tgtTags := "default.t_time_series_tags"
 	tgtMetrics := "default.t_time_series_metrics"
@@ -146,6 +152,7 @@ func TestEngine_KindMethods(t *testing.T) {
 		{EngineLog{}, "log"},
 		{EngineKafka{}, "kafka"},
 		{EngineTimeSeries{}, "time_series"},
+		{EngineJoin{}, "join"},
 	}
 	for _, c := range cases {
 		assert.Equal(t, c.want, c.engine.Kind())

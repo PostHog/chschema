@@ -98,6 +98,17 @@ database "posthog" {
     }
   }
 
+  table "t_join" {
+    column "user_id" { type = "UInt64" }
+    column "session_id" { type = "UInt64" }
+    column "value" { type = "String" }
+    engine "join" {
+      strictness = "ANY"
+      type       = "LEFT"
+      keys       = ["user_id", "session_id"]
+    }
+  }
+
   table "t_time_series" {
     column "metric_name" { type = "LowCardinality(String)" }
     engine "time_series" {

@@ -880,3 +880,25 @@ func TestSQLGen_TimeSeries_TagsToColumnsFolded(t *testing.T) {
 	stmt := out.Statements[0]
 	assert.Contains(t, stmt, "tags_to_columns = {'instance':'instance', 'job':'job'}")
 }
+
+func TestSQLGen_Join_SingleKey(t *testing.T) {
+	ts := TableSpec{Name: "j",
+		Columns: []ColumnSpec{{Name: "id", Type: "UInt64"}, {Name: "value", Type: "String"}},
+		Engine:  &EngineSpec{Kind: "join", Decoded: EngineJoin{Strictness: "ANY", JoinType: "LEFT", Keys: []string{"id"}}},
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "default", AddTables: []TableSpec{ts},
+	}}})
+	assert.Contains(t, out.Statements[0], "ENGINE = Join(ANY, LEFT, id)")
+}
+
+func TestSQLGen_Join_MultiKey(t *testing.T) {
+	ts := TableSpec{Name: "j",
+		Columns: []ColumnSpec{{Name: "a", Type: "UInt64"}, {Name: "b", Type: "UInt64"}, {Name: "v", Type: "String"}},
+		Engine:  &EngineSpec{Kind: "join", Decoded: EngineJoin{Strictness: "ALL", JoinType: "INNER", Keys: []string{"a", "b"}}},
+	}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "default", AddTables: []TableSpec{ts},
+	}}})
+	assert.Contains(t, out.Statements[0], "ENGINE = Join(ALL, INNER, a, b)")
+}

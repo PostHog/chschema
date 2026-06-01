@@ -168,6 +168,10 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 	switch v := e.(type) {
 	case EngineMergeTree, EngineAggregatingMergeTree, EngineLog:
 		// no fields
+	case EngineJoin:
+		b.SetAttributeValue("strictness", cty.StringVal(v.Strictness))
+		b.SetAttributeValue("type", cty.StringVal(v.JoinType))
+		b.SetAttributeValue("keys", stringList(v.Keys))
 	case EngineReplicatedMergeTree:
 		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
 		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))

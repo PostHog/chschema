@@ -93,6 +93,22 @@ type EngineLog struct{}
 
 func (EngineLog) Kind() string { return "log" }
 
+// EngineJoin is a memory-resident table designed for the right-hand side
+// of JOINs (and joinGet calls). CH syntax:
+//
+//	Join(strictness, type, k1[, k2, ...])
+//
+// Strictness/type are bare identifiers in the DDL (not quoted strings)
+// and must match the JOIN operation the table is used with — see the CH
+// docs for the Join-table engine.
+type EngineJoin struct {
+	Strictness string   `hcl:"strictness"` // ANY | ALL | SEMI | ANTI
+	JoinType   string   `hcl:"type"`       // LEFT | INNER | RIGHT | FULL
+	Keys       []string `hcl:"keys"`
+}
+
+func (EngineJoin) Kind() string { return "join" }
+
 type EngineKafka struct {
 	// Collection is the named-collection reference. Mutually exclusive
 	// with every other field; when set, no inline setting may be set.
@@ -384,6 +400,10 @@ func DecodeEngine(spec *EngineSpec) (Engine, error) {
 		target = e
 	case "log":
 		var e EngineLog
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
+	case "join":
+		var e EngineJoin
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
 	case "kafka":
