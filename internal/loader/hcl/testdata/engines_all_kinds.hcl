@@ -97,4 +97,15 @@ database "posthog" {
       format      = "JSONEachRow"
     }
   }
+
+  table "t_time_series" {
+    column "metric_name" { type = "LowCardinality(String)" }
+    engine "time_series" {
+      settings = { id_generator = "sipHash64(metric_name, all_tags)" }
+      tags_to_columns = { instance = "instance", job = "job" }
+      samples { target = "default.t_time_series_data" }
+      tags { target = "default.t_time_series_tags" }
+      metrics { target = "default.t_time_series_metrics" }
+    }
+  }
 }

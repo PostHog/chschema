@@ -80,6 +80,17 @@ func TestParseFile_AllEngineKinds(t *testing.T) {
 		GroupName:  ptr("ingest"),
 		Format:     ptr("JSONEachRow"),
 	}, byName["t_kafka"])
+
+	tgtData := "default.t_time_series_data"
+	tgtTags := "default.t_time_series_tags"
+	tgtMetrics := "default.t_time_series_metrics"
+	assert.Equal(t, EngineTimeSeries{
+		Settings:      map[string]string{"id_generator": "sipHash64(metric_name, all_tags)"},
+		TagsToColumns: map[string]string{"instance": "instance", "job": "job"},
+		Samples:       &TimeSeriesTarget{Target: &tgtData},
+		Tags:          &TimeSeriesTarget{Target: &tgtTags},
+		Metrics:       &TimeSeriesTarget{Target: &tgtMetrics},
+	}, byName["t_time_series"])
 }
 
 func TestParseFile_UnknownEngineKind(t *testing.T) {
@@ -92,6 +103,28 @@ func TestParseFile_EngineMissingRequired(t *testing.T) {
 	_, err := ParseFile(filepath.Join("testdata", "engine_missing_required.hcl"))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "replica_name")
+}
+
+func TestParseFile_TimeSeries_InnerForm(t *testing.T) {
+	schema, err := ParseFile(filepath.Join("testdata", "engine_time_series_inner.hcl"))
+	require.NoError(t, err)
+	require.Len(t, schema.Databases, 1)
+	require.Len(t, schema.Databases[0].Tables, 1)
+
+	tbl := schema.Databases[0].Tables[0]
+	require.NotNil(t, tbl.Engine)
+	require.NotNil(t, tbl.Engine.Decoded)
+	e := tbl.Engine.Decoded.(EngineTimeSeries)
+
+	require.NotNil(t, e.Samples)
+	require.Nil(t, e.Samples.Target)
+	require.NotNil(t, e.Samples.Inner)
+	assert.Equal(t, []string{"id", "timestamp"}, e.Samples.Inner.OrderBy)
+	require.Len(t, e.Samples.Inner.Columns, 3)
+
+	require.NotNil(t, e.Samples.Inner.Engine)
+	_, ok := e.Samples.Inner.Engine.Decoded.(EngineMergeTree)
+	assert.True(t, ok, "inner engine should be decoded recursively (got %T)", e.Samples.Inner.Engine.Decoded)
 }
 
 func TestEngine_KindMethods(t *testing.T) {
@@ -112,6 +145,7 @@ func TestEngine_KindMethods(t *testing.T) {
 		{EngineDistributed{}, "distributed"},
 		{EngineLog{}, "log"},
 		{EngineKafka{}, "kafka"},
+		{EngineTimeSeries{}, "time_series"},
 	}
 	for _, c := range cases {
 		assert.Equal(t, c.want, c.engine.Kind())

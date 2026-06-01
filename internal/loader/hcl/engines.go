@@ -214,6 +214,61 @@ func (e EngineKafka) Virtuals() []DeclaredColumn {
 	return kafkaBaseVirtuals
 }
 
+// EngineTimeSeries models the (experimental) ClickHouse TimeSeries engine.
+// It stores Prometheus-style time series across three sibling target tables
+// (samples/tags/metrics), each either an external CH table reference or an
+// inline declaration with INNER COLUMNS + optional INNER ENGINE.
+//
+// TimeSeries exposes no engine-virtual columns — its outer columns are real
+// declared columns. Virtuals() returns nil.
+type EngineTimeSeries struct {
+	// Settings declared via `engine "time_series" { settings = {...} }`.
+	// Free-form for forward compatibility. Only two are ALTER-able
+	// (id_generator, filter_by_min_time_and_max_time); the rest are
+	// baked into the CREATE.
+	Settings map[string]string `hcl:"settings,optional"`
+
+	// TagsToColumns shapes the inner tags-target table by promoting
+	// specific label keys into their own columns. CH treats this as a
+	// setting at the SQL level; promoted here for HCL clarity. sqlgen
+	// folds it back into the SETTINGS clause at emit time.
+	TagsToColumns map[string]string `hcl:"tags_to_columns,optional"`
+
+	// Target sub-blocks. Nil = CH default applies (auto-generate the
+	// inner target for that kind).
+	Samples *TimeSeriesTarget `hcl:"samples,block"`
+	Tags    *TimeSeriesTarget `hcl:"tags,block"`
+	Metrics *TimeSeriesTarget `hcl:"metrics,block"`
+
+	// KeywordHint preserves whether the samples target's source SQL used
+	// SAMPLES or DATA. Populated by the introspector; sqlgen reads it to
+	// round-trip the same word. HCL authors never set this — no hcl tag
+	// so gohcl ignores it during decode.
+	KeywordHint string `diff:"-"`
+}
+
+func (EngineTimeSeries) Kind() string { return "time_series" }
+
+func (EngineTimeSeries) Virtuals() []DeclaredColumn { return nil }
+
+// TimeSeriesTarget is one of {samples, tags, metrics}. Exactly one of
+// Target or Inner must be set; both/neither is a resolve-time error.
+type TimeSeriesTarget struct {
+	Target *string               `hcl:"target,optional"`
+	Inner  *TimeSeriesInnerTable `hcl:"inner,block"`
+}
+
+// TimeSeriesInnerTable mirrors a small slice of TableSpec — only the
+// fields CH actually emits inside INNER COLUMNS / INNER ENGINE.
+type TimeSeriesInnerTable struct {
+	Columns     []ColumnSpec      `hcl:"column,block"`
+	Engine      *EngineSpec       `hcl:"engine,block"`
+	PrimaryKey  []string          `hcl:"primary_key,optional"`
+	OrderBy     []string          `hcl:"order_by,optional"`
+	PartitionBy *string           `hcl:"partition_by,optional"`
+	Settings    map[string]string `hcl:"settings,optional"`
+}
+
 var distributedSelfVirtuals = []DeclaredColumn{
 	{Name: "_shard_num", Type: "UInt32"},
 }
@@ -334,6 +389,24 @@ func DecodeEngine(spec *EngineSpec) (Engine, error) {
 	case "kafka":
 		var e EngineKafka
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
+	case "time_series":
+		var e EngineTimeSeries
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		if !diags.HasErrors() {
+			// Recursively decode inner engines so resolver/sqlgen see
+			// typed values without each caller having to do it again.
+			for _, t := range []*TimeSeriesTarget{e.Samples, e.Tags, e.Metrics} {
+				if t == nil || t.Inner == nil || t.Inner.Engine == nil {
+					continue
+				}
+				inner, err := DecodeEngine(t.Inner.Engine)
+				if err != nil {
+					return nil, fmt.Errorf("time_series inner engine: %w", err)
+				}
+				t.Inner.Engine.Decoded = inner
+			}
+		}
 		target = e
 	default:
 		return nil, fmt.Errorf("unknown engine kind %q", spec.Kind)
