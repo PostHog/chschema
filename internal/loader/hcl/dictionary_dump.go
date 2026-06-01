@@ -117,7 +117,8 @@ func writeDictionaryLayout(parent *hclwrite.Body, l DictionaryLayout) {
 	block := parent.AppendNewBlock("layout", []string{l.Kind()})
 	b := block.Body()
 	switch v := l.(type) {
-	case LayoutFlat, LayoutHashed, LayoutSparseHashed, LayoutComplexKeySparseHashed, LayoutDirect:
+	case LayoutFlat, LayoutHashed, LayoutSparseHashed, LayoutComplexKeySparseHashed,
+		LayoutDirect, LayoutComplexKeyDirect:
 		// no fields
 	case LayoutComplexKeyHashed:
 		writeOptInt(b, "preallocate", v.Preallocate)
@@ -127,6 +128,12 @@ func writeDictionaryLayout(parent *hclwrite.Body, l DictionaryLayout) {
 		writeOptStr(b, "range_lookup_strategy", v.RangeLookupStrategy)
 	case LayoutCache:
 		b.SetAttributeValue("size_in_cells", cty.NumberIntVal(v.SizeInCells))
+	case LayoutComplexKeyCache:
+		b.SetAttributeValue("size_in_cells", cty.NumberIntVal(v.SizeInCells))
+	case LayoutHashedArray:
+		writeOptInt(b, "shards", v.Shards)
+	case LayoutComplexKeyHashedArray:
+		writeOptInt(b, "shards", v.Shards)
 	case LayoutIPTrie:
 		writeOptBool(b, "access_to_key_from_attributes", v.AccessToKeyFromAttributes)
 	}

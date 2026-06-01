@@ -492,7 +492,7 @@ LIFETIME(0)`
 func TestBuildDictionaryFromAST_UnsupportedLayout(t *testing.T) {
 	src := `CREATE DICTIONARY db.d (` + "`k`" + ` UInt64, ` + "`v`" + ` String) PRIMARY KEY k
 SOURCE(NULL())
-LAYOUT(HASHED_ARRAY())
+LAYOUT(POLYGON())
 LIFETIME(0)`
 	_, err := buildDictionaryFromCreateSQL(src)
 	require.Error(t, err)

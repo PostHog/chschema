@@ -159,6 +159,20 @@ func layoutSQL(l DictionaryLayout) string {
 		return "COMPLEX_KEY_RANGE_HASHED()"
 	case LayoutCache:
 		return fmt.Sprintf("CACHE(SIZE_IN_CELLS %d)", v.SizeInCells)
+	case LayoutComplexKeyCache:
+		return fmt.Sprintf("COMPLEX_KEY_CACHE(SIZE_IN_CELLS %d)", v.SizeInCells)
+	case LayoutComplexKeyDirect:
+		return "COMPLEX_KEY_DIRECT()"
+	case LayoutHashedArray:
+		if v.Shards != nil {
+			return fmt.Sprintf("HASHED_ARRAY(SHARDS %d)", *v.Shards)
+		}
+		return "HASHED_ARRAY()"
+	case LayoutComplexKeyHashedArray:
+		if v.Shards != nil {
+			return fmt.Sprintf("COMPLEX_KEY_HASHED_ARRAY(SHARDS %d)", *v.Shards)
+		}
+		return "COMPLEX_KEY_HASHED_ARRAY()"
 	case LayoutIPTrie:
 		if v.AccessToKeyFromAttributes != nil {
 			return fmt.Sprintf("IP_TRIE(ACCESS_TO_KEY_FROM_ATTRIBUTES %t)", *v.AccessToKeyFromAttributes)

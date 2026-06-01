@@ -115,8 +115,14 @@ func TestCHLive_Dictionary_LayoutMatrix(t *testing.T) {
 		{"range_hashed", LayoutRangeHashed{}, false, true, false},
 		{"complex_key_range_hashed", LayoutComplexKeyRangeHashed{RangeLookupStrategy: ptr("max")}, true, true, false},
 		{"cache", LayoutCache{SizeInCells: 1000}, false, false, false},
+		{"complex_key_cache", LayoutComplexKeyCache{SizeInCells: 1000}, true, false, false},
+		{"hashed_array", LayoutHashedArray{}, false, false, false},
+		{"hashed_array_shards", LayoutHashedArray{Shards: ptr(int64(2))}, false, false, false},
+		{"complex_key_hashed_array", LayoutComplexKeyHashedArray{}, true, false, false},
+		{"complex_key_hashed_array_shards", LayoutComplexKeyHashedArray{Shards: ptr(int64(4))}, true, false, false},
 		{"ip_trie", LayoutIPTrie{}, false, false, true},
 		{"direct", LayoutDirect{}, false, false, false},
+		{"complex_key_direct", LayoutComplexKeyDirect{}, true, false, false},
 	}
 
 	for _, tc := range cases {
