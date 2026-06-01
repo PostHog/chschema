@@ -13,6 +13,7 @@ const (
 	DepMVSource          = "mv_source"          // a materialized view reads from this table
 	DepMVDest            = "mv_dest"            // a materialized view writes into this table
 	DepDistributedRemote = "distributed_remote" // a Distributed table forwards to this table
+	DepTimeSeriesTarget  = "ts_target"          // a TimeSeries table references an external samples/tags/metrics target
 	DepViewSource        = "view_source"        // a plain view reads from this table
 
 	// KindMVColumn flags a materialized view that references a column its
@@ -134,15 +135,26 @@ func CollectDependencies(dbs []DatabaseSpec) ([]Dependency, error) {
 			if t.Engine == nil {
 				continue
 			}
-			dist, ok := t.Engine.Decoded.(EngineDistributed)
-			if !ok {
-				continue
+			switch eng := t.Engine.Decoded.(type) {
+			case EngineDistributed:
+				deps = append(deps, Dependency{
+					From: ObjectRef{Database: db.Name, Name: t.Name},
+					To:   ObjectRef{Database: eng.RemoteDatabase, Name: eng.RemoteTable},
+					Kind: DepDistributedRemote,
+				})
+			case EngineTimeSeries:
+				from := ObjectRef{Database: db.Name, Name: t.Name}
+				for _, target := range []*TimeSeriesTarget{eng.Samples, eng.Tags, eng.Metrics} {
+					if target == nil || target.Target == nil {
+						continue
+					}
+					deps = append(deps, Dependency{
+						From: from,
+						To:   splitQualified(*target.Target, db.Name),
+						Kind: DepTimeSeriesTarget,
+					})
+				}
 			}
-			deps = append(deps, Dependency{
-				From: ObjectRef{Database: db.Name, Name: t.Name},
-				To:   ObjectRef{Database: dist.RemoteDatabase, Name: dist.RemoteTable},
-				Kind: DepDistributedRemote,
-			})
 		}
 
 		for _, v := range db.Views {
@@ -736,6 +748,8 @@ func depPhrase(kind string) string {
 		return "Distributed table remote table"
 	case DepViewSource:
 		return "view source table"
+	case DepTimeSeriesTarget:
+		return "TimeSeries target table"
 	default:
 		return "dependency"
 	}
