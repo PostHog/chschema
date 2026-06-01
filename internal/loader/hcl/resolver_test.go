@@ -476,3 +476,73 @@ func TestResolve_KafkaCollectionReference(t *testing.T) {
 	assert.Contains(t, err.Error(), "undeclared_nc")
 	assert.Contains(t, err.Error(), "not declared")
 }
+
+func TestResolve_TimeSeries_BothExternalAndInnerOnSameTarget_Rejected(t *testing.T) {
+	tgt := "db.x"
+	e := EngineTimeSeries{Samples: &TimeSeriesTarget{
+		Target: &tgt,
+		Inner:  &TimeSeriesInnerTable{Engine: &EngineSpec{Decoded: EngineMergeTree{}}},
+	}}
+	s := &Schema{Databases: []DatabaseSpec{{
+		Name: "db",
+		Tables: []TableSpec{{Name: "m",
+			Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+			Engine:  &EngineSpec{Kind: "time_series", Decoded: e},
+		}},
+	}}}
+	err := Resolve(s)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "samples")
+	assert.Contains(t, err.Error(), "either")
+}
+
+func TestResolve_TimeSeries_NeitherForm_Rejected(t *testing.T) {
+	e := EngineTimeSeries{Samples: &TimeSeriesTarget{}}
+	s := &Schema{Databases: []DatabaseSpec{{
+		Name: "db",
+		Tables: []TableSpec{{Name: "m",
+			Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+			Engine:  &EngineSpec{Kind: "time_series", Decoded: e},
+		}},
+	}}}
+	err := Resolve(s)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "samples")
+	assert.Contains(t, err.Error(), "target or inner")
+}
+
+func TestResolve_TimeSeries_InnerEngineRestrictedToMergeTreeFamily(t *testing.T) {
+	e := EngineTimeSeries{Samples: &TimeSeriesTarget{
+		Inner: &TimeSeriesInnerTable{Engine: &EngineSpec{Decoded: EngineKafka{}}},
+	}}
+	s := &Schema{Databases: []DatabaseSpec{{
+		Name: "db",
+		Tables: []TableSpec{{Name: "m",
+			Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+			Engine:  &EngineSpec{Kind: "time_series", Decoded: e},
+		}},
+	}}}
+	err := Resolve(s)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "inner engine")
+	assert.Contains(t, err.Error(), "MergeTree")
+}
+
+func TestResolve_TimeSeries_AllValidForms_OK(t *testing.T) {
+	tgt := "db.m_data"
+	e := EngineTimeSeries{
+		Samples: &TimeSeriesTarget{Target: &tgt},
+		Tags: &TimeSeriesTarget{Inner: &TimeSeriesInnerTable{
+			Columns: []ColumnSpec{{Name: "id", Type: "UUID"}},
+			Engine:  &EngineSpec{Decoded: EngineAggregatingMergeTree{}},
+		}},
+	}
+	s := &Schema{Databases: []DatabaseSpec{{
+		Name: "db",
+		Tables: []TableSpec{{Name: "m",
+			Columns: []ColumnSpec{{Name: "metric_name", Type: "LowCardinality(String)"}},
+			Engine:  &EngineSpec{Kind: "time_series", Decoded: e},
+		}},
+	}}}
+	require.NoError(t, Resolve(s))
+}

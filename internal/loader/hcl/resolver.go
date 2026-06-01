@@ -267,6 +267,11 @@ func resolveDatabase(db *DatabaseSpec) error {
 		if t.Engine == nil || t.Engine.Decoded == nil {
 			return fmt.Errorf("%s.%s: non-abstract table requires an engine", db.Name, t.Name)
 		}
+		if ts, ok := t.Engine.Decoded.(EngineTimeSeries); ok {
+			if err := validateTimeSeriesEngine(db.Name, t.Name, ts); err != nil {
+				return err
+			}
+		}
 		if err := validateColumns(db.Name, t); err != nil {
 			return err
 		}
@@ -283,6 +288,58 @@ func resolveDatabase(db *DatabaseSpec) error {
 		}
 	}
 	return nil
+}
+
+// validateTimeSeriesEngine enforces the engine-specific resolve rules for
+// EngineTimeSeries: each target sub-block must have exactly one of Target
+// or Inner; inner engines must be MergeTree-family kinds.
+func validateTimeSeriesEngine(dbName, tableName string, e EngineTimeSeries) error {
+	for _, kv := range []struct {
+		kind string
+		t    *TimeSeriesTarget
+	}{
+		{"samples", e.Samples},
+		{"tags", e.Tags},
+		{"metrics", e.Metrics},
+	} {
+		if kv.t == nil {
+			continue
+		}
+		hasExternal := kv.t.Target != nil
+		hasInner := kv.t.Inner != nil
+		switch {
+		case hasExternal && hasInner:
+			return fmt.Errorf("%s.%s: time_series %s target: set either target or inner, not both",
+				dbName, tableName, kv.kind)
+		case !hasExternal && !hasInner:
+			return fmt.Errorf("%s.%s: time_series %s target: must set target or inner",
+				dbName, tableName, kv.kind)
+		}
+		if hasInner && kv.t.Inner.Engine != nil && kv.t.Inner.Engine.Decoded != nil {
+			if !isMergeTreeFamily(kv.t.Inner.Engine.Decoded) {
+				return fmt.Errorf("%s.%s: time_series %s inner engine %q: only MergeTree-family engines are allowed",
+					dbName, tableName, kv.kind, kv.t.Inner.Engine.Decoded.Kind())
+			}
+		}
+	}
+	return nil
+}
+
+func isMergeTreeFamily(e Engine) bool {
+	switch e.(type) {
+	case EngineMergeTree,
+		EngineReplicatedMergeTree,
+		EngineReplacingMergeTree,
+		EngineReplicatedReplacingMergeTree,
+		EngineSummingMergeTree,
+		EngineReplicatedSummingMergeTree,
+		EngineCollapsingMergeTree,
+		EngineReplicatedCollapsingMergeTree,
+		EngineAggregatingMergeTree,
+		EngineReplicatedAggregatingMergeTree:
+		return true
+	}
+	return false
 }
 
 func validateConstraints(db string, t TableSpec) error {
