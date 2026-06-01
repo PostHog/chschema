@@ -633,7 +633,15 @@ just test
 
 # Live ClickHouse integration tests (needs: docker compose up -d)
 just test-live
+
+# Install the repo's pre-commit hook (gofmt + go vet) — one-time per checkout
+just setup-hooks
 ```
+
+The pre-commit hook lives at `.githooks/pre-commit` and is opt-in:
+`just setup-hooks` sets `core.hooksPath` to `.githooks`. It rejects a
+commit whose staged Go files aren't gofmt'd or whose module fails
+`go vet`, and prints the exact command to fix.
 
 See `CLAUDE.md` for repository conventions and `justfile` for the full
 list of recipes.
