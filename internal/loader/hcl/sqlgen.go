@@ -354,6 +354,13 @@ func createTableSQL(database string, t TableSpec) string {
 	clause, extraSettings := engineSQL(engineOf(t))
 	fmt.Fprintf(&b, " ENGINE = %s", clause)
 
+	// TimeSeries: emit the SAMPLES/TAGS/METRICS tail clauses between the
+	// ENGINE clause and the storage clauses (which are mostly inapplicable
+	// to TimeSeries anyway — the outer table has no ORDER BY etc.).
+	if ts, ok := engineOf(t).(EngineTimeSeries); ok {
+		b.WriteString(timeSeriesTailSQL(ts))
+	}
+
 	if len(t.PrimaryKey) > 0 {
 		fmt.Fprintf(&b, " PRIMARY KEY (%s)", strings.Join(t.PrimaryKey, ", "))
 	}
@@ -609,8 +616,87 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 			settings[k] = val
 		}
 		return "Kafka()", settings
+	case EngineTimeSeries:
+		// TimeSeries takes no constructor args. Its tail clauses
+		// (SAMPLES/TAGS/METRICS) are emitted separately by
+		// createTableSQL via timeSeriesTailSQL. SETTINGS flow through the
+		// extraSettings map, with TagsToColumns folded back to its
+		// CH map-literal form.
+		settings := map[string]string{}
+		for k, val := range v.Settings {
+			settings[k] = val
+		}
+		if len(v.TagsToColumns) > 0 {
+			settings["tags_to_columns"] = renderTagsToColumnsMap(v.TagsToColumns)
+		}
+		return "TimeSeries", settings
 	}
 	return "", nil
+}
+
+// renderTagsToColumnsMap renders the typed TagsToColumns map back to the
+// `{'tag1':'col1', 'tag2':'col2'}` literal CH expects in SETTINGS. Keys
+// sorted for deterministic output.
+func renderTagsToColumnsMap(m map[string]string) string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = fmt.Sprintf("'%s':'%s'", k, m[k])
+	}
+	return "{" + strings.Join(parts, ", ") + "}"
+}
+
+// timeSeriesTailSQL renders the SAMPLES/TAGS/METRICS tail clauses that
+// follow `ENGINE = TimeSeries` on a CREATE TABLE statement. Empty string
+// when no target sub-blocks are set.
+func timeSeriesTailSQL(e EngineTimeSeries) string {
+	var b strings.Builder
+	emitTimeSeriesTarget(&b, e.Samples, samplesKeyword(e.KeywordHint))
+	emitTimeSeriesTarget(&b, e.Tags, "TAGS")
+	emitTimeSeriesTarget(&b, e.Metrics, "METRICS")
+	return b.String()
+}
+
+func samplesKeyword(hint string) string {
+	if hint == "DATA" {
+		return "DATA"
+	}
+	return "SAMPLES"
+}
+
+func emitTimeSeriesTarget(b *strings.Builder, t *TimeSeriesTarget, keyword string) {
+	if t == nil {
+		return
+	}
+	if t.Target != nil {
+		fmt.Fprintf(b, " %s %s", keyword, *t.Target)
+		return
+	}
+	if t.Inner == nil {
+		return
+	}
+	parts := make([]string, len(t.Inner.Columns))
+	for i, c := range t.Inner.Columns {
+		parts[i] = columnDefSQL(c)
+	}
+	fmt.Fprintf(b, " %s INNER COLUMNS (%s)", keyword, strings.Join(parts, ", "))
+	if t.Inner.Engine != nil && t.Inner.Engine.Decoded != nil {
+		innerClause, _ := engineSQL(t.Inner.Engine.Decoded)
+		fmt.Fprintf(b, " %s INNER ENGINE = %s", keyword, innerClause)
+	}
+	if len(t.Inner.PrimaryKey) > 0 {
+		fmt.Fprintf(b, " PRIMARY KEY (%s)", strings.Join(t.Inner.PrimaryKey, ", "))
+	}
+	if len(t.Inner.OrderBy) > 0 {
+		fmt.Fprintf(b, " ORDER BY (%s)", strings.Join(t.Inner.OrderBy, ", "))
+	}
+	if t.Inner.PartitionBy != nil {
+		fmt.Fprintf(b, " PARTITION BY %s", *t.Inner.PartitionBy)
+	}
 }
 
 func mergeSettings(user, extra map[string]string) map[string]string {
@@ -644,6 +730,11 @@ var numericRe = regexp.MustCompile(`^-?\d+(\.\d+)?$`)
 
 func formatSettingValue(v string) string {
 	if numericRe.MatchString(v) {
+		return v
+	}
+	// Map and array literals (e.g. tags_to_columns = {'k':'v'}) are emitted
+	// bare. CH parses them as compound literals, not as quoted strings.
+	if len(v) >= 2 && ((v[0] == '{' && v[len(v)-1] == '}') || (v[0] == '[' && v[len(v)-1] == ']')) {
 		return v
 	}
 	return "'" + strings.ReplaceAll(v, "'", "\\'") + "'"
