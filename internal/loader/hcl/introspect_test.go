@@ -699,3 +699,52 @@ func TestIntrospect_Join_RejectsTooFewArgs(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Join needs")
 }
+
+func TestIntrospect_Buffer_FullArgs(t *testing.T) {
+	sql := "CREATE TABLE db.buf (`id` UUID) ENGINE = Buffer('', 'dest_table', 16, 10, 100, 10000, 1000000, 10000000, 100000000)"
+	db := &DatabaseSpec{Name: "db"}
+	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"buf", sql}}}))
+	e := db.Tables[0].Engine.Decoded.(EngineBuffer)
+	assert.Equal(t, "", e.Database)
+	assert.Equal(t, "dest_table", e.Table)
+	assert.Equal(t, int64(16), e.NumLayers)
+	assert.Equal(t, int64(10), e.MinTime)
+	assert.Equal(t, int64(100000000), e.MaxBytes)
+	assert.Nil(t, e.FlushTime)
+}
+
+func TestIntrospect_Buffer_WithFlushTriplet(t *testing.T) {
+	sql := "CREATE TABLE db.buf (`id` UUID) ENGINE = Buffer('default', 'dest', 1, 5, 60, 100, 10000, 1000, 100000, 30, 200, 50000)"
+	db := &DatabaseSpec{Name: "db"}
+	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"buf", sql}}}))
+	e := db.Tables[0].Engine.Decoded.(EngineBuffer)
+	assert.Equal(t, "default", e.Database)
+	require.NotNil(t, e.FlushTime)
+	assert.Equal(t, int64(30), *e.FlushTime)
+	require.NotNil(t, e.FlushRows)
+	assert.Equal(t, int64(200), *e.FlushRows)
+	require.NotNil(t, e.FlushBytes)
+	assert.Equal(t, int64(50000), *e.FlushBytes)
+}
+
+func TestIntrospect_Merge(t *testing.T) {
+	sql := "CREATE TABLE db.m (`id` UUID) ENGINE = Merge('default', '^shard_.*')"
+	db := &DatabaseSpec{Name: "db"}
+	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"m", sql}}}))
+	e := db.Tables[0].Engine.Decoded.(EngineMerge)
+	assert.Equal(t, "default", e.DBRegex)
+	assert.Equal(t, "^shard_.*", e.TableRegex)
+}
+
+func TestIntrospect_Null_Memory(t *testing.T) {
+	for _, c := range []struct {
+		sql, kind string
+	}{
+		{"CREATE TABLE db.n (`id` UUID) ENGINE = Null()", "null"},
+		{"CREATE TABLE db.n (`id` UUID) ENGINE = Memory()", "memory"},
+	} {
+		db := &DatabaseSpec{Name: "db"}
+		require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"n", c.sql}}}))
+		assert.Equal(t, c.kind, db.Tables[0].Engine.Kind)
+	}
+}

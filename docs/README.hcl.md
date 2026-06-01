@@ -119,6 +119,10 @@ attributes depend on the kind.
 | `kafka`                               | `broker_list = [...]`, `topic`, `consumer_group`, `format` | —              |
 | `time_series` (experimental)          | —                                                  | `settings`, `tags_to_columns`, nested `samples`/`tags`/`metrics` blocks |
 | `join`                                | `strictness` (`ANY`/`ALL`/`SEMI`/`ANTI`), `type` (`LEFT`/`INNER`/`RIGHT`/`FULL`), `keys = [...]` | — |
+| `null`                                | —                                                  | —                      |
+| `memory`                              | —                                                  | —                      |
+| `merge`                               | `db_regex`, `table_regex`                          | —                      |
+| `buffer`                              | `database`, `table`, `num_layers`, `min_time`, `max_time`, `min_rows`, `max_rows`, `min_bytes`, `max_bytes` | `flush_time`, `flush_rows`, `flush_bytes` |
 
 Unknown kinds and missing required attributes are rejected at parse time
 with file/line positions.

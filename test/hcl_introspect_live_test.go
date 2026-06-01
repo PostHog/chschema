@@ -227,3 +227,56 @@ func TestLive_HCLIntrospect_Join(t *testing.T) {
 	require.Equal(t, "INNER", mk.JoinType)
 	require.Equal(t, []string{"user_id", "session_id"}, mk.Keys)
 }
+
+// TestLive_HCLIntrospect_CommonEngines exercises a Buffer-over-MergeTree
+// pair (the production shape that motivated this change), plus Null,
+// Memory, and Merge — three of the cheaper engines added in the same
+// pass.
+func TestLive_HCLIntrospect_CommonEngines(t *testing.T) {
+	if !*clickhouse {
+		t.SkipNow()
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	ctx := context.Background()
+
+	stmts := []string{
+		`CREATE TABLE ` + dbName + `.dest (id UUID, value Float64) ENGINE = MergeTree ORDER BY id`,
+		`CREATE TABLE ` + dbName + `.buf (id UUID, value Float64) ` +
+			`ENGINE = Buffer('` + dbName + `', 'dest', 16, 10, 100, 10000, 1000000, 10000000, 100000000)`,
+
+		`CREATE TABLE ` + dbName + `.null_sink (id UUID) ENGINE = Null`,
+		`CREATE TABLE ` + dbName + `.mem_stage (id UUID) ENGINE = Memory`,
+
+		`CREATE TABLE ` + dbName + `.shard_a (id UUID) ENGINE = MergeTree ORDER BY id`,
+		`CREATE TABLE ` + dbName + `.shard_b (id UUID) ENGINE = MergeTree ORDER BY id`,
+		`CREATE TABLE ` + dbName + `.merged (id UUID) ENGINE = Merge('` + dbName + `', '^shard_')`,
+	}
+	for _, s := range stmts {
+		require.NoError(t, conn.Exec(ctx, s), "create failed: %s", s)
+	}
+
+	got, err := hclload.Introspect(ctx, conn, dbName)
+	require.NoError(t, err)
+
+	byName := map[string]hclload.Engine{}
+	for _, tbl := range got.Tables {
+		byName[tbl.Name] = tbl.Engine.Decoded
+	}
+
+	buf, ok := byName["buf"].(hclload.EngineBuffer)
+	require.True(t, ok)
+	require.Equal(t, dbName, buf.Database)
+	require.Equal(t, "dest", buf.Table)
+	require.Equal(t, int64(16), buf.NumLayers)
+	require.Equal(t, int64(100000000), buf.MaxBytes)
+
+	_, ok = byName["null_sink"].(hclload.EngineNull)
+	require.True(t, ok)
+	_, ok = byName["mem_stage"].(hclload.EngineMemory)
+	require.True(t, ok)
+	merge, ok := byName["merged"].(hclload.EngineMerge)
+	require.True(t, ok)
+	require.Equal(t, dbName, merge.DBRegex)
+	require.Equal(t, "^shard_", merge.TableRegex)
+}

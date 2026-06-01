@@ -567,6 +567,41 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 		// Join(ANY, LEFT, k1, k2, ...).
 		parts := append([]string{v.Strictness, v.JoinType}, v.Keys...)
 		return fmt.Sprintf("Join(%s)", strings.Join(parts, ", ")), nil
+	case EngineNull:
+		return "Null()", nil
+	case EngineMemory:
+		return "Memory()", nil
+	case EngineMerge:
+		return fmt.Sprintf("Merge('%s', '%s')", v.DBRegex, v.TableRegex), nil
+	case EngineBuffer:
+		// Buffer(db, table, num_layers, min_time, max_time, min_rows,
+		//        max_rows, min_bytes, max_bytes [, flush_time [, flush_rows [, flush_bytes]]]).
+		// The database arg uses currentDatabase() when empty (CH convention).
+		dbArg := "''"
+		if v.Database != "" {
+			dbArg = fmt.Sprintf("'%s'", v.Database)
+		}
+		args := []string{
+			dbArg,
+			fmt.Sprintf("'%s'", v.Table),
+			fmt.Sprintf("%d", v.NumLayers),
+			fmt.Sprintf("%d", v.MinTime),
+			fmt.Sprintf("%d", v.MaxTime),
+			fmt.Sprintf("%d", v.MinRows),
+			fmt.Sprintf("%d", v.MaxRows),
+			fmt.Sprintf("%d", v.MinBytes),
+			fmt.Sprintf("%d", v.MaxBytes),
+		}
+		if v.FlushTime != nil {
+			args = append(args, fmt.Sprintf("%d", *v.FlushTime))
+			if v.FlushRows != nil {
+				args = append(args, fmt.Sprintf("%d", *v.FlushRows))
+				if v.FlushBytes != nil {
+					args = append(args, fmt.Sprintf("%d", *v.FlushBytes))
+				}
+			}
+		}
+		return fmt.Sprintf("Buffer(%s)", strings.Join(args, ", ")), nil
 	case EngineKafka:
 		if v.Collection != nil {
 			// Named collection form: Kafka(<collection>); no settings emitted.

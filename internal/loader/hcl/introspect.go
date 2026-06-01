@@ -480,6 +480,58 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 			JoinType:   params[1],
 			Keys:       params[2:],
 		}, allSettings, nil
+	case "Null":
+		return EngineNull{}, allSettings, nil
+	case "Memory":
+		return EngineMemory{}, allSettings, nil
+	case "Merge":
+		if len(params) != 2 {
+			return nil, nil, fmt.Errorf("Merge needs (db_regex, table_regex)")
+		}
+		return EngineMerge{DBRegex: params[0], TableRegex: params[1]}, allSettings, nil
+	case "Buffer":
+		if len(params) < 9 || len(params) > 12 {
+			return nil, nil, fmt.Errorf("Buffer needs 9-12 args (db, table, num_layers, min/max time/rows/bytes [, flush_time [, flush_rows [, flush_bytes]]])")
+		}
+		toInt := func(s string) (int64, error) {
+			n, err := strconv.ParseInt(s, 10, 64)
+			if err != nil {
+				return 0, fmt.Errorf("Buffer arg %q: %w", s, err)
+			}
+			return n, nil
+		}
+		nums := make([]int64, 0, len(params)-2)
+		for _, p := range params[2:] {
+			n, err := toInt(p)
+			if err != nil {
+				return nil, nil, err
+			}
+			nums = append(nums, n)
+		}
+		e := EngineBuffer{
+			Database:  params[0],
+			Table:     params[1],
+			NumLayers: nums[0],
+			MinTime:   nums[1],
+			MaxTime:   nums[2],
+			MinRows:   nums[3],
+			MaxRows:   nums[4],
+			MinBytes:  nums[5],
+			MaxBytes:  nums[6],
+		}
+		if len(nums) > 7 {
+			ft := nums[7]
+			e.FlushTime = &ft
+		}
+		if len(nums) > 8 {
+			fr := nums[8]
+			e.FlushRows = &fr
+		}
+		if len(nums) > 9 {
+			fb := nums[9]
+			e.FlushBytes = &fb
+		}
+		return e, allSettings, nil
 	case "Kafka":
 		k, err := buildKafkaEngine(params, allSettings)
 		if err != nil {
