@@ -41,6 +41,132 @@ After resolution there are two emitted tables — `events_local` and
 `events_distributed` — each with the three shared columns. `_event_base` is
 dropped.
 
+## How do I share columns across a Kafka source, MV, local table, and Distributed table?
+
+The canonical ingest pipeline: Kafka feeds an MV, which writes to a local
+replicated table, fronted by a Distributed table. The three **tables** share
+the same columns — declare them once on an abstract base and let each table
+`extend` it. The MV, since it's a 1:1 passthrough, doesn't need any column
+list at all: ClickHouse derives the MV's schema from its `SELECT`.
+
+```hcl
+database "default" {
+  cluster = "main"
+
+  table "events_base" {
+    abstract = true
+    column "timestamp" { type = "DateTime64(3)" }
+    column "team_id"   { type = "UInt32" }
+    column "event"     { type = "String" }
+  }
+
+  table "events_kafka" {
+    extend = "events_base"
+    engine "kafka" {
+      broker_list = "kafka:9092"
+      topic_list  = "events"
+      group_name  = "ch_events"
+      format      = "JSONEachRow"
+    }
+  }
+
+  table "events_local" {
+    extend = "events_base"
+    engine "replicated_merge_tree" {
+      zoo_path     = "/clickhouse/tables/{shard}/events"
+      replica_name = "{replica}"
+    }
+    order_by = ["team_id", "timestamp"]
+  }
+
+  table "events_distributed" {
+    extend = "events_base"
+    engine "distributed" {
+      cluster_name    = "main"
+      remote_database = "default"
+      remote_table    = "events_local"
+      sharding_key    = "cityHash64(team_id)"
+    }
+  }
+
+  materialized_view "events_mv" {
+    to_table = "events_local"
+    query    = "SELECT timestamp, team_id, event FROM events_kafka"
+  }
+}
+```
+
+Adding a column to `events_base` adds it to all three tables. The MV picks
+it up automatically the next time you edit the `SELECT` to project it.
+
+## When does it make sense to `extend` on a `materialized_view`?
+
+When the MV is *not* a passthrough — typically an aggregating MV whose
+declared output column types must match its destination table. The
+destination and the MV share the same `AggregateFunction(...)` columns, so
+both should extend the same base. The Kafka source uses raw types and does
+*not* extend this base.
+
+```hcl
+database "default" {
+  cluster = "main"
+
+  table "events_kafka" {
+    column "timestamp" { type = "DateTime64(3)" }
+    column "team_id"   { type = "UInt32" }
+    column "user_id"   { type = "UInt64" }
+    engine "kafka" { broker_list = "kafka:9092"; topic_list = "events"; group_name = "ch_metrics"; format = "JSONEachRow" }
+  }
+
+  # Shared shape: aggregation state columns. The destination table and the
+  # MV both extend this — they MUST agree on the AggregateFunction types.
+  table "team_metrics_base" {
+    abstract = true
+    column "hour"         { type = "DateTime" }
+    column "team_id"      { type = "UInt32" }
+    column "events"       { type = "AggregateFunction(count, UInt64)" }
+    column "unique_users" { type = "AggregateFunction(uniq, UInt64)" }
+  }
+
+  table "team_metrics" {
+    extend = "team_metrics_base"
+    engine "aggregating_merge_tree" {}
+    order_by = ["hour", "team_id"]
+  }
+
+  materialized_view "team_metrics_mv" {
+    extend   = "team_metrics_base"
+    to_table = "team_metrics"
+    query    = <<-SQL
+      SELECT
+        toStartOfHour(timestamp)        AS hour,
+        team_id,
+        countState()                    AS events,
+        uniqState(user_id)              AS unique_users
+      FROM events_kafka
+      GROUP BY hour, team_id
+    SQL
+  }
+}
+```
+
+Why the column list pulls its weight here:
+
+- Pins the `AggregateFunction(...)` types instead of relying on CH to infer
+  them from the SELECT — an ambiguous `sumState(...)` or accidental type
+  drift in the SELECT will fail at MV creation, not silently at query time.
+- Documents the MV's shape at the call site.
+- Catches drift between MV and destination when you change either one — the
+  diff highlights the mismatch immediately.
+
+Rule of thumb: passthrough MVs → no column list, no `extend`. Aggregating /
+transforming MVs whose output shape matches a destination → declare a
+shared base and have both `extend` it.
+
+Note: any change to an MV's declared column list — including one that flows
+in via `extend` — requires recreating the MV. `hclexp diff -sql` flags that
+as `UNSAFE`. Plan column changes accordingly.
+
 ## How do I make a table that's *almost* identical to another, just with a different `order_by`?
 
 `extend` from the table you want to clone, then override the differing

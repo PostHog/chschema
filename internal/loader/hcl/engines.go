@@ -141,6 +141,135 @@ type EngineKafka struct {
 
 func (EngineKafka) Kind() string { return "kafka" }
 
+// mergeTreeFamilyVirtuals is the stable virtual-column set every
+// MergeTree-family engine exposes. Version-gated names (_block_number,
+// _block_offset on CH 24.x+, _row_exists with lightweight deletes) are
+// deliberately omitted from v1 — adding them risks false positives on
+// older deployments. Revisit when a real schema needs them.
+var mergeTreeFamilyVirtuals = []DeclaredColumn{
+	{Name: "_part", Type: "String"},
+	{Name: "_part_index", Type: "UInt64"},
+	{Name: "_part_uuid", Type: "UUID"},
+	{Name: "_partition_id", Type: "String"},
+	{Name: "_partition_value", Type: "Tuple"},
+	{Name: "_sample_factor", Type: "Float64"},
+	{Name: "_part_offset", Type: "UInt64"},
+}
+
+func (EngineMergeTree) Virtuals() []DeclaredColumn { return mergeTreeFamilyVirtuals }
+func (EngineReplicatedMergeTree) Virtuals() []DeclaredColumn {
+	return mergeTreeFamilyVirtuals
+}
+func (EngineReplacingMergeTree) Virtuals() []DeclaredColumn { return mergeTreeFamilyVirtuals }
+func (EngineReplicatedReplacingMergeTree) Virtuals() []DeclaredColumn {
+	return mergeTreeFamilyVirtuals
+}
+func (EngineSummingMergeTree) Virtuals() []DeclaredColumn { return mergeTreeFamilyVirtuals }
+func (EngineReplicatedSummingMergeTree) Virtuals() []DeclaredColumn {
+	return mergeTreeFamilyVirtuals
+}
+func (EngineCollapsingMergeTree) Virtuals() []DeclaredColumn {
+	return mergeTreeFamilyVirtuals
+}
+func (EngineReplicatedCollapsingMergeTree) Virtuals() []DeclaredColumn {
+	return mergeTreeFamilyVirtuals
+}
+func (EngineAggregatingMergeTree) Virtuals() []DeclaredColumn {
+	return mergeTreeFamilyVirtuals
+}
+func (EngineReplicatedAggregatingMergeTree) Virtuals() []DeclaredColumn {
+	return mergeTreeFamilyVirtuals
+}
+
+// kafkaBaseVirtuals is the always-on Kafka virtual set. `_headers` is
+// modelled in its dot-access form (`_headers.name`, `_headers.value`)
+// matching how MV queries reference it; the bare Nested parent
+// "_headers" is added by IsVirtualColumn for membership tests and by
+// the live-test stub builder for CREATE statements.
+var kafkaBaseVirtuals = []DeclaredColumn{
+	{Name: "_topic", Type: "LowCardinality(String)"},
+	{Name: "_key", Type: "String"},
+	{Name: "_offset", Type: "UInt64"},
+	{Name: "_partition", Type: "UInt64"},
+	{Name: "_timestamp", Type: "Nullable(DateTime)"},
+	{Name: "_timestamp_ms", Type: "Nullable(DateTime64(3))"},
+	{Name: "_headers.name", Type: "Array(String)"},
+	{Name: "_headers.value", Type: "Array(String)"},
+}
+
+// kafkaStreamVirtuals are the additional virtuals exposed only when
+// HandleErrorMode = "stream".
+var kafkaStreamVirtuals = []DeclaredColumn{
+	{Name: "_raw_message", Type: "String"},
+	{Name: "_error", Type: "String"},
+}
+
+func (e EngineKafka) Virtuals() []DeclaredColumn {
+	if e.HandleErrorMode != nil && *e.HandleErrorMode == "stream" {
+		out := make([]DeclaredColumn, 0, len(kafkaBaseVirtuals)+len(kafkaStreamVirtuals))
+		out = append(out, kafkaBaseVirtuals...)
+		out = append(out, kafkaStreamVirtuals...)
+		return out
+	}
+	return kafkaBaseVirtuals
+}
+
+var distributedSelfVirtuals = []DeclaredColumn{
+	{Name: "_shard_num", Type: "UInt32"},
+}
+
+// Virtuals returns only the Distributed-local virtuals — used as the
+// static fallback when no TableResolver is available. With a resolver,
+// DynamicVirtuals returns the transitive set.
+func (EngineDistributed) Virtuals() []DeclaredColumn { return distributedSelfVirtuals }
+
+// DynamicVirtuals returns _shard_num plus the virtuals of the remote
+// table, recursing through chained Distributed tables. Cycles are
+// broken by a visited set. With r == nil or the remote not modelled in
+// the schema, only _shard_num is returned.
+func (e EngineDistributed) DynamicVirtuals(r TableResolver) []DeclaredColumn {
+	return distributedVirtuals(e, r, map[string]bool{})
+}
+
+func distributedVirtuals(e EngineDistributed, r TableResolver, seen map[string]bool) []DeclaredColumn {
+	out := append([]DeclaredColumn(nil), distributedSelfVirtuals...)
+	if r == nil {
+		return out
+	}
+	key := e.RemoteDatabase + "." + e.RemoteTable
+	if seen[key] {
+		return out
+	}
+	seen[key] = true
+
+	remote, ok := r.LookupTable(e.RemoteDatabase, e.RemoteTable)
+	if !ok || remote.Engine == nil {
+		return out
+	}
+
+	var inherited []DeclaredColumn
+	switch inner := remote.Engine.Decoded.(type) {
+	case EngineDistributed:
+		inherited = distributedVirtuals(inner, r, seen)
+	default:
+		if v, ok := remote.Engine.Decoded.(EngineWithVirtuals); ok {
+			inherited = v.Virtuals()
+		}
+	}
+
+	have := map[string]bool{}
+	for _, c := range out {
+		have[c.Name] = true
+	}
+	for _, c := range inherited {
+		if !have[c.Name] {
+			out = append(out, c)
+			have[c.Name] = true
+		}
+	}
+	return out
+}
+
 // DecodeEngine dispatches on spec.Kind and decodes the body into a kind-specific
 // struct. Returns (nil, nil) when spec is nil.
 func DecodeEngine(spec *EngineSpec) (Engine, error) {

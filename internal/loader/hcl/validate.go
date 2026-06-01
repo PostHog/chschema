@@ -14,6 +14,13 @@ const (
 	DepMVDest            = "mv_dest"            // a materialized view writes into this table
 	DepDistributedRemote = "distributed_remote" // a Distributed table forwards to this table
 	DepViewSource        = "view_source"        // a plain view reads from this table
+
+	// KindMVColumn flags a materialized view that references a column its
+	// single source table does not provide (declared columns plus the
+	// engine's virtual columns). This is a heuristic check, restricted to
+	// virtual-prefixed names (those starting with `_`) and to MVs with a
+	// single resolvable source and no JOIN/CTE/UNION/subquery/SELECT *.
+	KindMVColumn = "mv_column"
 )
 
 // ObjectRef identifies a schema object (table or materialized view) by its
@@ -459,6 +466,25 @@ func Validate(dbs []DatabaseSpec, skip SkipSet) []ValidationError {
 		}
 	}
 
+	// MV column validation (heuristic, virtual-prefixed names only).
+	// Runs in addition to the dependency check above. Same skip rules.
+	resolver := NewSchemaResolver(dbs)
+	tablesByRef := map[ObjectRef]TableSpec{}
+	for _, db := range dbs {
+		for _, t := range db.Tables {
+			tablesByRef[ObjectRef{Database: db.Name, Name: t.Name}] = t
+		}
+	}
+	for _, db := range dbs {
+		for _, mv := range db.MaterializedViews {
+			from := ObjectRef{Database: db.Name, Name: mv.Name}
+			if skip.Skips(from) {
+				continue
+			}
+			errs = append(errs, validateMVColumns(from, mv, db.Name, tablesByRef, resolver)...)
+		}
+	}
+
 	sort.Slice(errs, func(i, j int) bool {
 		if errs[i].Object != errs[j].Object {
 			return errs[i].Object.String() < errs[j].Object.String()
@@ -466,6 +492,238 @@ func Validate(dbs []DatabaseSpec, skip SkipSet) []ValidationError {
 		return errs[i].Missing.String() < errs[j].Missing.String()
 	})
 	return errs
+}
+
+// validateMVColumns runs the heuristic virtual-column reference check on
+// a single MV. Returns an empty slice when the query is too complex to
+// attribute, when the source can't be resolved to a known TableSpec, or
+// when no virtual-prefixed refs are unknown.
+func validateMVColumns(from ObjectRef, mv MaterializedViewSpec, defaultDB string, tables map[ObjectRef]TableSpec, r TableResolver) []ValidationError {
+	sources, err := extractSourceTables(mv.Query)
+	if err != nil || len(sources) != 1 {
+		return nil
+	}
+	src := sources[0]
+	if src.Database == "" {
+		src.Database = defaultDB
+	}
+	srcSpec, ok := tables[src]
+	if !ok {
+		return nil
+	}
+	refs, ok := mvVirtualPrefixedRefs(mv.Query)
+	if !ok {
+		return nil
+	}
+	provided := ColumnsProvidedBy(srcSpec, r)
+	providedNames := make(map[string]bool, len(provided))
+	hasHeadersDotted := false
+	for _, c := range provided {
+		providedNames[c.Name] = true
+		if !hasHeadersDotted && strings.HasPrefix(c.Name, "_headers.") {
+			hasHeadersDotted = true
+		}
+	}
+	if hasHeadersDotted {
+		providedNames["_headers"] = true // accept the bare Nested parent too
+	}
+
+	// Sort refs for deterministic errors.
+	names := make([]string, 0, len(refs))
+	for n := range refs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	var errs []ValidationError
+	for _, ref := range names {
+		if providedNames[ref] {
+			continue
+		}
+		errs = append(errs, ValidationError{
+			Object:  from,
+			Missing: ObjectRef{Database: src.Database, Name: ref},
+			Kind:    KindMVColumn,
+			Reason: fmt.Sprintf("materialized view references column %q which is not provided by source table %q (declared columns or %s virtual columns)",
+				ref, src, sourceEngineKind(srcSpec)),
+		})
+	}
+	return errs
+}
+
+// sourceEngineKind returns the engine kind name for the error message, or
+// "(no engine)" when the source has none (shouldn't happen post-resolve).
+func sourceEngineKind(t TableSpec) string {
+	if t.Engine != nil && t.Engine.Decoded != nil {
+		return t.Engine.Decoded.Kind()
+	}
+	return "(no engine)"
+}
+
+// mvVirtualPrefixedRefs parses an MV query and returns the set of
+// underscore-prefixed identifier names it references. ok=false signals
+// the caller should skip the check (query has JOIN, UNION, CTE, subquery
+// in FROM, or SELECT *).
+//
+// The leading-underscore heuristic deliberately scopes the check to
+// virtual-column-like names so the bare-Ident walk can't false-positive
+// on regular columns we couldn't attribute precisely.
+func mvVirtualPrefixedRefs(query string) (map[string]bool, bool) {
+	stmts, err := chparser.NewParser(query).ParseStmts()
+	if err != nil || len(stmts) == 0 {
+		return nil, false
+	}
+	var sel *chparser.SelectQuery
+	for _, n := range chparser.FindAll(stmts[0], isSelectQuery) {
+		sel = n.(*chparser.SelectQuery)
+		break
+	}
+	if sel == nil {
+		return nil, false
+	}
+	// Bail on structural complexity.
+	if sel.UnionAll != nil || sel.UnionDistinct != nil || sel.Except != nil {
+		return nil, false
+	}
+	if sel.With != nil && len(sel.With.CTEs) > 0 {
+		return nil, false
+	}
+	if !isSimpleFrom(sel.From) {
+		return nil, false
+	}
+	if hasStarSelectItem(sel) {
+		return nil, false
+	}
+
+	// Collect alias names introduced by SELECT items so they don't
+	// surface as refs.
+	aliasNames := map[string]bool{}
+	for _, item := range sel.SelectItems {
+		if item.Alias != nil {
+			aliasNames[stripBackticks(item.Alias.Name)] = true
+		}
+	}
+
+	// Collect Idents we must NOT treat as column refs: function names,
+	// table-qualifier Idents, alias-target Idents. Compared by pointer
+	// identity since FindAll returns shared nodes.
+	skip := map[*chparser.Ident]bool{}
+	for _, n := range chparser.FindAll(sel, func(e chparser.Expr) bool {
+		_, ok := e.(*chparser.FunctionExpr)
+		return ok
+	}) {
+		f := n.(*chparser.FunctionExpr)
+		if f.Name != nil {
+			skip[f.Name] = true
+		}
+	}
+	for _, n := range chparser.FindAll(sel, isTableIdentifier) {
+		t := n.(*chparser.TableIdentifier)
+		if t.Database != nil {
+			skip[t.Database] = true
+		}
+		if t.Table != nil {
+			skip[t.Table] = true
+		}
+	}
+	for _, n := range chparser.FindAll(sel, func(e chparser.Expr) bool {
+		_, ok := e.(*chparser.Path)
+		return ok
+	}) {
+		p := n.(*chparser.Path)
+		// Path qualifier idents (db, table) are not column refs; only
+		// the final Ident is. Skip every Ident except the last.
+		if len(p.Fields) > 1 {
+			for i := 0; i < len(p.Fields)-1; i++ {
+				skip[p.Fields[i]] = true
+			}
+		}
+	}
+	for _, item := range sel.SelectItems {
+		if item.Alias != nil {
+			skip[item.Alias] = true
+		}
+	}
+
+	refs := map[string]bool{}
+	for _, n := range chparser.FindAll(sel, func(e chparser.Expr) bool {
+		_, ok := e.(*chparser.Ident)
+		return ok
+	}) {
+		id := n.(*chparser.Ident)
+		if skip[id] {
+			continue
+		}
+		name := stripBackticks(id.Name)
+		if !strings.HasPrefix(name, "_") {
+			continue
+		}
+		if aliasNames[name] {
+			continue
+		}
+		refs[name] = true
+	}
+	for _, n := range chparser.FindAll(sel, func(e chparser.Expr) bool {
+		_, ok := e.(*chparser.NestedIdentifier)
+		return ok
+	}) {
+		ni := n.(*chparser.NestedIdentifier)
+		if ni.Ident == nil || ni.DotIdent == nil {
+			continue
+		}
+		name := stripBackticks(ni.Ident.Name) + "." + stripBackticks(ni.DotIdent.Name)
+		if !strings.HasPrefix(name, "_") {
+			continue
+		}
+		if aliasNames[name] {
+			continue
+		}
+		refs[name] = true
+	}
+	return refs, true
+}
+
+// isSimpleFrom reports whether the FROM clause is a single, plain
+// TableIdentifier — no JOIN, no subquery, no table-function call. The
+// parser wraps every FROM in JoinTableExpr → TableExpr → inner; the inner
+// must be a TableIdentifier or bare Ident. JoinExpr at the top means a
+// real JOIN; SubQuery at the inner means a FROM-subquery. Both bail.
+func isSimpleFrom(f *chparser.FromClause) bool {
+	if f == nil {
+		return false
+	}
+	jte, ok := f.Expr.(*chparser.JoinTableExpr)
+	if !ok {
+		return false
+	}
+	if jte.Table == nil {
+		return false
+	}
+	switch jte.Table.Expr.(type) {
+	case *chparser.TableIdentifier, *chparser.Ident:
+		return true
+	default:
+		return false
+	}
+}
+
+// hasStarSelectItem reports whether any SELECT item is a `*` or `t.*`.
+// Detected by walking the SelectItem expressions for any Ident whose
+// name is "*" — the chparser models the star as such.
+func hasStarSelectItem(sel *chparser.SelectQuery) bool {
+	for _, item := range sel.SelectItems {
+		if item == nil || item.Expr == nil {
+			continue
+		}
+		for _, n := range chparser.FindAll(item.Expr, func(e chparser.Expr) bool {
+			id, ok := e.(*chparser.Ident)
+			return ok && id != nil && id.Name == "*"
+		}) {
+			_ = n
+			return true
+		}
+	}
+	return false
 }
 
 func depPhrase(kind string) string {

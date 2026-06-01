@@ -3,6 +3,7 @@ package hcl
 import (
 	"reflect"
 	"sort"
+	"strings"
 )
 
 // ChangeSet describes the changes required to evolve a `from` schema into a
@@ -200,6 +201,11 @@ func Diff(from, to *Schema) ChangeSet {
 	toIdx := indexDatabases(to.Databases)
 	names := mergedKeys(fromIdx, toIdx)
 
+	// Resolvers built once per side so the virtual-column guard in
+	// diffTable can resolve Distributed → remote-table transitive sets.
+	fromR := NewSchemaResolver(from.Databases)
+	toR := NewSchemaResolver(to.Databases)
+
 	var cs ChangeSet
 	for _, name := range names {
 		f, fOK := fromIdx[name]
@@ -226,7 +232,7 @@ func Diff(from, to *Schema) ChangeSet {
 				dc.DropViews = append(dc.DropViews, v.Name)
 			}
 		default:
-			dc = diffDatabase(name, f, t)
+			dc = diffDatabase(name, f, t, fromR, toR)
 		}
 		if dc.IsEmpty() {
 			continue
@@ -262,7 +268,7 @@ func mergedKeys(a, b map[string]*DatabaseSpec) []string {
 	return out
 }
 
-func diffDatabase(name string, from, to *DatabaseSpec) DatabaseChange {
+func diffDatabase(name string, from, to *DatabaseSpec, fromR, toR TableResolver) DatabaseChange {
 	dc := DatabaseChange{Database: name}
 
 	fromTables := indexTables(from.Tables)
@@ -283,7 +289,7 @@ func diffDatabase(name string, from, to *DatabaseSpec) DatabaseChange {
 		if !ok {
 			continue
 		}
-		td := diffTable(fromTables[n], t)
+		td := diffTable(fromTables[n], t, fromR, toR)
 		if !td.IsEmpty() {
 			dc.AlterTables = append(dc.AlterTables, td)
 		}
@@ -490,11 +496,38 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
-func diffTable(from, to *TableSpec) TableDiff {
+func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 	td := TableDiff{Table: to.Name}
 
 	fromCols := indexColumns(from.Columns)
 	toCols := indexColumns(to.Columns)
+
+	// Asymmetric virtual-column guard. A column name recognised as
+	// virtual by an engine is dropped from that side only when the
+	// OTHER side has not declared it — that suppresses would-be
+	// ADD/DROP DDL on a virtual (CH rejects DROP COLUMN of a virtual
+	// and a stray "_offset" leak from a future system.columns-based
+	// introspector would otherwise generate one). When both sides
+	// declare the column (e.g. real `_key FixedString(8)` on both),
+	// it stays and a type change still surfaces normally.
+	fromVirtuals := virtualNameSet(engineOf(*from), fromR)
+	toVirtuals := virtualNameSet(engineOf(*to), toR)
+	for n := range fromCols {
+		if !fromVirtuals[n] {
+			continue
+		}
+		if _, declaredOnOther := toCols[n]; !declaredOnOther {
+			delete(fromCols, n)
+		}
+	}
+	for n := range toCols {
+		if !toVirtuals[n] {
+			continue
+		}
+		if _, declaredOnOther := fromCols[n]; !declaredOnOther {
+			delete(toCols, n)
+		}
+	}
 
 	// Resolve renamed_from directives: a rename applies only when the old
 	// name exists in `from` AND the new name does not. This makes stale
@@ -684,4 +717,31 @@ func sortDatabaseChange(dc *DatabaseChange) {
 	sort.Slice(dc.AddViews, func(i, j int) bool { return dc.AddViews[i].Name < dc.AddViews[j].Name })
 	sort.Strings(dc.DropViews)
 	sort.Slice(dc.AlterViews, func(i, j int) bool { return dc.AlterViews[i].Name < dc.AlterViews[j].Name })
+}
+
+// virtualNameSet returns the names recognised as virtual on engine e in
+// the context of resolver r. Includes the bare Nested parent for any
+// dot-access name (e.g. "_headers" when "_headers.name" is present), so
+// a stray declared parent is recognised even though Virtuals() only
+// reports the dot-access form.
+func virtualNameSet(e Engine, r TableResolver) map[string]bool {
+	if e == nil {
+		return nil
+	}
+	cols := VirtualColumnsFor(e, r)
+	if len(cols) == 0 {
+		return nil
+	}
+	out := make(map[string]bool, len(cols)+1)
+	hasHeadersDotted := false
+	for _, c := range cols {
+		out[c.Name] = true
+		if !hasHeadersDotted && strings.HasPrefix(c.Name, "_headers.") {
+			hasHeadersDotted = true
+		}
+	}
+	if hasHeadersDotted {
+		out["_headers"] = true
+	}
+	return out
 }

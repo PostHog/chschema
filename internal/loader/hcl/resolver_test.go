@@ -299,6 +299,165 @@ func TestResolve_KafkaEngine_XOR(t *testing.T) {
 	}
 }
 
+// mvExtendBase returns the canonical four-tier schema used by the MV-extend
+// tests: an abstract base table, three concrete tables (Kafka/local/Distributed)
+// extending it, and an MV that also extends it. Built in memory so individual
+// tests can mutate single fields to exercise edge cases without copy-paste.
+func mvExtendBase() *Schema {
+	cols := []ColumnSpec{
+		{Name: "timestamp", Type: "DateTime64(3)"},
+		{Name: "team_id", Type: "UInt32"},
+		{Name: "event", Type: "String"},
+	}
+	return &Schema{Databases: []DatabaseSpec{{
+		Name: "default",
+		Tables: []TableSpec{
+			{Name: "events_base", Abstract: true, Columns: cols},
+			{
+				Name:    "events_local",
+				Extend:  ptr("events_base"),
+				OrderBy: []string{"team_id", "timestamp"},
+				Engine: &EngineSpec{
+					Kind: "replicated_merge_tree",
+					Decoded: EngineReplicatedMergeTree{
+						ZooPath:     "/clickhouse/tables/{shard}/events",
+						ReplicaName: "{replica}",
+					},
+				},
+			},
+		},
+		MaterializedViews: []MaterializedViewSpec{{
+			Name:    "events_mv",
+			Extend:  ptr("events_base"),
+			ToTable: "events_local",
+			Query:   "SELECT timestamp, team_id, event FROM events_kafka",
+		}},
+	}}}
+}
+
+func TestResolve_MVExtendsAbstractTable(t *testing.T) {
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_mv_extend.hcl"))
+	require.NoError(t, err)
+	require.NoError(t, Resolve(schema))
+
+	require.Len(t, schema.Databases, 1)
+	db := schema.Databases[0]
+
+	// Abstract base is dropped; three concrete tables remain.
+	assert.Equal(t, []string{"events_kafka", "events_local", "events_distributed"},
+		[]string{db.Tables[0].Name, db.Tables[1].Name, db.Tables[2].Name})
+	require.Len(t, db.MaterializedViews, 1)
+	mv := db.MaterializedViews[0]
+	assert.Equal(t, "events_mv", mv.Name)
+	assert.Nil(t, mv.Extend, "extend should be cleared after resolution")
+	assert.Equal(t, []ColumnSpec{
+		{Name: "timestamp", Type: "DateTime64(3)"},
+		{Name: "team_id", Type: "UInt32"},
+		{Name: "event", Type: "String"},
+		{Name: "properties", Type: "String", Codec: ptr("ZSTD(3)")},
+	}, mv.Columns)
+	// db.Cluster cascades into the MV.
+	require.NotNil(t, mv.Cluster)
+	assert.Equal(t, "main", *mv.Cluster)
+}
+
+func TestResolve_MVExtendsAbstract_WithExtraColumns(t *testing.T) {
+	s := mvExtendBase()
+	mv := &s.Databases[0].MaterializedViews[0]
+	mv.Columns = []ColumnSpec{{Name: "extra", Type: "UInt8"}}
+	require.NoError(t, Resolve(s))
+	assert.Equal(t, []ColumnSpec{
+		{Name: "timestamp", Type: "DateTime64(3)"},
+		{Name: "team_id", Type: "UInt32"},
+		{Name: "event", Type: "String"},
+		{Name: "extra", Type: "UInt8"},
+	}, s.Databases[0].MaterializedViews[0].Columns)
+}
+
+func TestResolve_MVExtendsAbstract_ColumnCollision(t *testing.T) {
+	s := mvExtendBase()
+	mv := &s.Databases[0].MaterializedViews[0]
+	mv.Columns = []ColumnSpec{{Name: "team_id", Type: "UInt64"}}
+	err := Resolve(s)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "team_id")
+	assert.Contains(t, err.Error(), "collides")
+}
+
+func TestResolve_MVExtendsConcreteTable_Rejected(t *testing.T) {
+	s := mvExtendBase()
+	mv := &s.Databases[0].MaterializedViews[0]
+	mv.Extend = ptr("events_local")
+	err := Resolve(s)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must be an abstract table")
+}
+
+func TestResolve_MVExtendsUnknownName(t *testing.T) {
+	s := mvExtendBase()
+	mv := &s.Databases[0].MaterializedViews[0]
+	mv.Extend = ptr("does_not_exist")
+	err := Resolve(s)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "does_not_exist")
+}
+
+func TestResolve_MVExtendsMV_Rejected(t *testing.T) {
+	s := mvExtendBase()
+	db := &s.Databases[0]
+	db.MaterializedViews = append(db.MaterializedViews, MaterializedViewSpec{
+		Name:    "events_mv_2",
+		Extend:  ptr("events_mv"),
+		ToTable: "events_local",
+		Query:   "SELECT * FROM events_kafka",
+	})
+	err := Resolve(s)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot extend another materialized_view")
+}
+
+func TestResolve_AbstractMV_Dropped(t *testing.T) {
+	s := mvExtendBase()
+	db := &s.Databases[0]
+	db.MaterializedViews[0] = MaterializedViewSpec{
+		Name:     "events_mv_template",
+		Abstract: true,
+		Columns:  []ColumnSpec{{Name: "x", Type: "UInt8"}},
+	}
+	require.NoError(t, Resolve(s))
+	assert.Empty(t, s.Databases[0].MaterializedViews, "abstract MV should be dropped")
+}
+
+func TestResolve_NonAbstractMV_RequiresToTable(t *testing.T) {
+	s := mvExtendBase()
+	mv := &s.Databases[0].MaterializedViews[0]
+	mv.ToTable = ""
+	err := Resolve(s)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires to_table")
+}
+
+func TestResolve_NonAbstractMV_RequiresQuery(t *testing.T) {
+	s := mvExtendBase()
+	mv := &s.Databases[0].MaterializedViews[0]
+	mv.Query = ""
+	err := Resolve(s)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "requires query")
+}
+
+func TestResolve_DatabaseClusterCascadesToMV(t *testing.T) {
+	s := mvExtendBase()
+	s.Databases[0].Cluster = ptr("posthog")
+	// MV does not extend, does not set its own cluster.
+	s.Databases[0].MaterializedViews[0].Extend = nil
+	s.Databases[0].MaterializedViews[0].Cluster = nil
+	require.NoError(t, Resolve(s))
+	mv := s.Databases[0].MaterializedViews[0]
+	require.NotNil(t, mv.Cluster)
+	assert.Equal(t, "posthog", *mv.Cluster)
+}
+
 func TestResolve_KafkaCollectionReference(t *testing.T) {
 	s := &Schema{Databases: []DatabaseSpec{{
 		Name: "db",
