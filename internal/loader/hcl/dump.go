@@ -166,8 +166,31 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 	block := parent.AppendNewBlock("engine", []string{e.Kind()})
 	b := block.Body()
 	switch v := e.(type) {
-	case EngineMergeTree, EngineAggregatingMergeTree, EngineLog:
+	case EngineMergeTree, EngineAggregatingMergeTree, EngineLog,
+		EngineNull, EngineMemory:
 		// no fields
+	case EngineMerge:
+		b.SetAttributeValue("db_regex", cty.StringVal(v.DBRegex))
+		b.SetAttributeValue("table_regex", cty.StringVal(v.TableRegex))
+	case EngineBuffer:
+		b.SetAttributeValue("database", cty.StringVal(v.Database))
+		b.SetAttributeValue("table", cty.StringVal(v.Table))
+		b.SetAttributeValue("num_layers", cty.NumberIntVal(v.NumLayers))
+		b.SetAttributeValue("min_time", cty.NumberIntVal(v.MinTime))
+		b.SetAttributeValue("max_time", cty.NumberIntVal(v.MaxTime))
+		b.SetAttributeValue("min_rows", cty.NumberIntVal(v.MinRows))
+		b.SetAttributeValue("max_rows", cty.NumberIntVal(v.MaxRows))
+		b.SetAttributeValue("min_bytes", cty.NumberIntVal(v.MinBytes))
+		b.SetAttributeValue("max_bytes", cty.NumberIntVal(v.MaxBytes))
+		if v.FlushTime != nil {
+			b.SetAttributeValue("flush_time", cty.NumberIntVal(*v.FlushTime))
+		}
+		if v.FlushRows != nil {
+			b.SetAttributeValue("flush_rows", cty.NumberIntVal(*v.FlushRows))
+		}
+		if v.FlushBytes != nil {
+			b.SetAttributeValue("flush_bytes", cty.NumberIntVal(*v.FlushBytes))
+		}
 	case EngineReplicatedMergeTree:
 		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
 		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
