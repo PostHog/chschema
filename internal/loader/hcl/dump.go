@@ -169,6 +169,10 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 	case EngineMergeTree, EngineAggregatingMergeTree, EngineLog,
 		EngineNull, EngineMemory:
 		// no fields
+	case EngineJoin:
+		b.SetAttributeValue("strictness", cty.StringVal(v.Strictness))
+		b.SetAttributeValue("type", cty.StringVal(v.JoinType))
+		b.SetAttributeValue("keys", stringList(v.Keys))
 	case EngineMerge:
 		b.SetAttributeValue("db_regex", cty.StringVal(v.DBRegex))
 		b.SetAttributeValue("table_regex", cty.StringVal(v.TableRegex))

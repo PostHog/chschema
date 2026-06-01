@@ -180,6 +180,54 @@ func TestLive_HCLIntrospect_TimeSeries(t *testing.T) {
 	require.Equal(t, dbName+".prom_metrics_meta", *ext.Metrics.Target)
 }
 
+// TestLive_HCLIntrospect_Join verifies that a Join-engine table —
+// the most common missing engine in PostHog production with ~180
+// tables — round-trips through `hclload.Introspect`.
+func TestLive_HCLIntrospect_Join(t *testing.T) {
+	if !*clickhouse {
+		t.SkipNow()
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	ctx := context.Background()
+
+	stmts := []string{
+		`CREATE TABLE ` + dbName + `.single_key (
+			id UInt64,
+			value String
+		) ENGINE = Join(ANY, LEFT, id)`,
+
+		`CREATE TABLE ` + dbName + `.multi_key (
+			user_id UInt64,
+			session_id UInt64,
+			value String
+		) ENGINE = Join(ALL, INNER, user_id, session_id)`,
+	}
+	for _, s := range stmts {
+		require.NoError(t, conn.Exec(ctx, s), "create failed: %s", s)
+	}
+
+	got, err := hclload.Introspect(ctx, conn, dbName)
+	require.NoError(t, err)
+
+	byName := map[string]hclload.Engine{}
+	for _, tbl := range got.Tables {
+		byName[tbl.Name] = tbl.Engine.Decoded
+	}
+
+	sk, ok := byName["single_key"].(hclload.EngineJoin)
+	require.True(t, ok)
+	require.Equal(t, "ANY", sk.Strictness)
+	require.Equal(t, "LEFT", sk.JoinType)
+	require.Equal(t, []string{"id"}, sk.Keys)
+
+	mk, ok := byName["multi_key"].(hclload.EngineJoin)
+	require.True(t, ok)
+	require.Equal(t, "ALL", mk.Strictness)
+	require.Equal(t, "INNER", mk.JoinType)
+	require.Equal(t, []string{"user_id", "session_id"}, mk.Keys)
+}
+
 // TestLive_HCLIntrospect_CommonEngines exercises a Buffer-over-MergeTree
 // pair (the production shape that motivated this change), plus Null,
 // Memory, and Merge — three of the cheaper engines added in the same

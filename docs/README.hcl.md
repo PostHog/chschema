@@ -118,6 +118,7 @@ attributes depend on the kind.
 | `log`                                 | —                                                  | —                      |
 | `kafka`                               | `broker_list = [...]`, `topic`, `consumer_group`, `format` | —              |
 | `time_series` (experimental)          | —                                                  | `settings`, `tags_to_columns`, nested `samples`/`tags`/`metrics` blocks |
+| `join`                                | `strictness` (`ANY`/`ALL`/`SEMI`/`ANTI`), `type` (`LEFT`/`INNER`/`RIGHT`/`FULL`), `keys = [...]` | — |
 | `null`                                | —                                                  | —                      |
 | `memory`                              | —                                                  | —                      |
 | `merge`                               | `db_regex`, `table_regex`                          | —                      |
