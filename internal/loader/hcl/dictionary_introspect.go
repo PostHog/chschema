@@ -295,6 +295,18 @@ func buildDictionaryLayoutFromAST(l *chparser.DictionaryLayoutClause) (*Dictiona
 			return nil, errors.New("layout cache: missing size_in_cells")
 		}
 		decoded = LayoutCache{SizeInCells: *n}
+	case "complex_key_cache":
+		n := optInt64(args["size_in_cells"])
+		if n == nil {
+			return nil, errors.New("layout complex_key_cache: missing size_in_cells")
+		}
+		decoded = LayoutComplexKeyCache{SizeInCells: *n}
+	case "complex_key_direct":
+		decoded = LayoutComplexKeyDirect{}
+	case "hashed_array":
+		decoded = LayoutHashedArray{Shards: optInt64(args["shards"])}
+	case "complex_key_hashed_array":
+		decoded = LayoutComplexKeyHashedArray{Shards: optInt64(args["shards"])}
 	case "ip_trie":
 		decoded = LayoutIPTrie{AccessToKeyFromAttributes: optBool(args["access_to_key_from_attributes"])}
 	default:

@@ -46,6 +46,38 @@ type LayoutCache struct {
 
 func (LayoutCache) Kind() string { return "cache" }
 
+// LayoutComplexKeyCache is the complex-key (multi-column key) counterpart
+// to LayoutCache. Same single required parameter — size_in_cells controls
+// the number of cells in the LRU cache.
+type LayoutComplexKeyCache struct {
+	SizeInCells int64 `hcl:"size_in_cells"`
+}
+
+func (LayoutComplexKeyCache) Kind() string { return "complex_key_cache" }
+
+// LayoutComplexKeyDirect is the complex-key counterpart to LayoutDirect:
+// every lookup hits the source, no in-process caching. No parameters.
+type LayoutComplexKeyDirect struct{}
+
+func (LayoutComplexKeyDirect) Kind() string { return "complex_key_direct" }
+
+// LayoutHashedArray is a memory-efficient hash layout that stores values
+// in a packed array. `shards` partitions the dictionary across N parallel
+// hash tables for concurrent reads (default 1).
+type LayoutHashedArray struct {
+	Shards *int64 `hcl:"shards,optional"`
+}
+
+func (LayoutHashedArray) Kind() string { return "hashed_array" }
+
+// LayoutComplexKeyHashedArray is the complex-key counterpart to
+// LayoutHashedArray. Same optional `shards` parameter.
+type LayoutComplexKeyHashedArray struct {
+	Shards *int64 `hcl:"shards,optional"`
+}
+
+func (LayoutComplexKeyHashedArray) Kind() string { return "complex_key_hashed_array" }
+
 type LayoutIPTrie struct {
 	AccessToKeyFromAttributes *bool `hcl:"access_to_key_from_attributes,optional"`
 }
@@ -73,6 +105,8 @@ func DecodeDictionaryLayout(spec *DictionaryLayoutSpec) (DictionaryLayout, error
 		return LayoutComplexKeySparseHashed{}, nil
 	case "direct":
 		return LayoutDirect{}, nil
+	case "complex_key_direct":
+		return LayoutComplexKeyDirect{}, nil
 	case "complex_key_hashed":
 		var l LayoutComplexKeyHashed
 		if d := gohcl.DecodeBody(spec.Body, nil, &l); d.HasErrors() {
@@ -95,6 +129,24 @@ func DecodeDictionaryLayout(spec *DictionaryLayoutSpec) (DictionaryLayout, error
 		var l LayoutCache
 		if d := gohcl.DecodeBody(spec.Body, nil, &l); d.HasErrors() {
 			return nil, fmt.Errorf("layout cache: %s", d.Error())
+		}
+		return l, nil
+	case "complex_key_cache":
+		var l LayoutComplexKeyCache
+		if d := gohcl.DecodeBody(spec.Body, nil, &l); d.HasErrors() {
+			return nil, fmt.Errorf("layout complex_key_cache: %s", d.Error())
+		}
+		return l, nil
+	case "hashed_array":
+		var l LayoutHashedArray
+		if d := gohcl.DecodeBody(spec.Body, nil, &l); d.HasErrors() {
+			return nil, fmt.Errorf("layout hashed_array: %s", d.Error())
+		}
+		return l, nil
+	case "complex_key_hashed_array":
+		var l LayoutComplexKeyHashedArray
+		if d := gohcl.DecodeBody(spec.Body, nil, &l); d.HasErrors() {
+			return nil, fmt.Errorf("layout complex_key_hashed_array: %s", d.Error())
 		}
 		return l, nil
 	case "ip_trie":

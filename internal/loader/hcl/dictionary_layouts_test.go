@@ -76,6 +76,27 @@ func TestDecodeDictionaryLayout_AllSupportedKinds(t *testing.T) {
 		{"direct", `dictionary "d" {
 			layout "direct" {}
 		}`, LayoutDirect{}},
+		{"complex_key_cache", `dictionary "d" {
+			layout "complex_key_cache" {
+				size_in_cells = 2000
+			}
+		}`, LayoutComplexKeyCache{SizeInCells: 2000}},
+		{"complex_key_direct", `dictionary "d" {
+			layout "complex_key_direct" {}
+		}`, LayoutComplexKeyDirect{}},
+		{"hashed_array_no_shards", `dictionary "d" {
+			layout "hashed_array" {}
+		}`, LayoutHashedArray{}},
+		{"hashed_array_with_shards", `dictionary "d" {
+			layout "hashed_array" {
+				shards = 4
+			}
+		}`, LayoutHashedArray{Shards: ptr(int64(4))}},
+		{"complex_key_hashed_array", `dictionary "d" {
+			layout "complex_key_hashed_array" {
+				shards = 8
+			}
+		}`, LayoutComplexKeyHashedArray{Shards: ptr(int64(8))}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -88,12 +109,12 @@ func TestDecodeDictionaryLayout_AllSupportedKinds(t *testing.T) {
 
 func TestDecodeDictionaryLayout_Unsupported(t *testing.T) {
 	src := `dictionary "d" {
-		layout "hashed_array" {}
+		layout "polygon" {}
 	}`
 	_, err := decodeLayout(t, src)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported dictionary layout kind")
-	assert.Contains(t, err.Error(), "hashed_array")
+	assert.Contains(t, err.Error(), "polygon")
 }
 
 func TestDecodeDictionaryLayout_NilSpec(t *testing.T) {

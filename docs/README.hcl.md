@@ -124,6 +124,8 @@ attributes depend on the kind.
 | `merge`                               | `db_regex`, `table_regex`                          | —                      |
 | `buffer`                              | `database`, `table`, `num_layers`, `min_time`, `max_time`, `min_rows`, `max_rows`, `min_bytes`, `max_bytes` | `flush_time`, `flush_rows`, `flush_bytes` |
 
+Dictionary layouts supported via `layout "<kind>"` inside a `dictionary` block: `flat`, `hashed`, `sparse_hashed`, `complex_key_hashed` (optional `preallocate`), `complex_key_sparse_hashed`, `range_hashed` / `complex_key_range_hashed` (optional `range_lookup_strategy`), `cache` (required `size_in_cells`), `complex_key_cache` (required `size_in_cells`), `hashed_array` / `complex_key_hashed_array` (optional `shards`), `direct`, `complex_key_direct`, `ip_trie` (optional `access_to_key_from_attributes`).
+
 Unknown kinds and missing required attributes are rejected at parse time
 with file/line positions.
 
