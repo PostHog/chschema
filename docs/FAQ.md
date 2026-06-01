@@ -308,3 +308,36 @@ The pipeline mutates the parsed `[]DatabaseSpec` in place. After
 fields filled in, engines decoded into their typed structs, abstracts
 dropped, and `extend` cleared. That value is what the diff engine and SQL
 generator consume.
+## How do I model a Prometheus TimeSeries table?
+
+Use the `time_series` engine. The common production shape is the
+external-target form, where three target tables already exist (declared
+elsewhere in the schema) and the TimeSeries wraps them:
+
+```hcl
+table "prom_metrics" {
+  column "metric_name" { type = "LowCardinality(String)" }
+  # ... outer columns ...
+
+  engine "time_series" {
+    samples { target = "default.prom_metrics_data" }
+    tags    { target = "default.prom_metrics_tags" }
+    metrics { target = "default.prom_metrics_metrics" }
+  }
+}
+```
+
+`hclexp validate` will refuse to resolve until each target table is
+declared somewhere in the loaded schema (a new dependency kind
+`ts_target`). If you don't manage them via hclexp, declare them with
+`engine "merge_tree" {}` (or whichever they actually use) so the
+dependency check passes.
+
+Two settings are `ALTER`-able (`id_generator`,
+`filter_by_min_time_and_max_time`); every other change is a recreate
+and shows up as `-- UNSAFE` in the diff output. The `DATA` alias for
+`SAMPLES` is preserved on the dump side via a hidden `KeywordHint` —
+HCL authors always write `samples`.
+
+See the `time_series` reference in `README.hcl.md` for the full
+attribute list and the inner-target form.
