@@ -156,6 +156,28 @@ func buildTableFromCreateTable(ct *chparser.CreateTable) (TableSpec, error) {
 		if err != nil {
 			return TableSpec{}, err
 		}
+		// TimeSeries target clauses live on CreateTable, not EngineExpr —
+		// fold them in here before stamping the engine onto the table.
+		if ts, ok := eng.(EngineTimeSeries); ok && len(ct.TimeSeriesTargets) > 0 {
+			for _, tc := range ct.TimeSeriesTargets {
+				target, err := buildTimeSeriesTarget(tc)
+				if err != nil {
+					return TableSpec{}, fmt.Errorf("%s target: %w", tc.Kind, err)
+				}
+				switch tc.Kind {
+				case "samples":
+					ts.Samples = target
+					ts.KeywordHint = tc.Keyword // SAMPLES or DATA
+				case "tags":
+					ts.Tags = target
+				case "metrics":
+					ts.Metrics = target
+				default:
+					return TableSpec{}, fmt.Errorf("unknown TimeSeries target kind: %q", tc.Kind)
+				}
+			}
+			eng = ts
+		}
 		t.Engine = &EngineSpec{Kind: eng.Kind(), Decoded: eng}
 
 		if ct.Engine.OrderBy != nil {
@@ -465,6 +487,26 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 			stripped = nil
 		}
 		return k, stripped, nil
+	case "TimeSeries":
+		// All SETTINGS on a TimeSeries engine belong to the engine itself,
+		// not to the table — promote tags_to_columns to a typed field,
+		// keep the rest in Settings.
+		ts := EngineTimeSeries{}
+		for k, v := range allSettings {
+			if k == "tags_to_columns" {
+				m, err := parseTagsToColumnsMap(v)
+				if err != nil {
+					return nil, nil, fmt.Errorf("tags_to_columns: %w", err)
+				}
+				ts.TagsToColumns = m
+				continue
+			}
+			if ts.Settings == nil {
+				ts.Settings = map[string]string{}
+			}
+			ts.Settings[k] = v
+		}
+		return ts, nil, nil
 	}
 	return nil, nil, fmt.Errorf("unsupported engine: %s", e.Name)
 }
@@ -1032,4 +1074,95 @@ func stringSliceEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// buildTimeSeriesTarget turns a chparser.TimeSeriesTargetClause into a typed
+// TimeSeriesTarget. Either External or Inner must be set on the clause;
+// the resolver enforces that both-or-neither is rejected.
+func buildTimeSeriesTarget(tc *chparser.TimeSeriesTargetClause) (*TimeSeriesTarget, error) {
+	if tc.External != nil {
+		ref := stripBackticks(tc.External.String())
+		return &TimeSeriesTarget{Target: &ref}, nil
+	}
+	if tc.InnerColumns == nil {
+		return nil, errors.New("clause has neither external table nor inner columns")
+	}
+	cols := columnsFromTableSchema(tc.InnerColumns)
+	inner := &TimeSeriesInnerTable{
+		Columns: make([]ColumnSpec, len(cols)),
+	}
+	for i, c := range cols {
+		inner.Columns[i] = ColumnSpec{Name: c.Name, Type: c.Type}
+	}
+	if tc.InnerEngine != nil {
+		eng, _, err := engineFromAST(tc.InnerEngine)
+		if err != nil {
+			return nil, fmt.Errorf("inner engine: %w", err)
+		}
+		inner.Engine = &EngineSpec{Kind: eng.Kind(), Decoded: eng}
+		if tc.InnerEngine.OrderBy != nil {
+			for _, it := range tc.InnerEngine.OrderBy.Items {
+				inner.OrderBy = append(inner.OrderBy, flattenTupleExpr(it)...)
+			}
+		}
+		if tc.InnerEngine.PrimaryKey != nil {
+			if pk := exprList(tc.InnerEngine.PrimaryKey.Expr); len(pk) > 0 && !stringSliceEqual(pk, inner.OrderBy) {
+				inner.PrimaryKey = pk
+			}
+		}
+		if tc.InnerEngine.PartitionBy != nil {
+			pb := formatNode(tc.InnerEngine.PartitionBy.Expr)
+			inner.PartitionBy = &pb
+		}
+	}
+	return &TimeSeriesTarget{Inner: inner}, nil
+}
+
+// parseTagsToColumnsMap parses the `{'tag1':'col1','tag2':'col2',...}` map
+// literal CH emits in SETTINGS for the TimeSeries tags_to_columns setting.
+func parseTagsToColumnsMap(s string) (map[string]string, error) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "{") || !strings.HasSuffix(s, "}") {
+		return nil, fmt.Errorf("expected map literal, got %q", s)
+	}
+	inner := strings.TrimSpace(s[1 : len(s)-1])
+	if inner == "" {
+		return map[string]string{}, nil
+	}
+	out := map[string]string{}
+	for _, pair := range splitTopLevel(inner, ',') {
+		kv := splitTopLevel(strings.TrimSpace(pair), ':')
+		if len(kv) != 2 {
+			return nil, fmt.Errorf("expected `key:value`, got %q", pair)
+		}
+		k := unquoteString(strings.TrimSpace(kv[0]))
+		v := unquoteString(strings.TrimSpace(kv[1]))
+		out[k] = v
+	}
+	return out, nil
+}
+
+// splitTopLevel splits s on sep, respecting single-quoted strings. The
+// TimeSeries map literal values are flat strings, so quote awareness is
+// enough — no nested brackets or commas inside values.
+func splitTopLevel(s string, sep byte) []string {
+	var parts []string
+	var current strings.Builder
+	inSingle := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '\'' && (i == 0 || s[i-1] != '\\') {
+			inSingle = !inSingle
+		}
+		if c == sep && !inSingle {
+			parts = append(parts, current.String())
+			current.Reset()
+			continue
+		}
+		current.WriteByte(c)
+	}
+	if current.Len() > 0 {
+		parts = append(parts, current.String())
+	}
+	return parts
 }

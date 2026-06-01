@@ -597,3 +597,77 @@ func TestParseKafkaEngine_Cases(t *testing.T) {
 		})
 	}
 }
+
+func TestIntrospect_TimeSeries_External(t *testing.T) {
+	sql := "CREATE TABLE default.m (`id` UUID, `timestamp` DateTime64(3), `value` Float64, " +
+		"`metric_name` LowCardinality(String)) " +
+		"ENGINE = TimeSeries DATA default.m_data TAGS default.m_tags METRICS default.m_metrics"
+	db := &DatabaseSpec{Name: "default"}
+	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []struct{ name, sql string }{{"m", sql}}}))
+	require.Len(t, db.Tables, 1)
+	tbl := db.Tables[0]
+	assert.Equal(t, "m", tbl.Name)
+	assert.Equal(t, 4, len(tbl.Columns))
+	e, ok := tbl.Engine.Decoded.(EngineTimeSeries)
+	require.True(t, ok)
+	assert.Equal(t, "DATA", e.KeywordHint)
+	require.NotNil(t, e.Samples)
+	require.NotNil(t, e.Samples.Target)
+	assert.Equal(t, "default.m_data", *e.Samples.Target)
+	require.NotNil(t, e.Tags)
+	assert.Equal(t, "default.m_tags", *e.Tags.Target)
+	require.NotNil(t, e.Metrics)
+	assert.Equal(t, "default.m_metrics", *e.Metrics.Target)
+}
+
+func TestIntrospect_TimeSeries_Inner(t *testing.T) {
+	sql := "CREATE TABLE default.m (`metric_name` LowCardinality(String)) ENGINE = TimeSeries " +
+		"SAMPLES INNER COLUMNS (`id` UUID, `timestamp` DateTime64(3), `value` Float64) " +
+		"SAMPLES INNER ENGINE = MergeTree ORDER BY (id, timestamp)"
+	db := &DatabaseSpec{Name: "default"}
+	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []struct{ name, sql string }{{"m", sql}}}))
+	e := db.Tables[0].Engine.Decoded.(EngineTimeSeries)
+	assert.Equal(t, "SAMPLES", e.KeywordHint)
+	require.NotNil(t, e.Samples)
+	require.NotNil(t, e.Samples.Inner)
+	assert.Nil(t, e.Samples.Target)
+	require.Len(t, e.Samples.Inner.Columns, 3)
+	require.NotNil(t, e.Samples.Inner.Engine)
+	_, ok := e.Samples.Inner.Engine.Decoded.(EngineMergeTree)
+	assert.True(t, ok)
+	assert.Equal(t, []string{"id", "timestamp"}, e.Samples.Inner.OrderBy)
+}
+
+func TestIntrospect_TimeSeries_Bare(t *testing.T) {
+	sql := "CREATE TABLE default.m (`metric_name` LowCardinality(String)) ENGINE = TimeSeries"
+	db := &DatabaseSpec{Name: "default"}
+	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []struct{ name, sql string }{{"m", sql}}}))
+	e := db.Tables[0].Engine.Decoded.(EngineTimeSeries)
+	assert.Nil(t, e.Samples)
+	assert.Nil(t, e.Tags)
+	assert.Nil(t, e.Metrics)
+	assert.Empty(t, e.Settings)
+}
+
+func TestIntrospect_TimeSeries_TagsToColumns(t *testing.T) {
+	sql := "CREATE TABLE default.m (`metric_name` LowCardinality(String)) ENGINE = TimeSeries " +
+		"SETTINGS id_generator = 'sipHash64(metric_name, all_tags)', " +
+		"tags_to_columns = {'instance':'instance','job':'job'}"
+	db := &DatabaseSpec{Name: "default"}
+	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []struct{ name, sql string }{{"m", sql}}}))
+	e := db.Tables[0].Engine.Decoded.(EngineTimeSeries)
+	assert.Equal(t, "sipHash64(metric_name, all_tags)", e.Settings["id_generator"])
+	assert.Equal(t, map[string]string{"instance": "instance", "job": "job"}, e.TagsToColumns)
+}
+
+func TestIntrospect_TimeSeries_ProductionPromMetrics(t *testing.T) {
+	sql := "CREATE TABLE posthog.prom_metrics (`id` UUID DEFAULT reinterpretAsUUID(sipHash128(metric_name, all_tags)), `timestamp` DateTime64(3), `value` Float64, `metric_name` LowCardinality(String), `tags` Map(LowCardinality(String), String), `all_tags` Map(String, String), `min_time` Nullable(DateTime64(3)), `max_time` Nullable(DateTime64(3)), `metric_family_name` String, `type` String, `unit` String, `help` String) ENGINE = TimeSeries DATA posthog.prom_metrics_data TAGS posthog.prom_metrics_tags METRICS posthog.prom_metrics_metrics"
+	db := &DatabaseSpec{Name: "posthog"}
+	require.NoError(t, processIntrospectRows(db, "posthog", &fakeRows{rows: []struct{ name, sql string }{{"prom_metrics", sql}}}))
+	require.Len(t, db.Tables, 1)
+	assert.Equal(t, "prom_metrics", db.Tables[0].Name)
+	assert.Len(t, db.Tables[0].Columns, 12)
+	e := db.Tables[0].Engine.Decoded.(EngineTimeSeries)
+	assert.Equal(t, "DATA", e.KeywordHint)
+	assert.Equal(t, "posthog.prom_metrics_data", *e.Samples.Target)
+}
