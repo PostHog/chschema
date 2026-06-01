@@ -1,6 +1,11 @@
 update-sql-parser:
     go mod edit -replace github.com/AfterShip/clickhouse-sql-parser=github.com/orian/clickhouse-sql-parser@refactor-visitor && go mod tidy
 
+# Install the repo's pre-commit hook (gofmt + go vet). One-time per checkout.
+setup-hooks:
+    git config core.hooksPath .githooks
+    @echo "pre-commit hook installed (.githooks/pre-commit)."
+
 # Run unit and snapshot tests
 test:
     go test ./internal/... -v

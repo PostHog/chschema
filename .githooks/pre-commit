@@ -1,0 +1,34 @@
+#!/bin/sh
+# Pre-commit hook: gofmt on staged Go files + go vet on the module.
+#
+# Install once per checkout:
+#   just setup-hooks
+#   (or `git config core.hooksPath .githooks`)
+#
+# On violation the hook exits non-zero with a copy-pasteable fix command;
+# nothing is auto-rewritten.
+
+set -e
+
+staged_go=$(git diff --cached --name-only --diff-filter=ACMR | grep -E '\.go$' || true)
+
+if [ -n "$staged_go" ]; then
+	# shellcheck disable=SC2086
+	unformatted=$(gofmt -l $staged_go)
+	if [ -n "$unformatted" ]; then
+		echo "pre-commit: the following files need gofmt:"
+		printf '  %s\n' $unformatted
+		echo
+		echo "Fix:"
+		# shellcheck disable=SC2086
+		printf '  gofmt -w %s\n' $unformatted
+		echo "Then re-stage and retry the commit."
+		exit 1
+	fi
+fi
+
+if ! go vet ./...; then
+	echo
+	echo "pre-commit: go vet failed (see output above)."
+	exit 1
+fi
