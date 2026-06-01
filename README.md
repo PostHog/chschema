@@ -4,12 +4,6 @@ A declarative tool for managing ClickHouse schemas. Schemas are written in
 HCL, layered for multi-environment setups, resolved into a flat desired
 state, and round-tripped against a live cluster.
 
-> **Project direction:** `hclexp` is the future of this project. The HCL
-> loader/resolver and `hclexp` CLI are where active development happens.
-> The legacy `chschema` binary, its protobuf contracts, and the YAML
-> schema format are **deprecated and will be removed**. New work should
-> target `hclexp`. (`hclexp` itself may be renamed once it stabilizes.)
-
 ## What hclexp does
 
 `hclexp` has four modes:
@@ -645,13 +639,6 @@ commit whose staged Go files aren't gofmt'd or whose module fails
 
 See `CLAUDE.md` for repository conventions and `justfile` for the full
 list of recipes.
-
-## Legacy: chschema
-
-The original `chschema` binary (YAML schema files, protobuf contracts,
-`dump` / `--dry-run` / `--auto-approve`) still builds but is
-**deprecated**. It will be removed in favor of `hclexp`. Do not build new
-functionality on top of the `proto/`, `gen/`, or `cmd/chschema/` paths.
 
 ## License
 
