@@ -20,6 +20,8 @@ func LoadLayers(layerDirs []string) (*Schema, error) {
 	var ordered []string
 	ncByName := map[string]*NamedCollectionSpec{}
 	var ncOrder []string
+	nodeByName := map[string]*NodeSpec{}
+	var nodeOrder []string
 
 	for _, dir := range layerDirs {
 		files, err := hclFilesIn(dir)
@@ -54,6 +56,15 @@ func LoadLayers(layerDirs []string) (*Schema, error) {
 					ncOrder = append(ncOrder, nc.Name)
 				}
 			}
+			for _, n := range parsed.Nodes {
+				if existing, ok := nodeByName[n.Name]; ok {
+					*existing = n // last declaration wins
+				} else {
+					cp := n
+					nodeByName[n.Name] = &cp
+					nodeOrder = append(nodeOrder, n.Name)
+				}
+			}
 		}
 	}
 
@@ -63,6 +74,9 @@ func LoadLayers(layerDirs []string) (*Schema, error) {
 	}
 	for _, name := range ncOrder {
 		out.NamedCollections = append(out.NamedCollections, *ncByName[name])
+	}
+	for _, name := range nodeOrder {
+		out.Nodes = append(out.Nodes, *nodeByName[name])
 	}
 	return out, nil
 }

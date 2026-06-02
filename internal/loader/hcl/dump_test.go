@@ -97,6 +97,36 @@ func TestWrite_RoundTrip_KafkaInlineSettings(t *testing.T) {
 	roundTrip(t, filepath.Join("testdata", "kafka_inline_settings.hcl"))
 }
 
+func TestWrite_RoundTrip_NodeMacros(t *testing.T) {
+	roundTrip(t, filepath.Join("testdata", "node_macros.hcl"))
+}
+
+func TestDumpSchema_RendersNodeBlock(t *testing.T) {
+	want := NodeSpec{
+		Name: "prod-us-iad-ch-1d-ops",
+		Macros: map[string]string{
+			"shard":           "1",
+			"replica":         "d",
+			"hostClusterRole": "ops",
+			"hostClusterType": "online",
+		},
+	}
+	s := &Schema{Nodes: []NodeSpec{want}}
+
+	var buf bytes.Buffer
+	require.NoError(t, Write(&buf, s))
+
+	got := buf.String()
+	assert.Contains(t, got, `node "prod-us-iad-ch-1d-ops" {`)
+
+	tmp := filepath.Join(t.TempDir(), "node.hcl")
+	require.NoError(t, os.WriteFile(tmp, buf.Bytes(), 0o600))
+	reparsed, err := ParseFile(tmp)
+	require.NoError(t, err)
+	require.Len(t, reparsed.Nodes, 1)
+	assert.Equal(t, want, reparsed.Nodes[0])
+}
+
 func TestDumpSchema_RendersViewBlocks(t *testing.T) {
 	want := ViewSpec{
 		Name:          "metrics",
