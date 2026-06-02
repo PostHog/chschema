@@ -232,6 +232,21 @@ type DictionaryLayout interface{ Kind() string }
 type Schema struct {
 	Databases        []DatabaseSpec
 	NamedCollections []NamedCollectionSpec
+
+	// Nodes carries per-node identity captured at introspection time:
+	// the node hostname (label) and its ClickHouse macros (shard,
+	// replica, hostClusterRole, hostClusterType, …). It is metadata only
+	// — Diff() ignores it — and exists so multi-node drift analysis can
+	// group nodes by their authoritative macros rather than by filename.
+	Nodes []NodeSpec
+}
+
+// NodeSpec records the identity of a single physical ClickHouse node,
+// dumped alongside its schema. Name is the node hostname; Macros is the
+// raw key/value bag from `SELECT * FROM system.macros`.
+type NodeSpec struct {
+	Name   string            `hcl:"name,label"`
+	Macros map[string]string `hcl:"macros,optional"`
 }
 
 // NamedCollectionSpec models a ClickHouse named collection — a

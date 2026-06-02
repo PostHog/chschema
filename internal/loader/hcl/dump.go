@@ -23,8 +23,18 @@ func Write(w io.Writer, schema *Schema) error {
 	f := hclwrite.NewEmptyFile()
 	body := f.Body()
 
-	for i, db := range schema.Databases {
+	nodes := append([]NodeSpec(nil), schema.Nodes...)
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
+	for i, n := range nodes {
 		if i > 0 {
+			body.AppendNewline()
+		}
+		nodeBlock := body.AppendNewBlock("node", []string{n.Name})
+		writeNode(nodeBlock.Body(), n)
+	}
+
+	for i, db := range schema.Databases {
+		if i > 0 || len(nodes) > 0 {
 			body.AppendNewline()
 		}
 		dbBlock := body.AppendNewBlock("database", []string{db.Name})
@@ -43,6 +53,14 @@ func Write(w io.Writer, schema *Schema) error {
 
 	_, err := w.Write(f.Bytes())
 	return err
+}
+
+// writeNode emits a node block carrying the node's macros. Macro keys are
+// sorted for deterministic output (via stringMap).
+func writeNode(body *hclwrite.Body, n NodeSpec) {
+	if len(n.Macros) > 0 {
+		body.SetAttributeValue("macros", stringMap(n.Macros))
+	}
 }
 
 func writeDatabase(body *hclwrite.Body, db DatabaseSpec) {

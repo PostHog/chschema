@@ -131,6 +131,7 @@ func runIntrospect(args []string) {
 	user := fs.String("user", cfg.User, "ClickHouse user")
 	password := fs.String("password", cfg.Password, "ClickHouse password")
 	outFlag := fs.String("out", "", "output .hcl file, or a directory (one <db>.hcl per database); empty writes to stdout")
+	nodeFlag := fs.String("node", "", "node name for the emitted node{} block; defaults to the server's hostName()")
 	secure := fs.Bool("secure", cfg.Secure, "connect to ClickHouse over TLS")
 	skipVerify := fs.Bool("tls-skip-verify", cfg.TLSSkipVerify, "skip TLS certificate verification (requires -secure)")
 	_ = fs.Parse(args)
@@ -175,6 +176,14 @@ func runIntrospect(args []string) {
 	}
 	schema.NamedCollections = ncs
 	slog.Info("introspected named collections", "count", len(schema.NamedCollections))
+
+	node, err := hclload.IntrospectNode(ctx, conn, *nodeFlag)
+	if err != nil {
+		slog.Error("failed to introspect node macros", "err", err)
+		os.Exit(1)
+	}
+	schema.Nodes = []hclload.NodeSpec{node}
+	slog.Info("introspected node", "name", node.Name, "macros", len(node.Macros))
 	for _, nc := range schema.NamedCollections {
 		if redacted := hclload.RedactedParamKeys(nc); len(redacted) > 0 {
 			slog.Warn("named collection has redacted values; diff will skip these params to avoid overwriting real secrets with '[HIDDEN]'",
@@ -520,7 +529,10 @@ func writeIntrospected(out string, schema *hclload.Schema) error {
 	if info, err := os.Stat(out); err == nil && info.IsDir() {
 		for _, db := range schema.Databases {
 			path := filepath.Join(out, db.Name+".hcl")
-			if err := writeFile(path, &hclload.Schema{Databases: []hclload.DatabaseSpec{db}}); err != nil {
+			// Include node identity in every per-database file so the
+			// dump carries its source node's macros regardless of which
+			// <db>.hcl a reader opens.
+			if err := writeFile(path, &hclload.Schema{Databases: []hclload.DatabaseSpec{db}, Nodes: schema.Nodes}); err != nil {
 				return err
 			}
 			slog.Info("schema written", "path", path)

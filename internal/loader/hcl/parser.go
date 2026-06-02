@@ -13,6 +13,7 @@ import (
 type fileSpec struct {
 	Databases        []DatabaseSpec        `hcl:"database,block"`
 	NamedCollections []NamedCollectionSpec `hcl:"named_collection,block"`
+	Nodes            []NodeSpec            `hcl:"node,block"`
 }
 
 // ParseFile parses a single HCL file and returns the declared schema.
@@ -63,6 +64,7 @@ func ParseFile(path string) (*Schema, error) {
 	return &Schema{
 		Databases:        spec.Databases,
 		NamedCollections: spec.NamedCollections,
+		Nodes:            spec.Nodes,
 	}, nil
 }
 
