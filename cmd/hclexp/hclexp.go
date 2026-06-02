@@ -29,6 +29,9 @@ func main() {
 		case "validate":
 			runValidate(os.Args[2:])
 			return
+		case "drift":
+			runDrift(os.Args[2:])
+			return
 		}
 	}
 	runLoad(os.Args[1:])
