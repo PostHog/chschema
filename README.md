@@ -236,8 +236,12 @@ when any drift is found, so it doubles as a CI guard.
 **Flags:**
 
 - `-dir` — directory of per-node `.hcl` dumps to compare (required)
-- `-glob` — filename glob selecting dumps within `-dir` (default `*`),
-  e.g. `'*ingestion-small*'`
+- `-glob` — comma-separated filename globs selecting dumps within `-dir`
+  (default `*`); a file is included if it matches **any** pattern. Use it
+  to hand-pick exactly the nodes you want compared, e.g.
+  `'*ingestion-small*'` for one pool, or `'*-ch-*[fg].hcl,*-offline.hcl'`
+  to pull all DATA nodes (online `f`/`g` replicas plus offline `h`)
+  together into one comparison.
 - `-group-by` — comma-separated keys to group nodes by (default
   `hostClusterRole`). Each key is looked up first in the node's macros,
   then as one of the pseudo-keys `role` / `shard` / `replica` parsed from

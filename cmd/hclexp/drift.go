@@ -43,7 +43,7 @@ var nodeNameRe = regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+-ch-([0-9]+)([a-z])(?:
 func runDrift(args []string) {
 	fs := flag.NewFlagSet("hclexp drift", flag.ExitOnError)
 	dirFlag := fs.String("dir", "", "directory of per-node .hcl dumps to compare")
-	globFlag := fs.String("glob", "*", "filename glob to select dumps within -dir, e.g. '*ingestion-small*'")
+	globFlag := fs.String("glob", "*", "comma-separated filename globs selecting dumps within -dir; a file matching any pattern is included, e.g. '*[fg].hcl,*-offline.hcl' for all data nodes")
 	groupByFlag := fs.String("group-by", "hostClusterRole", "comma-separated keys to group nodes by: macro names, or the pseudo-keys role/shard/replica")
 	zkFlag := fs.String("zk-paths", "mask-uuid", "treat ReplicatedMergeTree zoo_path before diffing: keep | mask-uuid | ignore")
 	details := fs.Bool("details", false, "print the full change set of each drifting node against its group reference")
@@ -125,16 +125,19 @@ func runDrift(args []string) {
 }
 
 // loadDriftNodes parses and resolves every .hcl file in dir whose base name
-// matches glob into a driftNode, taking identity from the file's node{}
-// block when present and otherwise from the filename. An empty glob matches
-// every .hcl file.
+// matches any of the comma-separated globs into a driftNode, taking identity
+// from the file's node{} block when present and otherwise from the filename.
+// An empty glob matches every .hcl file.
 func loadDriftNodes(dir, glob string) ([]driftNode, error) {
-	if glob == "" {
-		glob = "*"
+	globs := splitList(glob)
+	if len(globs) == 0 {
+		globs = []string{"*"}
 	}
 	// Fail fast on an invalid pattern rather than silently matching nothing.
-	if _, err := filepath.Match(glob, ""); err != nil {
-		return nil, fmt.Errorf("invalid -glob %q: %w", glob, err)
+	for _, g := range globs {
+		if _, err := filepath.Match(g, ""); err != nil {
+			return nil, fmt.Errorf("invalid -glob %q: %w", g, err)
+		}
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -146,7 +149,7 @@ func loadDriftNodes(dir, glob string) ([]driftNode, error) {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".hcl" {
 			continue
 		}
-		if ok, _ := filepath.Match(glob, e.Name()); !ok {
+		if !matchesAny(globs, e.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
@@ -223,6 +226,16 @@ func normalizeEngineZK(dec hclload.Engine, mode string) hclload.Engine {
 		}
 	}
 	return cp.Interface().(hclload.Engine)
+}
+
+// matchesAny reports whether name matches at least one of the globs.
+func matchesAny(globs []string, name string) bool {
+	for _, g := range globs {
+		if ok, _ := filepath.Match(g, name); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // parseNodeIdentity extracts shard, replica, and deployment role from a

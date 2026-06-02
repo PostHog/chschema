@@ -338,7 +338,7 @@ hclexp drift -dir prod/eu -group-by role -details      # finer grouping + full d
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `-dir`      | —                 | directory of per-node `.hcl` dumps (required) |
-| `-glob`     | `*`               | filename glob selecting dumps within `-dir` |
+| `-glob`     | `*`               | comma-separated filename globs selecting dumps within `-dir` (a file matching any pattern is included); e.g. `*-ch-*[fg].hcl,*-offline.hcl` to compare all DATA nodes together |
 | `-group-by` | `hostClusterRole` | comma-separated grouping keys: macro names, or the pseudo-keys `role`/`shard`/`replica` parsed from the node name |
 | `-zk-paths` | `mask-uuid`       | ReplicatedMergeTree `zoo_path` handling: `mask-uuid` (replace the literal table UUID with `{uuid}`), `keep` (verbatim), or `ignore` (blank path + replica) |
 | `-details`  | off               | print each drifting node's full change set, not just a one-line summary |

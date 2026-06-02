@@ -73,8 +73,17 @@ func TestLoadDriftNodes_Glob(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, none)
 
-	_, err = loadDriftNodes(dir, "[")
-	assert.Error(t, err, "invalid glob should error")
+	// Comma-separated globs union their matches.
+	union, err := loadDriftNodes(dir, "*-role2*,*-3a-*")
+	require.NoError(t, err)
+	names := make([]string, len(union))
+	for i, n := range union {
+		names[i] = n.Name
+	}
+	assert.ElementsMatch(t, []string{"prod-xx-aaa-ch-1a-role2", "prod-xx-aaa-ch-3a-role1"}, names)
+
+	_, err = loadDriftNodes(dir, "*-role2*,[")
+	assert.Error(t, err, "an invalid pattern in the list should error")
 }
 
 func TestNormalizeZKPaths(t *testing.T) {
