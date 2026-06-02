@@ -340,7 +340,14 @@ hclexp drift -dir prod/eu -group-by role -details      # finer grouping + full d
 | `-dir`      | —                 | directory of per-node `.hcl` dumps (required) |
 | `-glob`     | `*`               | filename glob selecting dumps within `-dir` |
 | `-group-by` | `hostClusterRole` | comma-separated grouping keys: macro names, or the pseudo-keys `role`/`shard`/`replica` parsed from the node name |
+| `-zk-paths` | `mask-uuid`       | ReplicatedMergeTree `zoo_path` handling: `mask-uuid` (replace the literal table UUID with `{uuid}`), `keep` (verbatim), or `ignore` (blank path + replica) |
 | `-details`  | off               | print each drifting node's full change set, not just a one-line summary |
+
+ClickHouse expands the `{uuid}` macro to the table's literal UUID at
+`CREATE` time (while keeping `{shard}`/`{replica}` as macros), so the same
+table on different shards gets a different `zoo_path` — pure noise for
+drift. The default `-zk-paths=mask-uuid` collapses that back to `{uuid}`
+so only genuine path differences register.
 
 A drifting node is printed as `✗ <name>: <summary>` (e.g. `+16 table, -8
 table, +8 mv`); a fully consistent group prints `OK (all identical)`. The

@@ -77,6 +77,53 @@ func TestLoadDriftNodes_Glob(t *testing.T) {
 	assert.Error(t, err, "invalid glob should error")
 }
 
+func TestNormalizeZKPaths(t *testing.T) {
+	schemaWithZK := func(path string) *hclload.Schema {
+		return &hclload.Schema{Databases: []hclload.DatabaseSpec{{
+			Name: "posthog",
+			Tables: []hclload.TableSpec{{
+				Name:    "t",
+				Columns: []hclload.ColumnSpec{{Name: "id", Type: "Int64"}},
+				OrderBy: []string{"id"},
+				Engine: &hclload.EngineSpec{
+					Kind: "replicated_merge_tree",
+					Decoded: hclload.EngineReplicatedMergeTree{
+						ZooPath:     path,
+						ReplicaName: "{replica}",
+					},
+				},
+			}},
+		}}}
+	}
+	uuidA := "/clickhouse/tables/3e6d8f0a-13bc-433c-9173-9ec7d4deb230_noshard/posthog.t"
+	uuidB := "/clickhouse/tables/7695bea2-a760-4ff1-9f2e-d33cb4de53dd_noshard/posthog.t"
+
+	// keep: UUID-only difference shows as drift.
+	assert.False(t, hclload.Diff(schemaWithZK(uuidA), schemaWithZK(uuidB)).IsEmpty(),
+		"raw paths with different UUIDs should differ")
+
+	// mask-uuid: the same logical table compares equal.
+	na, nb := schemaWithZK(uuidA), schemaWithZK(uuidB)
+	normalizeZKPaths(na, "mask-uuid")
+	normalizeZKPaths(nb, "mask-uuid")
+	assert.True(t, hclload.Diff(na, nb).IsEmpty(),
+		"mask-uuid should collapse UUID-only path differences")
+
+	// mask-uuid: a genuine path difference still drifts.
+	ga := schemaWithZK("/clickhouse/tables/{shard}/posthog.t")
+	gb := schemaWithZK("/clickhouse/tables/{shard}/other.t")
+	normalizeZKPaths(ga, "mask-uuid")
+	normalizeZKPaths(gb, "mask-uuid")
+	assert.False(t, hclload.Diff(ga, gb).IsEmpty(),
+		"non-UUID path differences must still register as drift")
+
+	// ignore: any path difference is erased.
+	ia, ib := schemaWithZK(uuidA), schemaWithZK("/clickhouse/tables/{shard}/other.t")
+	normalizeZKPaths(ia, "ignore")
+	normalizeZKPaths(ib, "ignore")
+	assert.True(t, hclload.Diff(ia, ib).IsEmpty(), "ignore should erase all zoo_path differences")
+}
+
 func TestLoadAndGroupDriftNodes(t *testing.T) {
 	nodes, err := loadDriftNodes(filepath.Join("testdata", "drift"), "*")
 	require.NoError(t, err)

@@ -243,6 +243,16 @@ when any drift is found, so it doubles as a CI guard.
   then as one of the pseudo-keys `role` / `shard` / `replica` parsed from
   the node name (`prod-<region>-<az>-ch-<shard><replica>[-<role>]`).
   Examples: `-group-by role`, `-group-by hostClusterRole,hostClusterType`.
+- `-zk-paths` — how to treat ReplicatedMergeTree `zoo_path` before diffing
+  (default `mask-uuid`):
+  - `mask-uuid` — replace the literal table UUID with the `{uuid}` macro.
+    ClickHouse expands `{uuid}` to the table's own UUID at `CREATE` time
+    (while keeping `{shard}`/`{replica}` as macros), so the same table on
+    different shards otherwise looks like drift. Masking compares the
+    *intended* path; genuine differences (e.g. a different database in the
+    path) still drift.
+  - `keep` — compare paths verbatim (no normalization).
+  - `ignore` — blank `zoo_path`/`replica_name` entirely.
 - `-details` — print the full change set of each drifting node against its
   group reference, instead of just the one-line summary
 
