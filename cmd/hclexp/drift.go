@@ -36,6 +36,7 @@ var nodeNameRe = regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+-ch-([0-9]+)([a-z])(?:
 func runDrift(args []string) {
 	fs := flag.NewFlagSet("hclexp drift", flag.ExitOnError)
 	dirFlag := fs.String("dir", "", "directory of per-node .hcl dumps to compare")
+	globFlag := fs.String("glob", "*", "filename glob to select dumps within -dir, e.g. '*ingestion-small*'")
 	groupByFlag := fs.String("group-by", "hostClusterRole", "comma-separated keys to group nodes by: macro names, or the pseudo-keys role/shard/replica")
 	details := fs.Bool("details", false, "print the full change set of each drifting node against its group reference")
 	_ = fs.Parse(args)
@@ -45,13 +46,13 @@ func runDrift(args []string) {
 		os.Exit(2)
 	}
 
-	nodes, err := loadDriftNodes(*dirFlag)
+	nodes, err := loadDriftNodes(*dirFlag, *globFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "drift: %v\n", err)
 		os.Exit(1)
 	}
 	if len(nodes) == 0 {
-		fmt.Fprintf(os.Stderr, "drift: no .hcl files found in %s\n", *dirFlag)
+		fmt.Fprintf(os.Stderr, "drift: no .hcl files in %s match %q\n", *dirFlag, *globFlag)
 		os.Exit(1)
 	}
 
@@ -106,10 +107,19 @@ func runDrift(args []string) {
 	}
 }
 
-// loadDriftNodes parses and resolves every .hcl file in dir into a
-// driftNode, taking identity from the file's node{} block when present and
-// otherwise from the filename.
-func loadDriftNodes(dir string) ([]driftNode, error) {
+// loadDriftNodes parses and resolves every .hcl file in dir whose base name
+// matches glob into a driftNode, taking identity from the file's node{}
+// block when present and otherwise from the filename. An empty glob matches
+// every .hcl file.
+func loadDriftNodes(dir, glob string) ([]driftNode, error) {
+	if glob == "" {
+		glob = "*"
+	}
+	// Fail fast on an invalid pattern rather than silently matching nothing.
+	if _, err := filepath.Match(glob, ""); err != nil {
+		return nil, fmt.Errorf("invalid -glob %q: %w", glob, err)
+	}
+
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("read dir %q: %w", dir, err)
@@ -117,6 +127,9 @@ func loadDriftNodes(dir string) ([]driftNode, error) {
 	var nodes []driftNode
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".hcl" {
+			continue
+		}
+		if ok, _ := filepath.Match(glob, e.Name()); !ok {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())

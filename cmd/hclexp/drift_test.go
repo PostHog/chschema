@@ -57,8 +57,28 @@ func TestSummarizeChanges(t *testing.T) {
 	assert.Equal(t, "changed", summarizeChanges(hclload.ChangeSet{}))
 }
 
+func TestLoadDriftNodes_Glob(t *testing.T) {
+	dir := filepath.Join("testdata", "drift")
+
+	all, err := loadDriftNodes(dir, "*")
+	require.NoError(t, err)
+	assert.Len(t, all, 4)
+
+	role2, err := loadDriftNodes(dir, "*-role2*")
+	require.NoError(t, err)
+	require.Len(t, role2, 1)
+	assert.Equal(t, "prod-xx-aaa-ch-1a-role2", role2[0].Name)
+
+	none, err := loadDriftNodes(dir, "*nomatch*")
+	require.NoError(t, err)
+	assert.Empty(t, none)
+
+	_, err = loadDriftNodes(dir, "[")
+	assert.Error(t, err, "invalid glob should error")
+}
+
 func TestLoadAndGroupDriftNodes(t *testing.T) {
-	nodes, err := loadDriftNodes(filepath.Join("testdata", "drift"))
+	nodes, err := loadDriftNodes(filepath.Join("testdata", "drift"), "*")
 	require.NoError(t, err)
 	require.Len(t, nodes, 4)
 
