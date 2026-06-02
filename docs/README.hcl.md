@@ -23,7 +23,7 @@ is just three layer directories passed to the loader in that order.
 
 ## Top-level blocks
 
-Every file declares one or more `database` blocks. Within a database, the
+Most files declare one or more `database` blocks. Within a database, the
 allowed children are `table`, `patch_table`, `materialized_view`, `view`,
 and `dictionary`.
 
@@ -33,6 +33,10 @@ database "posthog" {
   patch_table "events"  { ... }
 }
 ```
+
+Two other blocks live at the top level, as siblings of `database`:
+`named_collection` (cluster-scoped config bags) and `node` (per-node
+identity captured by `hclexp introspect`; see [`node`](#node)).
 
 ## `table`
 
@@ -317,6 +321,36 @@ hclexp validate -config schema.hcl -skip-validation='*'
 the generated DDL, a table is created before any Distributed table that
 forwards to it, and dropped after it.
 
+## Cross-node drift — `hclexp drift`
+
+`hclexp drift -dir <dir>` compares the per-node dumps in a directory and
+reports where nodes that should share a schema diverge. Each dump is one
+node (carrying its [`node`](#node) block); nodes are grouped, then every
+node in a group is diffed — using the same engine as `hclexp diff` —
+against the group's lexically-first **reference** node.
+
+```sh
+hclexp drift -dir prod/eu                              # group by hostClusterRole macro
+hclexp drift -dir prod/eu -glob '*ingestion-small*'    # one pool only
+hclexp drift -dir prod/eu -group-by role -details      # finer grouping + full diffs
+```
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `-dir`      | —                 | directory of per-node `.hcl` dumps (required) |
+| `-glob`     | `*`               | filename glob selecting dumps within `-dir` |
+| `-group-by` | `hostClusterRole` | comma-separated grouping keys: macro names, or the pseudo-keys `role`/`shard`/`replica` parsed from the node name |
+| `-details`  | off               | print each drifting node's full change set, not just a one-line summary |
+
+A drifting node is printed as `✗ <name>: <summary>` (e.g. `+16 table, -8
+table, +8 mv`); a fully consistent group prints `OK (all identical)`. The
+command exits non-zero when any drift is found, so it works as a CI guard.
+
+`hostClusterRole` is coarse and can merge distinct pools (`ingestion`
+spans ingestion-events / -medium / -small; `data` spans online and offline
+nodes). `-group-by role` uses the deployment role from the node name and
+usually isolates genuine drift.
+
 ## `view`
 
 A `view` block declares a ClickHouse **plain** (non-materialized) view — a
@@ -354,6 +388,33 @@ requires drop-and-recreate and is flagged unsafe.
 
 **Not supported.** Live views, refreshable materialized views, and window
 views fail introspection with a clear error.
+
+## `node`
+
+A `node` block is metadata, not a managed object. `hclexp introspect`
+emits one at the top of each per-node dump to record that node's identity:
+the hostname (the block label) and its ClickHouse macros, read from
+`SELECT * FROM system.macros`.
+
+```hcl
+node "prod-eu-fra-ch-1d-ops" {
+  macros = {
+    hostClusterRole = "ops"
+    hostClusterType = "online"
+    replica         = "d"
+    shard           = "1"
+  }
+}
+```
+
+| Attribute | Required | Meaning |
+|-----------|----------|---------|
+| label     | yes      | node hostname (defaults to the server's `hostName()` on introspect; override with `-node`) |
+| `macros`  | no       | key/value bag from `system.macros` (`shard`, `replica`, `hostClusterRole`, `hostClusterType`, …) |
+
+`node` blocks are ignored by `hclexp diff` — they're identity, not schema.
+Their purpose is to let [`hclexp drift`](#cross-node-drift--hclexp-drift)
+group nodes by their authoritative macros.
 
 ## Virtual columns
 

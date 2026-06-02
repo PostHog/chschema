@@ -74,6 +74,8 @@ hclexp introspect -host ch.prod.internal -port 9440 -user readonly \
 **Flags:**
 
 - `-database` — comma-separated list of databases to introspect (required)
+- `-node` — name for the emitted `node {}` block; defaults to the server's
+  `hostName()`
 - `-host`, `-port`, `-user`, `-password` — connection overrides
 - `-secure` — connect over TLS (matches `CLICKHOUSE_SECURE`)
 - `-tls-skip-verify` — skip server-cert verification (requires `-secure`;
@@ -91,6 +93,12 @@ and `SETTINGS` all come back populated. Materialized views (TO-form),
 plain views (with `column_aliases`, `sql_security`, `definer`, comment),
 dictionaries (every supported source + layout kind), and named
 collections are dumped in the same pass.
+
+Each dump also gets a top-level `node {}` block recording the source
+node's name and ClickHouse macros (`shard`, `replica`, `hostClusterRole`,
+`hostClusterType`, …) read from `system.macros`. It's metadata only —
+`hclexp diff` ignores it — and exists so `hclexp drift` (below) can group
+nodes by their authoritative identity.
 
 ## Load & resolve an HCL schema
 
@@ -201,6 +209,59 @@ hclexp validate -config ./schema/posthog.hcl -skip-validation='*'
 `hclexp diff -sql` applies the same dependency knowledge to DDL ordering:
 within the generated migration, a table is created before any
 Distributed/MV/Dictionary that depends on it, and dropped after.
+
+## Detect cross-node drift
+
+`hclexp drift` compares the per-node HCL dumps in a directory and reports
+where nodes that should share a schema don't. It's built for fleet dumps
+like `prod/eu/*.hcl` — one file per node, each carrying a `node {}` block
+with that node's macros (see [Introspect](#introspect-a-live-database)).
+
+```sh
+# Compare every node, grouped by the hostClusterRole macro
+hclexp drift -dir prod/eu
+
+# Compare just one pool via a filename glob
+hclexp drift -dir prod/eu -glob '*ingestion-small*'
+
+# Group by the deployment role parsed from the node name; show full diffs
+hclexp drift -dir prod/eu -group-by role -details
+```
+
+Within each group every node is diffed — via the same engine as `hclexp
+diff` — against the lexically-first **reference** node, and a one-line
+change summary is printed per drifting node. The command exits non-zero
+when any drift is found, so it doubles as a CI guard.
+
+**Flags:**
+
+- `-dir` — directory of per-node `.hcl` dumps to compare (required)
+- `-glob` — filename glob selecting dumps within `-dir` (default `*`),
+  e.g. `'*ingestion-small*'`
+- `-group-by` — comma-separated keys to group nodes by (default
+  `hostClusterRole`). Each key is looked up first in the node's macros,
+  then as one of the pseudo-keys `role` / `shard` / `replica` parsed from
+  the node name (`prod-<region>-<az>-ch-<shard><replica>[-<role>]`).
+  Examples: `-group-by role`, `-group-by hostClusterRole,hostClusterType`.
+- `-details` — print the full change set of each drifting node against its
+  group reference, instead of just the one-line summary
+
+Example output:
+
+```
+group "ingestion" — 22 nodes, reference prod-eu-fra-ch-10a-ingestion-events — 6 drifting
+  ✗ prod-eu-fra-ch-1a-ingestion-medium: +16 table, -8 table, +8 mv, -4 mv
+  ✗ prod-eu-fra-ch-1a-ingestion-small: +25 table, -8 table, +10 mv, -4 mv
+group "ops" — 2 nodes, reference prod-eu-fra-ch-1a-ops — OK (all identical)
+
+summary: 58 nodes, 8 groups, 2 groups with drift, 28 drifting nodes
+```
+
+> **Tip:** `hostClusterRole` is coarse — it can lump distinct pools
+> together (e.g. `ingestion` covers ingestion-events / -medium / -small,
+> and `data` covers online and offline nodes). `-group-by role` uses the
+> finer deployment role from the node name and usually isolates genuine
+> drift.
 
 ## TLS / secure connections
 
