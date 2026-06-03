@@ -52,3 +52,32 @@ jobs:
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
+
+    # ---- ops image (hclexp + sh + git + curl) ----
+    # Separate image name with its own clean tag stream; published alongside
+    # the distroless image above. Uses a distinct gha cache scope so the two
+    # builds don't clobber each other's cache.
+    - name: Ops image metadata (tags + labels)
+      id: meta-ops
+      uses: docker/metadata-action@8e5442c4ef9f78752691e2d8f8d19755c6f78e81 # v5.5.1
+      with:
+        images: ghcr.io/posthog/chschema-ops
+        tags: |
+          type=ref,event=branch
+          type=sha,format=short,prefix=sha-
+          type=raw,value=latest,enable={{is_default_branch}}
+          type=semver,pattern={{version}}
+          type=semver,pattern={{major}}.{{minor}}
+          type=semver,pattern={{major}}
+
+    - name: Build and push ops (linux/amd64,linux/arm64)
+      uses: docker/build-push-action@5176d81f87c23d6fc96624dfdbcd9f3830bbe445 # v6.5.0
+      with:
+        context: .
+        target: ops
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ steps.meta-ops.outputs.tags }}
+        labels: ${{ steps.meta-ops.outputs.labels }}
+        cache-from: type=gha,scope=ops
+        cache-to: type=gha,mode=max,scope=ops

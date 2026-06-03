@@ -309,19 +309,35 @@ hclexp diff \
   -right 'clickhouse://ro:secret@ch.prod.internal:9440/posthog?secure=true&skip-verify=true'
 ```
 
-## Container image
+## Container images
 
-`hclexp` ships as a minimal multi-arch container image — distroless, no
-shell, no AWS CLI, no extras. It's built and pushed on every `main` push
-and Git tag.
+Two multi-arch (`linux/amd64`, `linux/arm64`) images are built and pushed
+on every `main` push and Git tag. Both bundle the same static `hclexp`
+binary and share one tag stream each:
 
-- Registry: [`ghcr.io/posthog/chschema`](https://github.com/PostHog/chschema/pkgs/container/chschema)
-  (GitHub Container Registry; the chschema repo is public, so the image
-  is publicly pullable without authentication)
-- Architectures: `linux/amd64`, `linux/arm64`
-- Tags:
-  - `main` push → `main` + `sha-<short>` + `latest`
-  - `vX.Y.Z` tag → `X.Y.Z`, `X.Y`, `X`
+- `main` push → `main` + `sha-<short>` + `latest`
+- `vX.Y.Z` tag → `X.Y.Z`, `X.Y`, `X`
+
+| Image | Base | Contents | Use |
+| ----- | ---- | -------- | --- |
+| [`ghcr.io/posthog/chschema`](https://github.com/PostHog/chschema/pkgs/container/chschema) | distroless | `hclexp` only — no shell | default; minimal runtime for diff/introspect |
+| [`ghcr.io/posthog/chschema-ops`](https://github.com/PostHog/chschema/pkgs/container/chschema-ops) | `alpine:3.20` | `hclexp` + `sh`, `git`, `curl`, `ca-certificates` | deploy-time schema-dump hook (needs a shell to git-commit dumps) |
+
+Both packages are published **public** (the repo is public), so an EKS
+cluster can pull them without credentials. If a package is ever flipped to
+private, consumers must attach an `imagePullSecret` holding a GHCR token
+with `read:packages`:
+
+```sh
+kubectl create secret docker-registry ghcr-pull \
+  --docker-server=ghcr.io --docker-username=<gh-user> \
+  --docker-password=<PAT-with-read:packages>
+# then reference it via the workload's imagePullSecrets / serviceAccount
+```
+
+### `chschema` (distroless, default)
+
+Minimal — distroless, no shell, no AWS CLI, no extras.
 
 ```sh
 # Print usage
@@ -337,17 +353,35 @@ docker run --rm \
   introspect -database posthog,system -out /dump
 ```
 
-The image is intended to be paired with `amazon/aws-cli` (or any other
-uploader) via a shared `emptyDir` volume in the consuming workload. The
-deployment pattern that drives the design lives in
-[`posthog/charts`](https://github.com/PostHog/charts) — `hclexp` writes
-HCL to the shared volume, the sidecar pushes it to S3.
+It can be paired with `amazon/aws-cli` (or any other uploader) via a shared
+`emptyDir` volume — `hclexp` writes HCL to the volume, the sidecar ships it.
 
-To build the image locally:
+### `chschema-ops` (shell-capable)
+
+Same binary plus `sh`, `git`, and `curl`. It exists for the deploy-time
+**schema-dump hook**: a Kubernetes Job in
+[`posthog/charts`](https://github.com/PostHog/charts) (the
+`clickhouse-schema-dump` PostSync hook) runs `hclexp introspect` against
+each ClickHouse node and then `git`-commits the dumped HCL — which needs a
+shell, git, and curl that the distroless image deliberately omits. The
+`ENTRYPOINT` is still `hclexp`; override it (e.g. `--entrypoint sh`) to run
+the surrounding dump-and-commit script.
 
 ```sh
+docker run --rm --entrypoint sh ghcr.io/posthog/chschema-ops:latest -c \
+  'hclexp introspect -database posthog -out /work && cd /work && git ...'
+```
+
+### Building locally
+
+```sh
+# Default (distroless)
 docker build -t hclexp:dev .
 docker run --rm hclexp:dev -help
+
+# Ops image
+docker build --target ops -t chschema-ops:dev .
+docker run --rm --entrypoint sh chschema-ops:dev -c 'hclexp -h; git --version'
 ```
 
 ## HCL schema format
