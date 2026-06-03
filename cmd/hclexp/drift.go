@@ -5,12 +5,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"sort"
 	"strings"
 
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
+
+// zkUUIDRe matches a table UUID embedded in a ReplicatedMergeTree zoo_path.
+// ClickHouse expands the {uuid} macro to the table's literal UUID at CREATE
+// time (while keeping {shard}/{replica} as macros), so the same logical
+// table gets a different path on every shard — noise for cross-node drift.
+var zkUUIDRe = regexp.MustCompile(`[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}`)
 
 // driftNode is one per-node dump loaded for drift analysis: its identity
 // (from the node{} block and/or the filename) plus its resolved schema.
@@ -36,8 +43,9 @@ var nodeNameRe = regexp.MustCompile(`^[a-z]+-[a-z]+-[a-z]+-ch-([0-9]+)([a-z])(?:
 func runDrift(args []string) {
 	fs := flag.NewFlagSet("hclexp drift", flag.ExitOnError)
 	dirFlag := fs.String("dir", "", "directory of per-node .hcl dumps to compare")
-	globFlag := fs.String("glob", "*", "filename glob to select dumps within -dir, e.g. '*ingestion-small*'")
+	globFlag := fs.String("glob", "*", "comma-separated filename globs selecting dumps within -dir; a file matching any pattern is included, e.g. '*[fg].hcl,*-offline.hcl' for all data nodes")
 	groupByFlag := fs.String("group-by", "hostClusterRole", "comma-separated keys to group nodes by: macro names, or the pseudo-keys role/shard/replica")
+	zkFlag := fs.String("zk-paths", "mask-uuid", "treat ReplicatedMergeTree zoo_path before diffing: keep | mask-uuid | ignore")
 	details := fs.Bool("details", false, "print the full change set of each drifting node against its group reference")
 	_ = fs.Parse(args)
 
@@ -45,11 +53,20 @@ func runDrift(args []string) {
 		fmt.Fprintln(os.Stderr, "drift: -dir is required")
 		os.Exit(2)
 	}
+	switch *zkFlag {
+	case "keep", "mask-uuid", "ignore":
+	default:
+		fmt.Fprintf(os.Stderr, "drift: invalid -zk-paths %q (want keep|mask-uuid|ignore)\n", *zkFlag)
+		os.Exit(2)
+	}
 
 	nodes, err := loadDriftNodes(*dirFlag, *globFlag)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "drift: %v\n", err)
 		os.Exit(1)
+	}
+	for i := range nodes {
+		normalizeZKPaths(nodes[i].Schema, *zkFlag)
 	}
 	if len(nodes) == 0 {
 		fmt.Fprintf(os.Stderr, "drift: no .hcl files in %s match %q\n", *dirFlag, *globFlag)
@@ -108,16 +125,19 @@ func runDrift(args []string) {
 }
 
 // loadDriftNodes parses and resolves every .hcl file in dir whose base name
-// matches glob into a driftNode, taking identity from the file's node{}
-// block when present and otherwise from the filename. An empty glob matches
-// every .hcl file.
+// matches any of the comma-separated globs into a driftNode, taking identity
+// from the file's node{} block when present and otherwise from the filename.
+// An empty glob matches every .hcl file.
 func loadDriftNodes(dir, glob string) ([]driftNode, error) {
-	if glob == "" {
-		glob = "*"
+	globs := splitList(glob)
+	if len(globs) == 0 {
+		globs = []string{"*"}
 	}
 	// Fail fast on an invalid pattern rather than silently matching nothing.
-	if _, err := filepath.Match(glob, ""); err != nil {
-		return nil, fmt.Errorf("invalid -glob %q: %w", glob, err)
+	for _, g := range globs {
+		if _, err := filepath.Match(g, ""); err != nil {
+			return nil, fmt.Errorf("invalid -glob %q: %w", g, err)
+		}
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -129,7 +149,7 @@ func loadDriftNodes(dir, glob string) ([]driftNode, error) {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".hcl" {
 			continue
 		}
-		if ok, _ := filepath.Match(glob, e.Name()); !ok {
+		if !matchesAny(globs, e.Name()) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
@@ -153,6 +173,69 @@ func loadDriftNodes(dir, glob string) ([]driftNode, error) {
 		nodes = append(nodes, n)
 	}
 	return nodes, nil
+}
+
+// normalizeZKPaths rewrites every table's ReplicatedMergeTree zoo_path in
+// schema according to mode, so per-node path noise doesn't register as
+// drift:
+//
+//   - keep      — leave paths untouched (raw comparison)
+//   - mask-uuid — replace the literal table UUID with the {uuid} macro,
+//     so the same table on different shards compares equal while genuine
+//     path differences (e.g. a different database) still drift
+//   - ignore    — blank zoo_path and replica_name entirely
+func normalizeZKPaths(schema *hclload.Schema, mode string) {
+	if schema == nil || mode == "keep" {
+		return
+	}
+	for di := range schema.Databases {
+		tables := schema.Databases[di].Tables
+		for ti := range tables {
+			t := &tables[ti]
+			if t.Engine == nil || t.Engine.Decoded == nil {
+				continue
+			}
+			t.Engine.Decoded = normalizeEngineZK(t.Engine.Decoded, mode)
+		}
+	}
+}
+
+// normalizeEngineZK returns dec with its ZooPath (and, for ignore mode,
+// ReplicaName) rewritten per mode. Engines without a ZooPath field are
+// returned unchanged. It works across all ReplicatedMergeTree variants via
+// reflection on the shared field names.
+func normalizeEngineZK(dec hclload.Engine, mode string) hclload.Engine {
+	v := reflect.ValueOf(dec)
+	if v.Kind() != reflect.Struct {
+		return dec
+	}
+	cp := reflect.New(v.Type()).Elem()
+	cp.Set(v)
+
+	zp := cp.FieldByName("ZooPath")
+	if !zp.IsValid() || zp.Kind() != reflect.String || !zp.CanSet() {
+		return dec
+	}
+	switch mode {
+	case "mask-uuid":
+		zp.SetString(zkUUIDRe.ReplaceAllString(zp.String(), "{uuid}"))
+	case "ignore":
+		zp.SetString("")
+		if rn := cp.FieldByName("ReplicaName"); rn.IsValid() && rn.Kind() == reflect.String && rn.CanSet() {
+			rn.SetString("")
+		}
+	}
+	return cp.Interface().(hclload.Engine)
+}
+
+// matchesAny reports whether name matches at least one of the globs.
+func matchesAny(globs []string, name string) bool {
+	for _, g := range globs {
+		if ok, _ := filepath.Match(g, name); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // parseNodeIdentity extracts shard, replica, and deployment role from a
