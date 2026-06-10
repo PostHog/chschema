@@ -11,6 +11,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestUsage(t *testing.T) {
+	var buf bytes.Buffer
+	usage(&buf)
+	out := buf.String()
+	for _, cmd := range []string{"introspect", "diff", "validate", "drift", "load"} {
+		require.Contains(t, out, cmd)
+	}
+}
+
 func TestApplyTLSFlags(t *testing.T) {
 	t.Run("both off leaves cfg untouched", func(t *testing.T) {
 		cfg := config.ClickHouseConfig{}

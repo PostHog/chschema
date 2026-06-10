@@ -18,23 +18,62 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "introspect":
-			runIntrospect(os.Args[2:])
-			return
-		case "diff":
-			runDiff(os.Args[2:])
-			return
-		case "validate":
-			runValidate(os.Args[2:])
-			return
-		case "drift":
-			runDrift(os.Args[2:])
-			return
-		}
+	if len(os.Args) <= 1 {
+		usage(os.Stdout)
+		return
 	}
-	runLoad(os.Args[1:])
+
+	switch os.Args[1] {
+	case "-h", "--help", "help":
+		usage(os.Stdout)
+		return
+	case "introspect":
+		runIntrospect(os.Args[2:])
+		return
+	case "diff":
+		runDiff(os.Args[2:])
+		return
+	case "validate":
+		runValidate(os.Args[2:])
+		return
+	case "drift":
+		runDrift(os.Args[2:])
+		return
+	case "load":
+		runLoad(os.Args[2:])
+		return
+	}
+
+	// A flag as the first argument (e.g. -config, -layer) is the
+	// backward-compatible way to invoke the default load behavior.
+	if strings.HasPrefix(os.Args[1], "-") {
+		runLoad(os.Args[1:])
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "hclexp: unknown command %q\n\n", os.Args[1])
+	usage(os.Stderr)
+	os.Exit(2)
+}
+
+// usage prints a short description of hclexp and its available subcommands.
+func usage(w io.Writer) {
+	fmt.Fprint(w, `hclexp manages ClickHouse schemas declaratively from HCL.
+
+Usage:
+  hclexp <command> [flags]
+  hclexp [flags]            run the default load behavior
+
+Commands:
+  introspect   dump a live ClickHouse schema as canonical HCL
+  diff         compare two schemas (HCL or live), optionally emit migration DDL
+  validate     check that MV and Distributed dependency references resolve
+  drift        detect cross-node schema drift across per-node HCL dumps
+  load         parse and resolve an HCL config (default when flags are given)
+  help         print this help
+
+Run "hclexp <command> -h" for command-specific flags.
+`)
 }
 
 // runValidate loads an HCL config (single file or layers), resolves it, and
