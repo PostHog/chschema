@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/posthog/chschema/config"
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
@@ -29,6 +30,9 @@ func main() {
 		return
 	case "introspect":
 		runIntrospect(os.Args[2:])
+		return
+	case "dump-cluster":
+		runDumpCluster(os.Args[2:])
 		return
 	case "diff":
 		runDiff(os.Args[2:])
@@ -66,6 +70,7 @@ Usage:
 
 Commands:
   introspect   dump a live ClickHouse schema as canonical HCL
+  dump-cluster enumerate a cluster's nodes and dump one <host>.hcl per node
   diff         compare two schemas (HCL or live), optionally emit migration DDL
   validate     check that MV and Distributed dependency references resolve
   drift        detect cross-node schema drift across per-node HCL dumps
@@ -199,33 +204,50 @@ func runIntrospect(args []string) {
 	defer conn.Close()
 
 	ctx := context.Background()
+	schema, err := introspectSchema(ctx, conn, databases, *nodeFlag)
+	if err != nil {
+		slog.Error("failed to introspect schema", "err", err)
+		os.Exit(1)
+	}
+
+	if err := writeIntrospected(*outFlag, schema); err != nil {
+		slog.Error("failed to write introspected schema", "out", *outFlag, "err", err)
+		os.Exit(1)
+	}
+}
+
+// introspectSchema runs the full introspection pipeline against an open
+// connection — every database in databases, named collections, and the node
+// identity — and assembles them into a single *hclload.Schema. The nodeName
+// override is passed through to IntrospectNode (empty string makes it use the
+// server's hostName()). It is shared by runIntrospect and runDumpCluster.
+func introspectSchema(ctx context.Context, conn driver.Conn, databases []string, nodeName string) (*hclload.Schema, error) {
 	schema := &hclload.Schema{}
 	for _, name := range databases {
 		spec, err := hclload.Introspect(ctx, conn, name)
 		if err != nil {
-			slog.Error("failed to introspect database", "database", name, "err", err)
-			os.Exit(1)
+			return nil, fmt.Errorf("introspect database %q: %w", name, err)
 		}
 		slog.Info("introspected database", "name", spec.Name,
 			"tables", len(spec.Tables), "materialized_views", len(spec.MaterializedViews),
 			"dictionaries", len(spec.Dictionaries))
 		schema.Databases = append(schema.Databases, *spec)
 	}
+
 	ncs, err := hclload.IntrospectNamedCollections(ctx, conn)
 	if err != nil {
-		slog.Error("failed to introspect named collections", "err", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("introspect named collections: %w", err)
 	}
 	schema.NamedCollections = ncs
 	slog.Info("introspected named collections", "count", len(schema.NamedCollections))
 
-	node, err := hclload.IntrospectNode(ctx, conn, *nodeFlag)
+	node, err := hclload.IntrospectNode(ctx, conn, nodeName)
 	if err != nil {
-		slog.Error("failed to introspect node macros", "err", err)
-		os.Exit(1)
+		return nil, fmt.Errorf("introspect node macros: %w", err)
 	}
 	schema.Nodes = []hclload.NodeSpec{node}
 	slog.Info("introspected node", "name", node.Name, "macros", len(node.Macros))
+
 	for _, nc := range schema.NamedCollections {
 		if redacted := hclload.RedactedParamKeys(nc); len(redacted) > 0 {
 			slog.Warn("named collection has redacted values; diff will skip these params to avoid overwriting real secrets with '[HIDDEN]'",
@@ -234,10 +256,136 @@ func runIntrospect(args []string) {
 		}
 	}
 
-	if err := writeIntrospected(*outFlag, schema); err != nil {
-		slog.Error("failed to write introspected schema", "out", *outFlag, "err", err)
+	return schema, nil
+}
+
+// runDumpCluster connects to one entry host, enumerates every node of a named
+// cluster from system.clusters, introspects each node natively, and writes one
+// <short-host>.hcl per node into -out-dir. Per-node failures are non-fatal: it
+// logs and continues, reporting the failure count at the end. Enumeration runs
+// over the native protocol, avoiding the HTTP egress proxy that rejects
+// internal private-range IPs.
+func runDumpCluster(args []string) {
+	cfg := config.GetDefaultConfig()
+
+	fs := flag.NewFlagSet("hclexp dump-cluster", flag.ExitOnError)
+	host := fs.String("host", cfg.Host, "ClickHouse entry host to enumerate the cluster from")
+	port := fs.Int("port", cfg.Port, "ClickHouse port")
+	dbFlag := fs.String("database", cfg.Database, "comma-separated databases to introspect on each node")
+	user := fs.String("user", cfg.User, "ClickHouse user")
+	password := fs.String("password", cfg.Password, "ClickHouse password")
+	clusterFlag := fs.String("cluster", "", "system.clusters cluster name to enumerate (required)")
+	outDirFlag := fs.String("out-dir", "", "directory to write one <short-host>.hcl per node (required)")
+	secure := fs.Bool("secure", cfg.Secure, "connect to ClickHouse over TLS")
+	skipVerify := fs.Bool("tls-skip-verify", cfg.TLSSkipVerify, "skip TLS certificate verification (requires -secure)")
+	_ = fs.Parse(args)
+
+	databases := splitList(*dbFlag)
+	if len(databases) == 0 {
+		slog.Error("no database specified")
+		os.Exit(2)
+	}
+	if *clusterFlag == "" {
+		slog.Error("-cluster is required")
+		os.Exit(2)
+	}
+	if *outDirFlag == "" {
+		slog.Error("-out-dir is required")
+		os.Exit(2)
+	}
+
+	cfg.Host, cfg.Port, cfg.User, cfg.Password = *host, *port, *user, *password
+	cfg.Database = databases[0] // connection requires a database to bind to
+	if err := applyTLSFlags(&cfg, *secure, *skipVerify); err != nil {
+		slog.Error("invalid TLS flag combination", "err", err)
+		os.Exit(2)
+	}
+
+	ctx := context.Background()
+
+	// Enumerate the cluster's nodes from the entry host.
+	entry, err := config.NewConnection(cfg)
+	if err != nil {
+		slog.Error("failed to connect to ClickHouse", "host", cfg.Host, "port", cfg.Port, "err", err)
 		os.Exit(1)
 	}
+	var hosts []string
+	err = entry.Select(ctx, &hosts,
+		"SELECT DISTINCT host_name FROM system.clusters WHERE cluster = ? ORDER BY host_name", *clusterFlag)
+	entry.Close()
+	if err != nil {
+		slog.Error("failed to enumerate cluster nodes", "cluster", *clusterFlag, "err", err)
+		os.Exit(1)
+	}
+	if len(hosts) == 0 {
+		slog.Warn("no hosts in cluster", "cluster", *clusterFlag)
+		return
+	}
+	slog.Info("enumerated cluster nodes", "cluster", *clusterFlag, "count", len(hosts))
+
+	// Reset the directory so decommissioned nodes disappear from the dump.
+	if err := os.MkdirAll(*outDirFlag, 0o755); err != nil {
+		slog.Error("failed to create out-dir", "out-dir", *outDirFlag, "err", err)
+		os.Exit(1)
+	}
+	stale, err := filepath.Glob(filepath.Join(*outDirFlag, "*.hcl"))
+	if err != nil {
+		slog.Error("failed to list existing dumps", "out-dir", *outDirFlag, "err", err)
+		os.Exit(1)
+	}
+	for _, p := range stale {
+		if err := os.Remove(p); err != nil {
+			slog.Error("failed to remove stale dump", "path", p, "err", err)
+			os.Exit(1)
+		}
+	}
+
+	failures := 0
+	for _, h := range hosts {
+		nodeCfg := cfg
+		nodeCfg.Host = h
+		if err := dumpNode(ctx, nodeCfg, databases, *outDirFlag); err != nil {
+			slog.Warn("failed to dump node; continuing", "host", h, "err", err)
+			failures++
+			continue
+		}
+	}
+
+	slog.Info("cluster dump complete", "cluster", *clusterFlag,
+		"nodes", len(hosts), "dumped", len(hosts)-failures, "failed", failures)
+}
+
+// dumpNode opens a fresh native connection to one host, introspects the
+// requested databases, and writes the whole schema (all databases + named
+// collections + the node block) to <out-dir>/<short-host>.hcl.
+func dumpNode(ctx context.Context, cfg config.ClickHouseConfig, databases []string, outDir string) error {
+	conn, err := config.NewConnection(cfg)
+	if err != nil {
+		return fmt.Errorf("connect: %w", err)
+	}
+	defer conn.Close()
+
+	// Empty node name: let IntrospectNode use the server's own hostName().
+	schema, err := introspectSchema(ctx, conn, databases, "")
+	if err != nil {
+		return err
+	}
+
+	path := filepath.Join(outDir, shortHost(cfg.Host)+".hcl")
+	if err := writeFile(path, schema); err != nil {
+		return fmt.Errorf("write %s: %w", path, err)
+	}
+	slog.Info("node dumped", "host", cfg.Host, "path", path)
+	return nil
+}
+
+// shortHost returns the first DNS label of host (everything before the first
+// '.'), used to name per-node dump files.
+func shortHost(host string) string {
+	if i := strings.IndexByte(host, '.'); i >= 0 {
+		return host[:i]
+	}
+	return host
 }
 
 // runDiff loads a left and a right schema and reports the changes needed to
