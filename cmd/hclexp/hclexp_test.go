@@ -50,6 +50,24 @@ func TestApplyTLSFlags(t *testing.T) {
 	})
 }
 
+func TestShortHost(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"a.b.c", "a"},
+		{"chi-clickhouse-0-0.svc.cluster.local", "chi-clickhouse-0-0"},
+		{"host", "host"},
+		{"", ""},
+		{".leading", ""},
+		{"trailing.", "trailing"},
+	}
+	for _, c := range cases {
+		t.Run(c.in, func(t *testing.T) {
+			require.Equal(t, c.want, shortHost(c.in))
+		})
+	}
+}
+
 func TestParseClickHouseURI(t *testing.T) {
 	cfg, dbs, err := parseClickHouseURI("clickhouse://ro:secret@ch.example.com:9100/posthog,system")
 	require.NoError(t, err)
