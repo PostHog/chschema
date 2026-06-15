@@ -479,6 +479,32 @@ LAYOUT(FLAT())`
 	assert.Equal(t, &DictionaryLifetime{Min: ptr(int64(300))}, got.Lifetime)
 }
 
+// TestBuildDictionaryFromAST_LayoutNoInnerParens covers parameterless layouts
+// that ClickHouse emits without the empty inner parens, e.g. LAYOUT(IP_TRIE)
+// rather than LAYOUT(IP_TRIE()). See orian/clickhouse-sql-parser#14.
+func TestBuildDictionaryFromAST_LayoutNoInnerParens(t *testing.T) {
+	cases := []struct {
+		name     string
+		layout   string
+		wantKind string
+	}{
+		{"ip_trie", "LAYOUT(IP_TRIE)", "ip_trie"},
+		{"flat", "LAYOUT(FLAT)", "flat"},
+		{"hashed", "LAYOUT(HASHED)", "hashed"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			src := "CREATE DICTIONARY db.d (`prefix` String) PRIMARY KEY prefix\n" +
+				"SOURCE(CLICKHOUSE(USER 'a'))\n" +
+				"LIFETIME(MIN 0 MAX 3600)\n" + tc.layout
+			got, err := buildDictionaryFromCreateSQL(src)
+			require.NoError(t, err)
+			require.NotNil(t, got.Layout)
+			assert.Equal(t, tc.wantKind, got.Layout.Kind)
+		})
+	}
+}
+
 func TestBuildDictionaryFromAST_UnsupportedSource(t *testing.T) {
 	src := `CREATE DICTIONARY db.d (` + "`k`" + ` UInt64, ` + "`v`" + ` String) PRIMARY KEY k
 SOURCE(MONGODB(connection_string 'mongodb://x'))
