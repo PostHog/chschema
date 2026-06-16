@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	chparser "github.com/orian/clickhouse-sql-parser/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -771,6 +772,31 @@ func TestSQLGen_CreateView_OmitsAliasesWhenBodyHasStar(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestSQLGen_CreateView_StarReplace_Reappliable mirrors what introspect captures
+// for the issue #41 view: ClickHouse stores its own inferred column list in
+// create_table_query, so the ViewSpec carries ColumnAliases alongside a starred
+// body. The regenerated DDL must equal the form ClickHouse actually accepts (no
+// column list) and must itself parse as a valid CREATE VIEW.
+func TestSQLGen_CreateView_StarReplace_Reappliable(t *testing.T) {
+	v := ViewSpec{
+		Name:          "custom_metrics",
+		Query:         "SELECT * REPLACE(toFloat64(value) AS value) FROM posthog.custom_metrics_test",
+		ColumnAliases: []string{"name", "labels", "value", "help", "type"},
+	}
+	got := createViewSQL("posthog", v)
+
+	assert.Equal(t,
+		"CREATE VIEW posthog.custom_metrics AS SELECT * REPLACE(toFloat64(value) AS value) FROM posthog.custom_metrics_test",
+		got)
+
+	// The regenerated statement must be syntactically valid CREATE VIEW.
+	stmts, err := chparser.NewParser(got).ParseStmts()
+	require.NoError(t, err, "regenerated CREATE VIEW must parse")
+	require.Len(t, stmts, 1)
+	_, ok := stmts[0].(*chparser.CreateView)
+	assert.True(t, ok, "regenerated statement must be a CREATE VIEW")
 }
 
 func TestSQLGen_DropPlainView(t *testing.T) {
