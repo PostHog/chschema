@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -32,10 +33,10 @@ type rowScanner interface {
 // default/materialized/ephemeral/alias, comment), indexes, constraints,
 // engine, ORDER BY, PARTITION BY, SAMPLE BY, table TTL, SETTINGS, and
 // table comment.
-func Introspect(ctx context.Context, conn driver.Conn, database string) (*DatabaseSpec, error) {
+func Introspect(ctx context.Context, conn driver.Conn, database string, allowRaw bool) (*DatabaseSpec, error) {
 	db := &DatabaseSpec{Name: database}
 
-	const q = `SELECT name, create_table_query
+	const q = `SELECT name, create_table_query, engine
 		FROM system.tables
 		WHERE database = ? AND NOT is_temporary
 		ORDER BY name`
@@ -45,7 +46,7 @@ func Introspect(ctx context.Context, conn driver.Conn, database string) (*Databa
 	}
 	defer rows.Close()
 
-	if err := processIntrospectRows(db, database, rows); err != nil {
+	if err := processIntrospectRowsOpt(db, database, rows, allowRaw); err != nil {
 		return nil, err
 	}
 	if err := rows.Err(); err != nil {
@@ -54,52 +55,94 @@ func Introspect(ctx context.Context, conn driver.Conn, database string) (*Databa
 	return db, nil
 }
 
+// rawKindForEngine maps a system.tables.engine value to a RawSpec kind. The
+// engine column is populated even when create_table_query cannot be parsed, so
+// it is the reliable source for the kind of a captured raw object.
+func rawKindForEngine(engine string) string {
+	switch engine {
+	case "Dictionary":
+		return "dictionary"
+	case "View":
+		return "view"
+	case "MaterializedView":
+		return "materialized_view"
+	default:
+		return "table"
+	}
+}
+
 // processIntrospectRows fills db with tables and materialized views parsed
 // from rows produced by a system.tables query. Each row must yield (name,
 // create_table_query) via Scan. Plain views (CREATE VIEW) are silently
 // skipped; inner-engine and refreshable MVs return an error.
 func processIntrospectRows(db *DatabaseSpec, database string, rows rowScanner) error {
+	return processIntrospectRowsOpt(db, database, rows, false)
+}
+
+// processIntrospectRowsOpt fills db from rows. When allowRaw is false (the
+// strict default) any object whose CREATE DDL cannot be parsed or expressed in
+// the schema language aborts with an error that names the -allow-raw flag.
+// When allowRaw is true, such an object is instead captured verbatim as a
+// RawSpec (its kind taken from system.tables.engine) and introspection
+// continues, so one unparseable object never breaks the whole dump.
+func processIntrospectRowsOpt(db *DatabaseSpec, database string, rows rowScanner, allowRaw bool) error {
 	for rows.Next() {
-		var name, createSQL string
-		if err := rows.Scan(&name, &createSQL); err != nil {
+		var name, createSQL, engine string
+		if err := rows.Scan(&name, &createSQL, &engine); err != nil {
 			return fmt.Errorf("scan system.tables: %w", err)
 		}
-		stmt, err := parseCreateStatement(createSQL)
+		if err := introspectOneObject(db, database, name, createSQL); err != nil {
+			if !allowRaw {
+				return fmt.Errorf("%w (re-run with -allow-raw to capture this object as a raw SQL block instead of failing)", err)
+			}
+			kind := rawKindForEngine(engine)
+			db.Raws = append(db.Raws, RawSpec{Kind: kind, Name: name, SQL: normalizeRawSQL(createSQL)})
+			slog.Warn("captured object as raw SQL", "object", database+"."+name, "kind", kind, "reason", err)
+		}
+	}
+	return nil
+}
+
+// introspectOneObject parses one create_table_query and appends the resulting
+// typed spec to db. It returns an error when the DDL cannot be parsed or the
+// object uses an engine/form the schema language does not express; callers
+// decide whether that is fatal (strict) or captured as raw.
+func introspectOneObject(db *DatabaseSpec, database, name, createSQL string) error {
+	stmt, err := parseCreateStatement(createSQL)
+	if err != nil {
+		return fmt.Errorf("parse create_table_query for %s.%s: %w", database, name, err)
+	}
+	switch s := stmt.(type) {
+	case *chparser.CreateTable:
+		ts, err := buildTableFromCreateTable(s)
 		if err != nil {
-			return fmt.Errorf("parse create_table_query for %s.%s: %w", database, name, err)
+			return fmt.Errorf("introspect table %s.%s: %w", database, name, err)
 		}
-		switch s := stmt.(type) {
-		case *chparser.CreateTable:
-			ts, err := buildTableFromCreateTable(s)
-			if err != nil {
-				return fmt.Errorf("introspect table %s.%s: %w", database, name, err)
-			}
-			ts.Name = name
-			db.Tables = append(db.Tables, ts)
-		case *chparser.CreateMaterializedView:
-			mv, err := buildMaterializedViewFromCreateMV(s)
-			if err != nil {
-				return fmt.Errorf("introspect materialized view %s.%s: %w", database, name, err)
-			}
-			mv.Name = name
-			db.MaterializedViews = append(db.MaterializedViews, mv)
-		case *chparser.CreateDictionary:
-			d, err := buildDictionaryFromCreateDictionary(s)
-			if err != nil {
-				return fmt.Errorf("introspect dictionary %s.%s: %w", database, name, err)
-			}
-			d.Name = name
-			db.Dictionaries = append(db.Dictionaries, d)
-		case *chparser.CreateView:
-			v, err := buildViewFromCreateView(s)
-			if err != nil {
-				return fmt.Errorf("introspect view %s.%s: %w", database, name, err)
-			}
-			v.Name = name
-			db.Views = append(db.Views, v)
-		default:
-			return fmt.Errorf("introspect %s.%s: unsupported statement type %T", database, name, stmt)
+		ts.Name = name
+		db.Tables = append(db.Tables, ts)
+	case *chparser.CreateMaterializedView:
+		mv, err := buildMaterializedViewFromCreateMV(s)
+		if err != nil {
+			return fmt.Errorf("introspect materialized view %s.%s: %w", database, name, err)
 		}
+		mv.Name = name
+		db.MaterializedViews = append(db.MaterializedViews, mv)
+	case *chparser.CreateDictionary:
+		d, err := buildDictionaryFromCreateDictionary(s)
+		if err != nil {
+			return fmt.Errorf("introspect dictionary %s.%s: %w", database, name, err)
+		}
+		d.Name = name
+		db.Dictionaries = append(db.Dictionaries, d)
+	case *chparser.CreateView:
+		v, err := buildViewFromCreateView(s)
+		if err != nil {
+			return fmt.Errorf("introspect view %s.%s: %w", database, name, err)
+		}
+		v.Name = name
+		db.Views = append(db.Views, v)
+	default:
+		return fmt.Errorf("introspect %s.%s: unsupported statement type %T", database, name, stmt)
 	}
 	return nil
 }

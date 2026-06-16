@@ -32,6 +32,13 @@ func ParseFile(path string) (*Schema, error) {
 
 	for di := range spec.Databases {
 		db := &spec.Databases[di]
+		for i := range db.Raws {
+			r := &db.Raws[i]
+			if !rawKinds[r.Kind] {
+				return nil, fmt.Errorf("%s: raw %q has unknown kind %q (want one of table, materialized_view, view, dictionary)", db.Name, r.Name, r.Kind)
+			}
+			r.SQL = normalizeRawSQL(r.SQL)
+		}
 		for ti := range db.Tables {
 			tbl := &db.Tables[ti]
 			if tbl.Engine == nil {

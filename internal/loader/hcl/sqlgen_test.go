@@ -9,6 +9,51 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestGenerateSQL_Raw_AddAndDrop(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "db",
+		AddRaws: []RawSpec{
+			{Kind: "dictionary", Name: "d", SQL: "CREATE DICTIONARY db.d (k UInt64) LAYOUT(FLAT)\n"},
+		},
+		DropRaws: []RawSpec{
+			{Kind: "view", Name: "v", SQL: "CREATE VIEW db.v AS SELECT 1\n"},
+		},
+	}}}
+	out := GenerateSQL(cs)
+	joined := strings.Join(out.Statements, "\n")
+	assert.Contains(t, joined, "CREATE DICTIONARY db.d")
+	assert.Contains(t, joined, "DROP VIEW IF EXISTS db.v")
+	assert.Empty(t, out.Unsafe)
+}
+
+func TestGenerateSQL_Raw_DictRecreateIsSafe(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "db",
+		AlterRaws: []RawChange{
+			{Kind: "dictionary", Name: "d", OldSQL: "CREATE DICTIONARY db.d LAYOUT(FLAT)\n", NewSQL: "CREATE DICTIONARY db.d LAYOUT(HASHED)\n"},
+		},
+	}}}
+	out := GenerateSQL(cs)
+	joined := strings.Join(out.Statements, "\n")
+	assert.Contains(t, joined, "DROP DICTIONARY IF EXISTS db.d")
+	assert.Contains(t, joined, "LAYOUT(HASHED)")
+	assert.Empty(t, out.Unsafe, "recreating a dictionary loses no data")
+}
+
+func TestGenerateSQL_Raw_TableRecreateIsUnsafeAndNotAutoEmitted(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "db",
+		AlterRaws: []RawChange{
+			{Kind: "table", Name: "t", OldSQL: "CREATE TABLE db.t (a UInt64) ENGINE = Log\n", NewSQL: "CREATE TABLE db.t (a UInt64, b UInt64) ENGINE = Log\n"},
+		},
+	}}}
+	out := GenerateSQL(cs)
+	require.Len(t, out.Unsafe, 1)
+	assert.Equal(t, "t", out.Unsafe[0].Table)
+	joined := strings.Join(out.Statements, "\n")
+	assert.NotContains(t, joined, "DROP TABLE", "a destructive table recreate is never auto-emitted")
+}
+
 func TestSQLGen_EmptyChangeSet(t *testing.T) {
 	out := GenerateSQL(ChangeSet{})
 	assert.Empty(t, out.Statements)

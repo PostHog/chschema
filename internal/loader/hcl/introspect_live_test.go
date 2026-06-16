@@ -51,7 +51,7 @@ func TestCHLive_Introspect(t *testing.T) {
 			require.NoError(t, conn.Exec(ctx, sql), "CREATE TABLE rejected:\n%s", sql)
 
 			// 3. Introspect back.
-			db, err := Introspect(ctx, conn, dbName)
+			db, err := Introspect(ctx, conn, dbName, false)
 			require.NoError(t, err)
 			var got *TableSpec
 			for i := range db.Tables {
@@ -97,7 +97,7 @@ func TestCHLive_IntrospectMaterializedView(t *testing.T) {
 			"AS SELECT team_id, count() AS cnt FROM %s.events GROUP BY team_id",
 		dbName, dbName, dbName)))
 
-	db, err := Introspect(ctx, conn, dbName)
+	db, err := Introspect(ctx, conn, dbName, false)
 	require.NoError(t, err, "introspecting a database with a materialized view must not fail")
 
 	require.Len(t, db.MaterializedViews, 1)
@@ -277,7 +277,7 @@ func TestCHLive_IntrospectDictionary(t *testing.T) {
 			"LAYOUT(HASHED())",
 		dbName, dbName))
 
-	db, err := Introspect(ctx, conn, dbName)
+	db, err := Introspect(ctx, conn, dbName, false)
 	require.NoError(t, err)
 
 	var got *DictionarySpec

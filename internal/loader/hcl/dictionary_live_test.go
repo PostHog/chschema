@@ -51,7 +51,7 @@ func TestCHLive_Dictionary_ApplyRoundTrip(t *testing.T) {
 	stmt := createDictionarySQL(dbName, want)
 	require.NoError(t, conn.Exec(ctx, stmt), "DDL rejected:\n%s", stmt)
 
-	db, err := Introspect(ctx, conn, dbName)
+	db, err := Introspect(ctx, conn, dbName, false)
 	require.NoError(t, err)
 	got := findDictByName(db.Dictionaries, "rich_dict")
 	require.NotNil(t, got)
@@ -220,7 +220,7 @@ func TestCHLive_Dictionary_LayoutMatrix(t *testing.T) {
 			stmt := createDictionarySQL(dbName, spec)
 			require.NoError(t, conn.Exec(ctx, stmt), "DDL rejected:\n%s", stmt)
 
-			db, err := Introspect(ctx, conn, dbName)
+			db, err := Introspect(ctx, conn, dbName, false)
 			require.NoError(t, err)
 			got := findDictByName(db.Dictionaries, dictName)
 			require.NotNil(t, got, "introspected schema missing %s", dictName)
@@ -265,7 +265,7 @@ func TestCHLive_Dictionary_LifetimeForms(t *testing.T) {
 	t.Run("simple form LIFETIME(300)", func(t *testing.T) {
 		spec := makeSpec("simple_lifetime_dict", &DictionaryLifetime{Min: ptr(int64(300))})
 		require.NoError(t, conn.Exec(ctx, createDictionarySQL(dbName, spec)))
-		db, err := Introspect(ctx, conn, dbName)
+		db, err := Introspect(ctx, conn, dbName, false)
 		require.NoError(t, err)
 		got := findDictByName(db.Dictionaries, "simple_lifetime_dict")
 		require.NotNil(t, got)
@@ -284,7 +284,7 @@ func TestCHLive_Dictionary_LifetimeForms(t *testing.T) {
 	t.Run("range form LIFETIME(MIN 300 MAX 600)", func(t *testing.T) {
 		spec := makeSpec("range_lifetime_dict", &DictionaryLifetime{Min: ptr(int64(300)), Max: ptr(int64(600))})
 		require.NoError(t, conn.Exec(ctx, createDictionarySQL(dbName, spec)))
-		db, err := Introspect(ctx, conn, dbName)
+		db, err := Introspect(ctx, conn, dbName, false)
 		require.NoError(t, err)
 		got := findDictByName(db.Dictionaries, "range_lifetime_dict")
 		require.NotNil(t, got)
@@ -327,7 +327,7 @@ func TestCHLive_Dictionary_AttributeFlags(t *testing.T) {
 	stmt := createDictionarySQL(dbName, spec)
 	require.NoError(t, conn.Exec(ctx, stmt), "DDL rejected:\n%s", stmt)
 
-	db, err := Introspect(ctx, conn, dbName)
+	db, err := Introspect(ctx, conn, dbName, false)
 	require.NoError(t, err)
 	got := findDictByName(db.Dictionaries, "flagged_dict")
 	require.NotNil(t, got)
@@ -393,7 +393,7 @@ func TestCHLive_Dictionary_PosthogFixtures(t *testing.T) {
 	}
 
 	// One Introspect call covers all fixtures created above.
-	db, err := Introspect(ctx, conn, dbName)
+	db, err := Introspect(ctx, conn, dbName, false)
 	require.NoError(t, err, "Introspect failed on posthog fixtures")
 	assert.Len(t, db.Dictionaries, count, "all %d fixture dictionaries should round-trip through Introspect", count)
 }

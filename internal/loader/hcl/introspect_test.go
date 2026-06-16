@@ -1,6 +1,7 @@
 package hcl
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -290,8 +291,10 @@ func TestBuildMaterializedViewFromCreateSQL_RefreshableUnsupported(t *testing.T)
 
 // fakeRows is a minimal rowScanner backed by a slice of (name, createSQL)
 // pairs, used to test processIntrospectRows without a live ClickHouse.
+type fakeRow struct{ name, sql, engine string }
+
 type fakeRows struct {
-	rows []struct{ name, sql string }
+	rows []fakeRow
 	pos  int
 }
 
@@ -304,6 +307,9 @@ func (r *fakeRows) Scan(dest ...any) error {
 	row := r.rows[r.pos-1]
 	*dest[0].(*string) = row.name
 	*dest[1].(*string) = row.sql
+	if len(dest) > 2 {
+		*dest[2].(*string) = row.engine
+	}
 	return nil
 }
 
@@ -314,7 +320,7 @@ func (r *fakeRows) Err() error { return nil }
 // and a plain CREATE VIEW must all be processed in one call without error, and
 // each must land in the correct collection.
 func TestProcessIntrospectRows_Dispatch(t *testing.T) {
-	rows := &fakeRows{rows: []struct{ name, sql string }{
+	rows := &fakeRows{rows: []fakeRow{
 		{
 			name: "events",
 			sql: `CREATE TABLE db.events (` +
@@ -351,7 +357,7 @@ func TestProcessIntrospectRows_Dispatch(t *testing.T) {
 }
 
 func TestProcessIntrospectRows_PlainView(t *testing.T) {
-	rows := &fakeRows{rows: []struct{ name, sql string }{
+	rows := &fakeRows{rows: []fakeRow{
 		{
 			name: "v_simple",
 			sql:  "CREATE VIEW posthog.v_simple AS SELECT team_id FROM posthog.events",
@@ -368,7 +374,7 @@ func TestProcessIntrospectRows_PlainView(t *testing.T) {
 }
 
 func TestProcessIntrospectRows_ViewWithColumnAliasesAndComment(t *testing.T) {
-	rows := &fakeRows{rows: []struct{ name, sql string }{
+	rows := &fakeRows{rows: []fakeRow{
 		{
 			name: "v_aliased",
 			sql: "CREATE VIEW posthog.v_aliased (team_id, n) " +
@@ -388,7 +394,7 @@ func TestProcessIntrospectRows_ViewWithSQLSecurityDefiner(t *testing.T) {
 	// chparser as of the currently-pinned fork doesn't model DEFINER / SQL
 	// SECURITY on CREATE VIEW; buildViewFromCreateView falls back to a
 	// regex on the input text for those clauses.
-	rows := &fakeRows{rows: []struct{ name, sql string }{
+	rows := &fakeRows{rows: []fakeRow{
 		{
 			name: "v_sec",
 			sql:  "CREATE VIEW posthog.v_sec DEFINER = alice SQL SECURITY DEFINER AS SELECT 1",
@@ -500,7 +506,7 @@ LIFETIME(0)`
 }
 
 func TestProcessIntrospectRows_DispatchesDictionary(t *testing.T) {
-	rows := &fakeRows{rows: []struct{ name, sql string }{
+	rows := &fakeRows{rows: []fakeRow{
 		{name: "events", sql: "CREATE TABLE db.events (`id` UUID) ENGINE = MergeTree ORDER BY id"},
 		{name: "d", sql: "CREATE DICTIONARY db.d (`k` UInt64, `v` String) PRIMARY KEY k SOURCE(NULL()) LAYOUT(HASHED()) LIFETIME(0)"},
 	}}
@@ -513,6 +519,41 @@ func TestProcessIntrospectRows_DispatchesDictionary(t *testing.T) {
 	assert.Equal(t, "null", db.Dictionaries[0].Source.Kind)
 	require.NotNil(t, db.Dictionaries[0].Layout)
 	assert.Equal(t, "hashed", db.Dictionaries[0].Layout.Kind)
+}
+
+func TestRawKindForEngine(t *testing.T) {
+	assert.Equal(t, "dictionary", rawKindForEngine("Dictionary"))
+	assert.Equal(t, "view", rawKindForEngine("View"))
+	assert.Equal(t, "materialized_view", rawKindForEngine("MaterializedView"))
+	assert.Equal(t, "table", rawKindForEngine("MergeTree"))
+	assert.Equal(t, "table", rawKindForEngine(""))
+}
+
+func TestProcessIntrospectRows_RawFallback_AllowRaw(t *testing.T) {
+	rows := &fakeRows{rows: []fakeRow{
+		{name: "events", sql: "CREATE TABLE db.events (`id` UUID) ENGINE = MergeTree ORDER BY id", engine: "MergeTree"},
+		{name: "weird", sql: "this is definitely not valid clickhouse sql", engine: "Dictionary"},
+	}}
+	db := &DatabaseSpec{Name: "db"}
+	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, true))
+
+	require.Len(t, db.Tables, 1, "the parseable table is still introspected normally")
+	require.Len(t, db.Raws, 1)
+	assert.Equal(t, "dictionary", db.Raws[0].Kind, "kind comes from system.tables.engine, not the unparseable SQL")
+	assert.Equal(t, "weird", db.Raws[0].Name)
+	assert.Contains(t, db.Raws[0].SQL, "not valid clickhouse sql")
+	assert.True(t, strings.HasSuffix(db.Raws[0].SQL, "\n"), "captured SQL is normalized to a trailing newline")
+}
+
+func TestProcessIntrospectRows_RawFallback_StrictErrorsWithFlagHint(t *testing.T) {
+	rows := &fakeRows{rows: []fakeRow{
+		{name: "weird", sql: "this is definitely not valid clickhouse sql", engine: "Dictionary"},
+	}}
+	db := &DatabaseSpec{Name: "db"}
+	err := processIntrospectRowsOpt(db, "db", rows, false)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "-allow-raw")
+	assert.Empty(t, db.Raws, "strict mode captures nothing")
 }
 
 func TestParseKafkaEngine_Cases(t *testing.T) {
@@ -603,7 +644,7 @@ func TestIntrospect_TimeSeries_External(t *testing.T) {
 		"`metric_name` LowCardinality(String)) " +
 		"ENGINE = TimeSeries DATA default.m_data TAGS default.m_tags METRICS default.m_metrics"
 	db := &DatabaseSpec{Name: "default"}
-	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []struct{ name, sql string }{{"m", sql}}}))
+	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []fakeRow{{name: "m", sql: sql}}}))
 	require.Len(t, db.Tables, 1)
 	tbl := db.Tables[0]
 	assert.Equal(t, "m", tbl.Name)
@@ -625,7 +666,7 @@ func TestIntrospect_TimeSeries_Inner(t *testing.T) {
 		"SAMPLES INNER COLUMNS (`id` UUID, `timestamp` DateTime64(3), `value` Float64) " +
 		"SAMPLES INNER ENGINE = MergeTree ORDER BY (id, timestamp)"
 	db := &DatabaseSpec{Name: "default"}
-	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []struct{ name, sql string }{{"m", sql}}}))
+	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []fakeRow{{name: "m", sql: sql}}}))
 	e := db.Tables[0].Engine.Decoded.(EngineTimeSeries)
 	assert.Equal(t, "SAMPLES", e.KeywordHint)
 	require.NotNil(t, e.Samples)
@@ -641,7 +682,7 @@ func TestIntrospect_TimeSeries_Inner(t *testing.T) {
 func TestIntrospect_TimeSeries_Bare(t *testing.T) {
 	sql := "CREATE TABLE default.m (`metric_name` LowCardinality(String)) ENGINE = TimeSeries"
 	db := &DatabaseSpec{Name: "default"}
-	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []struct{ name, sql string }{{"m", sql}}}))
+	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []fakeRow{{name: "m", sql: sql}}}))
 	e := db.Tables[0].Engine.Decoded.(EngineTimeSeries)
 	assert.Nil(t, e.Samples)
 	assert.Nil(t, e.Tags)
@@ -654,7 +695,7 @@ func TestIntrospect_TimeSeries_TagsToColumns(t *testing.T) {
 		"SETTINGS id_generator = 'sipHash64(metric_name, all_tags)', " +
 		"tags_to_columns = {'instance':'instance','job':'job'}"
 	db := &DatabaseSpec{Name: "default"}
-	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []struct{ name, sql string }{{"m", sql}}}))
+	require.NoError(t, processIntrospectRows(db, "default", &fakeRows{rows: []fakeRow{{name: "m", sql: sql}}}))
 	e := db.Tables[0].Engine.Decoded.(EngineTimeSeries)
 	assert.Equal(t, "sipHash64(metric_name, all_tags)", e.Settings["id_generator"])
 	assert.Equal(t, map[string]string{"instance": "instance", "job": "job"}, e.TagsToColumns)
@@ -663,7 +704,7 @@ func TestIntrospect_TimeSeries_TagsToColumns(t *testing.T) {
 func TestIntrospect_TimeSeries_ProductionPromMetrics(t *testing.T) {
 	sql := "CREATE TABLE posthog.prom_metrics (`id` UUID DEFAULT reinterpretAsUUID(sipHash128(metric_name, all_tags)), `timestamp` DateTime64(3), `value` Float64, `metric_name` LowCardinality(String), `tags` Map(LowCardinality(String), String), `all_tags` Map(String, String), `min_time` Nullable(DateTime64(3)), `max_time` Nullable(DateTime64(3)), `metric_family_name` String, `type` String, `unit` String, `help` String) ENGINE = TimeSeries DATA posthog.prom_metrics_data TAGS posthog.prom_metrics_tags METRICS posthog.prom_metrics_metrics"
 	db := &DatabaseSpec{Name: "posthog"}
-	require.NoError(t, processIntrospectRows(db, "posthog", &fakeRows{rows: []struct{ name, sql string }{{"prom_metrics", sql}}}))
+	require.NoError(t, processIntrospectRows(db, "posthog", &fakeRows{rows: []fakeRow{{name: "prom_metrics", sql: sql}}}))
 	require.Len(t, db.Tables, 1)
 	assert.Equal(t, "prom_metrics", db.Tables[0].Name)
 	assert.Len(t, db.Tables[0].Columns, 12)
@@ -675,7 +716,7 @@ func TestIntrospect_TimeSeries_ProductionPromMetrics(t *testing.T) {
 func TestIntrospect_Join_SingleKey(t *testing.T) {
 	sql := "CREATE TABLE db.j (`id` UInt64, `value` String) ENGINE = Join(ANY, LEFT, id)"
 	db := &DatabaseSpec{Name: "db"}
-	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"j", sql}}}))
+	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []fakeRow{{name: "j", sql: sql}}}))
 	e := db.Tables[0].Engine.Decoded.(EngineJoin)
 	assert.Equal(t, "ANY", e.Strictness)
 	assert.Equal(t, "LEFT", e.JoinType)
@@ -685,7 +726,7 @@ func TestIntrospect_Join_SingleKey(t *testing.T) {
 func TestIntrospect_Join_MultiKey(t *testing.T) {
 	sql := "CREATE TABLE db.j (`a` UInt64, `b` UInt64, `v` String) ENGINE = Join(ALL, INNER, a, b)"
 	db := &DatabaseSpec{Name: "db"}
-	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"j", sql}}}))
+	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []fakeRow{{name: "j", sql: sql}}}))
 	e := db.Tables[0].Engine.Decoded.(EngineJoin)
 	assert.Equal(t, "ALL", e.Strictness)
 	assert.Equal(t, "INNER", e.JoinType)
@@ -695,7 +736,7 @@ func TestIntrospect_Join_MultiKey(t *testing.T) {
 func TestIntrospect_Join_RejectsTooFewArgs(t *testing.T) {
 	sql := "CREATE TABLE db.j (`id` UInt64) ENGINE = Join(ANY, LEFT)"
 	db := &DatabaseSpec{Name: "db"}
-	err := processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"j", sql}}})
+	err := processIntrospectRows(db, "db", &fakeRows{rows: []fakeRow{{name: "j", sql: sql}}})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "Join needs")
 }
@@ -703,7 +744,7 @@ func TestIntrospect_Join_RejectsTooFewArgs(t *testing.T) {
 func TestIntrospect_Buffer_FullArgs(t *testing.T) {
 	sql := "CREATE TABLE db.buf (`id` UUID) ENGINE = Buffer('', 'dest_table', 16, 10, 100, 10000, 1000000, 10000000, 100000000)"
 	db := &DatabaseSpec{Name: "db"}
-	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"buf", sql}}}))
+	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []fakeRow{{name: "buf", sql: sql}}}))
 	e := db.Tables[0].Engine.Decoded.(EngineBuffer)
 	assert.Equal(t, "", e.Database)
 	assert.Equal(t, "dest_table", e.Table)
@@ -716,7 +757,7 @@ func TestIntrospect_Buffer_FullArgs(t *testing.T) {
 func TestIntrospect_Buffer_WithFlushTriplet(t *testing.T) {
 	sql := "CREATE TABLE db.buf (`id` UUID) ENGINE = Buffer('default', 'dest', 1, 5, 60, 100, 10000, 1000, 100000, 30, 200, 50000)"
 	db := &DatabaseSpec{Name: "db"}
-	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"buf", sql}}}))
+	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []fakeRow{{name: "buf", sql: sql}}}))
 	e := db.Tables[0].Engine.Decoded.(EngineBuffer)
 	assert.Equal(t, "default", e.Database)
 	require.NotNil(t, e.FlushTime)
@@ -730,7 +771,7 @@ func TestIntrospect_Buffer_WithFlushTriplet(t *testing.T) {
 func TestIntrospect_Merge(t *testing.T) {
 	sql := "CREATE TABLE db.m (`id` UUID) ENGINE = Merge('default', '^shard_.*')"
 	db := &DatabaseSpec{Name: "db"}
-	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"m", sql}}}))
+	require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []fakeRow{{name: "m", sql: sql}}}))
 	e := db.Tables[0].Engine.Decoded.(EngineMerge)
 	assert.Equal(t, "default", e.DBRegex)
 	assert.Equal(t, "^shard_.*", e.TableRegex)
@@ -744,7 +785,7 @@ func TestIntrospect_Null_Memory(t *testing.T) {
 		{"CREATE TABLE db.n (`id` UUID) ENGINE = Memory()", "memory"},
 	} {
 		db := &DatabaseSpec{Name: "db"}
-		require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []struct{ name, sql string }{{"n", c.sql}}}))
+		require.NoError(t, processIntrospectRows(db, "db", &fakeRows{rows: []fakeRow{{name: "n", sql: c.sql}}}))
 		assert.Equal(t, c.kind, db.Tables[0].Engine.Kind)
 	}
 }

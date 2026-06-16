@@ -338,6 +338,29 @@ func TestRenderChangeSet_Dictionaries(t *testing.T) {
 	require.Equal(t, want, buf.String())
 }
 
+func TestRenderChangeSet_Raws(t *testing.T) {
+	cs := hclload.ChangeSet{Databases: []hclload.DatabaseChange{{
+		Database: "posthog",
+		AddRaws:  []hclload.RawSpec{{Kind: "dictionary", Name: "new_raw"}},
+		DropRaws: []hclload.RawSpec{{Kind: "view", Name: "old_raw"}},
+		AlterRaws: []hclload.RawChange{
+			{Kind: "dictionary", Name: "safe_raw"},
+			{Kind: "table", Name: "risky_raw"},
+		},
+	}}}
+
+	var buf bytes.Buffer
+	renderChangeSet(&buf, cs)
+
+	want := `database "posthog"
+  + raw dictionary new_raw
+  - raw view old_raw
+  ~ raw dictionary safe_raw (recreate)
+  ~ raw table risky_raw (recreate) ! UNSAFE: destroys data
+`
+	require.Equal(t, want, buf.String())
+}
+
 func TestRenderChangeSet_NamedCollections(t *testing.T) {
 	cs := hclload.ChangeSet{
 		NamedCollections: []hclload.NamedCollectionChange{

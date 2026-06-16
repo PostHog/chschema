@@ -75,7 +75,7 @@ func TestCHLive_Kafka_WithNamedCollection_E2E(t *testing.T) {
 	}
 	assert.Equal(t, wantValues, gotValues)
 
-	dbIntrospected, err := Introspect(ctx, conn, dbName)
+	dbIntrospected, err := Introspect(ctx, conn, dbName, false)
 	require.NoError(t, err)
 	require.Len(t, dbIntrospected.Tables, 1)
 	got := dbIntrospected.Tables[0]
@@ -135,7 +135,7 @@ func TestCHLive_Kafka_AllSettingsForm(t *testing.T) {
 		require.NoError(t, conn.Exec(ctx, stmt), "exec failed: %s", stmt)
 	}
 
-	dbIntrospected, err := Introspect(ctx, conn, dbName)
+	dbIntrospected, err := Introspect(ctx, conn, dbName, false)
 	require.NoError(t, err)
 	require.Len(t, dbIntrospected.Tables, 1)
 	got := dbIntrospected.Tables[0]

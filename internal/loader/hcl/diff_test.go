@@ -22,6 +22,58 @@ func mkDB(name string, tables ...TableSpec) DatabaseSpec {
 	return DatabaseSpec{Name: name, Tables: tables}
 }
 
+func TestDiff_Raw_AddDropChange(t *testing.T) {
+	from := &Schema{Databases: []DatabaseSpec{{Name: "db", Raws: []RawSpec{
+		{Kind: "dictionary", Name: "keep", SQL: "CREATE DICTIONARY db.keep (k UInt64) ...\n"},
+		{Kind: "table", Name: "gone", SQL: "CREATE TABLE db.gone (id UInt64) ENGINE = Log\n"},
+		{Kind: "dictionary", Name: "changed", SQL: "CREATE DICTIONARY db.changed LAYOUT(FLAT)\n"},
+	}}}}
+	to := &Schema{Databases: []DatabaseSpec{{Name: "db", Raws: []RawSpec{
+		{Kind: "dictionary", Name: "keep", SQL: "CREATE DICTIONARY db.keep (k UInt64) ...\n"},
+		{Kind: "view", Name: "fresh", SQL: "CREATE VIEW db.fresh AS SELECT 1\n"},
+		{Kind: "dictionary", Name: "changed", SQL: "CREATE DICTIONARY db.changed LAYOUT(HASHED)\n"},
+	}}}}
+
+	cs := Diff(from, to)
+	require.Len(t, cs.Databases, 1)
+	dc := cs.Databases[0]
+
+	require.Len(t, dc.AddRaws, 1)
+	assert.Equal(t, "fresh", dc.AddRaws[0].Name)
+
+	require.Len(t, dc.DropRaws, 1)
+	assert.Equal(t, "gone", dc.DropRaws[0].Name)
+
+	require.Len(t, dc.AlterRaws, 1)
+	assert.Equal(t, "changed", dc.AlterRaws[0].Name)
+	assert.Equal(t, "dictionary", dc.AlterRaws[0].Kind)
+	assert.Contains(t, dc.AlterRaws[0].NewSQL, "LAYOUT(HASHED)")
+	assert.False(t, dc.AlterRaws[0].IsUnsafe(), "a dictionary recreate is safe")
+}
+
+func TestDiff_Raw_TableChangeIsUnsafe(t *testing.T) {
+	from := &Schema{Databases: []DatabaseSpec{{Name: "db", Raws: []RawSpec{
+		{Kind: "table", Name: "t", SQL: "CREATE TABLE db.t (a UInt64) ENGINE = Log\n"},
+	}}}}
+	to := &Schema{Databases: []DatabaseSpec{{Name: "db", Raws: []RawSpec{
+		{Kind: "table", Name: "t", SQL: "CREATE TABLE db.t (a UInt64, b UInt64) ENGINE = Log\n"},
+	}}}}
+	cs := Diff(from, to)
+	require.Len(t, cs.Databases, 1)
+	require.Len(t, cs.Databases[0].AlterRaws, 1)
+	assert.True(t, cs.Databases[0].AlterRaws[0].IsUnsafe(), "a table recreate destroys data")
+}
+
+func TestDiff_Raw_TrailingNewlineNotADiff(t *testing.T) {
+	from := &Schema{Databases: []DatabaseSpec{{Name: "db", Raws: []RawSpec{
+		{Kind: "view", Name: "v", SQL: "CREATE VIEW db.v AS SELECT 1"},
+	}}}}
+	to := &Schema{Databases: []DatabaseSpec{{Name: "db", Raws: []RawSpec{
+		{Kind: "view", Name: "v", SQL: "CREATE VIEW db.v AS SELECT 1\n\n"},
+	}}}}
+	assert.True(t, Diff(from, to).IsEmpty(), "trailing-newline-only differences are not changes")
+}
+
 func TestDiff_IdenticalSchemasEmpty(t *testing.T) {
 	a := []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"}))}
 	b := []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UUID"}))}

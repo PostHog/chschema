@@ -25,7 +25,7 @@ is just three layer directories passed to the loader in that order.
 
 Most files declare one or more `database` blocks. Within a database, the
 allowed children are `table`, `patch_table`, `materialized_view`, `view`,
-and `dictionary`.
+`dictionary`, and `raw` (the escape hatch; see [`raw`](#raw)).
 
 ```hcl
 database "posthog" {
@@ -395,6 +395,55 @@ requires drop-and-recreate and is flagged unsafe.
 
 **Not supported.** Live views, refreshable materialized views, and window
 views fail introspection with a clear error.
+
+## `raw`
+
+The escape hatch for objects whose `CREATE` DDL the parser cannot handle, or
+that use an engine/form this schema language does not express. The whole
+statement is stored verbatim and round-tripped unchanged. The two labels
+mirror Terraform's `resource "<type>" "<name>"`: the first is the object
+`kind`, the second its name.
+
+```hcl
+database "posthog" {
+  raw "dictionary" "city_postal_ip_trie" {
+    sql = <<SQL
+CREATE DICTIONARY posthog.city_postal_ip_trie (`prefix` String, `city_name` String DEFAULT '')
+PRIMARY KEY prefix
+SOURCE(CLICKHOUSE(USER 'reader' QUERY 'SELECT prefix, city_name FROM s3(...)'))
+LIFETIME(MIN 0 MAX 3600)
+LAYOUT(IP_TRIE)
+SQL
+  }
+}
+```
+
+| Field  | Meaning |
+|--------|---------|
+| `kind` (1st label) | `table`, `materialized_view`, `view`, or `dictionary`. Drives the `DROP` form on a recreate. |
+| `name` (2nd label) | The object name. |
+| `sql`  | The original `CREATE` statement, emitted verbatim on apply. |
+
+**Semantics.** Raw objects are opaque:
+
+- **Diff** compares the stored `sql` as text (trailing newlines ignored;
+  all other whitespace is significant). There is no structural diff.
+- **Apply** emits the `sql` verbatim to create. A changed `sql` is a
+  **recreate** (`DROP` + `CREATE`). Recreating a `view`, `dictionary`, or
+  `materialized_view` is lossless; recreating a **`table` is flagged
+  `-- UNSAFE`** (it destroys on-disk data) and the destructive DDL is *not*
+  auto-generated — you must apply it by hand.
+- **Validation** runs no outgoing dependency checks on raw objects (their SQL
+  is opaque), but a declared `raw` block *does* satisfy references to it — a
+  real materialized view's `to_table` or a Distributed table's `remote_table`
+  pointing at a raw object resolves cleanly.
+
+**Capturing.** `hclexp introspect` is **strict by default**: an object it
+cannot parse or express aborts the dump with an error that names the flag.
+Pass `-allow-raw` to capture such objects as `raw` blocks (with a warning)
+and continue. `hclexp dump-cluster` takes the same flag. The diff live side
+stays strict regardless — materialize raw blocks into HCL with
+`introspect -allow-raw` first.
 
 ## `node`
 
