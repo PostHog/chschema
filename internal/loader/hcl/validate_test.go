@@ -7,6 +7,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestValidate_RawObjectSatisfiesReference(t *testing.T) {
+	dbs := []DatabaseSpec{{
+		Name: "db",
+		// A Distributed table forwarding to a raw-captured local table.
+		Tables: []TableSpec{mkDistTable("dist", "db", "raw_local")},
+		Raws: []RawSpec{
+			{Kind: "table", Name: "raw_local", SQL: "CREATE TABLE db.raw_local (a UInt64) ENGINE = MergeTree ORDER BY a\n"},
+		},
+	}}
+	errs := Validate(dbs, ParseSkipSet(""))
+	require.Empty(t, errs, "a declared raw block satisfies a Distributed remote_table reference")
+}
+
 // mkDistTable builds a Distributed-engine table forwarding to remoteDB.remoteTable.
 func mkDistTable(name, remoteDB, remoteTable string) TableSpec {
 	return mkTable(name, EngineDistributed{

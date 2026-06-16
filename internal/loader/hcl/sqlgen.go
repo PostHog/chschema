@@ -78,6 +78,14 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 			out.Statements = append(out.Statements, createDictionarySQL(dc.Database, d))
 		}
 	}
+	// Raw adds last among creates: a raw object (typically a leaf dictionary
+	// or view) may reference tables created above. Its dependencies cannot be
+	// analysed, so no finer ordering is attempted.
+	for _, dc := range cs.Databases {
+		for _, r := range dc.AddRaws {
+			out.Statements = append(out.Statements, createRawSQL(r))
+		}
+	}
 	for _, dc := range cs.Databases {
 		for _, td := range dc.AlterTables {
 			if td.IsUnsafe() {
@@ -128,6 +136,24 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 			})
 		}
 	}
+	// Raw recreates: a raw object is opaque, so the only reconciliation is
+	// DROP + CREATE. For a table this destroys on-disk data, so it is flagged
+	// unsafe and the destructive DDL is NOT auto-emitted (manual review). For
+	// a view/dictionary/materialized_view the recreate is lossless and emitted
+	// as adjacent DROP + CREATE statements.
+	for _, dc := range cs.Databases {
+		for _, rc := range dc.AlterRaws {
+			if rc.IsUnsafe() {
+				out.Unsafe = append(out.Unsafe, UnsafeChange{
+					Database: dc.Database, Table: rc.Name,
+					Reason: "raw table change requires DROP + CREATE, which destroys the table's data",
+				})
+				continue
+			}
+			out.Statements = append(out.Statements, dropRawSQL(rc.Kind, dc.Database, rc.Name))
+			out.Statements = append(out.Statements, createRawSQL(RawSpec{Kind: rc.Kind, Name: rc.Name, SQL: rc.NewSQL}))
+		}
+	}
 
 	// 8. ALTER NAMED COLLECTION (SET then DELETE, only for non-recreate diffs).
 	for _, ncc := range cs.NamedCollections {
@@ -159,6 +185,13 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 		sort.Strings(names)
 		for _, name := range names {
 			out.Statements = append(out.Statements, dropDictionarySQL(dc.Database, name))
+		}
+	}
+	// Raw drops before table drops: a raw object may read from a table (e.g. a
+	// raw materialized view), so it must be removed first.
+	for _, dc := range cs.Databases {
+		for _, r := range dc.DropRaws {
+			out.Statements = append(out.Statements, dropRawSQL(r.Kind, dc.Database, r.Name))
 		}
 	}
 	for _, dt := range orderTablesByDependency(gatherTables(cs, dropTablesOf), true) {
@@ -401,6 +434,27 @@ func constraintClause(c ConstraintSpec) string {
 
 func dropTableSQL(database, table string) string {
 	return fmt.Sprintf("DROP TABLE %s.%s", database, table)
+}
+
+// createRawSQL emits a raw object's stored CREATE DDL verbatim, trimming the
+// canonical trailing newline so it matches the formatting of other generated
+// statements.
+func createRawSQL(r RawSpec) string {
+	return strings.TrimRight(r.SQL, "\n")
+}
+
+// dropRawSQL renders the DROP for a raw object, choosing the statement form
+// from its kind. Dictionaries need DROP DICTIONARY and plain views DROP VIEW;
+// tables and (TO-form) materialized views are dropped with DROP TABLE.
+func dropRawSQL(kind, database, name string) string {
+	form := "TABLE"
+	switch kind {
+	case "dictionary":
+		form = "DICTIONARY"
+	case "view":
+		form = "VIEW"
+	}
+	return fmt.Sprintf("DROP %s IF EXISTS %s.%s", form, database, name)
 }
 
 func alterTableSQL(database string, td TableDiff) string {

@@ -84,6 +84,8 @@ hclexp introspect -host ch.prod.internal -port 9440 -user readonly \
   - omitted → write HCL to stdout
   - a directory → write one `<database>.hcl` per database
   - any other path → write all databases to that single file
+- `-allow-raw` — capture objects whose `CREATE` DDL can't be parsed or
+  expressed as a `raw {}` block instead of failing (see below)
 
 Introspection reads each object's `create_table_query` and parses it with
 the ClickHouse SQL parser, so columns (types, defaults, codecs, comments,
@@ -99,6 +101,16 @@ node's name and ClickHouse macros (`shard`, `replica`, `hostClusterRole`,
 `hostClusterType`, …) read from `system.macros`. It's metadata only —
 `hclexp diff` ignores it — and exists so `hclexp drift` (below) can group
 nodes by their authoritative identity.
+
+Introspection is **strict by default**: an object whose DDL the parser can't
+handle, or that uses an engine/form the HCL model can't express, aborts the
+dump with an error. Pass `-allow-raw` to capture such objects verbatim as
+`raw "<kind>" "<name>" { sql = ... }` escape-hatch blocks (with a warning)
+and continue, so one unusual object never breaks the whole dump.
+`hclexp dump-cluster` takes the same flag. Raw blocks are opaque — diffed as
+text and recreated (`DROP` + `CREATE`) on change, with a `table`-kind change
+flagged `-- UNSAFE`. See [`docs/README.hcl.md`](docs/README.hcl.md#raw) for
+the full reference.
 
 ## Load & resolve an HCL schema
 
@@ -588,6 +600,37 @@ Kinds outside these lists error during introspection with `unsupported dictionar
 **Diff & apply.** ClickHouse has no useful in-place `ALTER DICTIONARY`. `hclexp diff` reports any non-empty change with `~ dictionary <name> (changed: ...)`; `-sql` emits a `CREATE OR REPLACE DICTIONARY` statement, which is the idiomatic ClickHouse update path and is treated as safe.
 
 **`PASSWORD '[HIDDEN]'` caveat.** ClickHouse's `system.tables.create_table_query` redacts secrets, so an introspected dictionary's `password` is the literal string `[HIDDEN]`. Applying a dumped dictionary verbatim will leave it unable to load data from its source. Edit dumped HCL to restore real credentials (or wire secrets through some out-of-band mechanism) before deploying.
+
+### Raw escape hatch
+
+When an object's `CREATE` DDL can't be parsed, or uses an engine/form the HCL
+model doesn't express, capture it verbatim in a `raw` block. The two labels
+mirror Terraform's `resource "<type>" "<name>"` — first the `kind`
+(`table`, `materialized_view`, `view`, or `dictionary`), then the name:
+
+```hcl
+database "posthog" {
+  raw "dictionary" "city_postal_ip_trie" {
+    sql = <<SQL
+CREATE DICTIONARY posthog.city_postal_ip_trie (`prefix` String)
+PRIMARY KEY prefix
+SOURCE(CLICKHOUSE(USER 'reader' QUERY 'SELECT prefix FROM s3(...)'))
+LIFETIME(MIN 0 MAX 3600)
+LAYOUT(IP_TRIE)
+SQL
+  }
+}
+```
+
+Raw objects are opaque: `hclexp diff` compares the stored `sql` as text and
+renders `+ / - / ~ raw <kind> <name>`; `-sql` emits the `sql` verbatim to
+create and a `DROP` + `CREATE` to change. Recreating a view/dictionary/MV is
+lossless; a **`table`-kind change is flagged `-- UNSAFE`** and its
+destructive DDL is not auto-generated. A declared raw block also satisfies
+dependency references to it (an MV `to_table`, a Distributed `remote_table`).
+`hclexp introspect`/`dump-cluster` only emit raw blocks under `-allow-raw`;
+otherwise an object they can't express is a hard error. Full reference:
+[`docs/README.hcl.md#raw`](docs/README.hcl.md#raw).
 
 ### Named collections
 

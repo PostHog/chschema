@@ -4,7 +4,9 @@ import (
 	"errors"
 	"io"
 	"sort"
+	"strings"
 
+	"github.com/hashicorp/hcl/v2/hclsyntax"
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/zclconf/go-cty/cty"
 )
@@ -107,6 +109,41 @@ func writeDatabase(body *hclwrite.Body, db DatabaseSpec) {
 		dBlock := body.AppendNewBlock("dictionary", []string{d.Name})
 		writeDictionary(dBlock.Body(), d)
 	}
+
+	raws := append([]RawSpec(nil), db.Raws...)
+	sort.Slice(raws, func(i, j int) bool { return raws[i].Name < raws[j].Name })
+	for i, r := range raws {
+		if len(tables) > 0 || len(mvs) > 0 || len(views) > 0 || len(dicts) > 0 || i > 0 {
+			body.AppendNewline()
+		}
+		rBlock := body.AppendNewBlock("raw", []string{r.Kind, r.Name})
+		writeRaw(rBlock.Body(), r)
+	}
+}
+
+// writeRaw emits a raw escape-hatch block. The CREATE DDL is rendered as a
+// heredoc when it spans multiple lines (the common case, for readability) and
+// as a quoted string otherwise. Heredoc emission is exact: the re-parsed value
+// equals the stored SQL.
+func writeRaw(body *hclwrite.Body, r RawSpec) {
+	setSQLAttribute(body, "sql", r.SQL)
+}
+
+// setSQLAttribute writes a (normalized, trailing-newline) SQL string. Genuinely
+// multi-line bodies are emitted as a plain heredoc so the DDL stays readable in
+// a dump; the heredoc body is the SQL verbatim and re-parses to the same value.
+// Single-line bodies use a quoted string. Callers must pass normalizeRawSQL'd
+// input so the value always ends in exactly one newline (heredocs always do).
+func setSQLAttribute(body *hclwrite.Body, name, sql string) {
+	if strings.Count(sql, "\n") <= 1 {
+		body.SetAttributeValue(name, cty.StringVal(sql))
+		return
+	}
+	body.SetAttributeRaw(name, hclwrite.Tokens{
+		{Type: hclsyntax.TokenOHeredoc, Bytes: []byte("<<SQL\n")},
+		{Type: hclsyntax.TokenStringLit, Bytes: []byte(sql)},
+		{Type: hclsyntax.TokenCHeredoc, Bytes: []byte("SQL\n")},
+	})
 }
 
 func writeView(body *hclwrite.Body, v ViewSpec) {

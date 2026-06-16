@@ -1,6 +1,10 @@
 package hcl
 
-import "github.com/hashicorp/hcl/v2"
+import (
+	"strings"
+
+	"github.com/hashicorp/hcl/v2"
+)
 
 type DatabaseSpec struct {
 	Name string `hcl:"name,label"`
@@ -28,6 +32,39 @@ type DatabaseSpec struct {
 	// they live as a sibling collection and do not participate in the
 	// table inheritance system.
 	Views []ViewSpec `hcl:"view,block"`
+
+	// Raws are escape-hatch objects whose CREATE DDL could not be parsed
+	// or expressed in this schema language. They are stored verbatim,
+	// round-tripped unchanged, and recreated (DROP+CREATE) on change.
+	Raws []RawSpec `hcl:"raw,block"`
+}
+
+// RawSpec is an opaque object captured as its original CREATE DDL. It is the
+// escape hatch for DDL the parser cannot handle or the HCL model cannot
+// express. The two labels mirror Terraform's `resource "<type>" "<name>"`:
+// Kind drives the DROP form on a recreate, Name is the object name, and SQL
+// is emitted verbatim on apply.
+type RawSpec struct {
+	Kind string `hcl:"kind,label"` // table | materialized_view | view | dictionary
+	Name string `hcl:"name,label"`
+	SQL  string `hcl:"sql"`
+}
+
+// rawKinds is the set of kinds a RawSpec label may take.
+var rawKinds = map[string]bool{
+	"table":             true,
+	"materialized_view": true,
+	"view":              true,
+	"dictionary":        true,
+}
+
+// normalizeRawSQL canonicalizes a raw SQL body to end with exactly one
+// trailing newline. Applied both when capturing during introspection and when
+// decoding from HCL, it makes the stored form independent of authoring style
+// (quoted string vs heredoc) so round-tripping is exact and diffs are stable.
+// Trailing newlines are never semantically significant in a CREATE statement.
+func normalizeRawSQL(s string) string {
+	return strings.TrimRight(s, "\n") + "\n"
 }
 
 // MaterializedViewSpec models a ClickHouse materialized view in its

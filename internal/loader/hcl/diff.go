@@ -31,7 +31,26 @@ type DatabaseChange struct {
 	AddViews   []ViewSpec // emitted via CREATE VIEW
 	DropViews  []string   // emitted via DROP VIEW
 	AlterViews []ViewDiff
+
+	AddRaws   []RawSpec   // emitted verbatim via the stored CREATE DDL
+	DropRaws  []RawSpec   // emitted via a kind-mapped DROP
+	AlterRaws []RawChange // emitted as DROP + CREATE (recreate)
 }
+
+// RawChange describes a change to a raw escape-hatch object. Raw SQL is
+// opaque, so the only reconciliation is DROP + CREATE. Kind is the object's
+// kind (drives the DROP form); OldSQL/NewSQL are the stored DDL on each side.
+type RawChange struct {
+	Kind   string
+	Name   string
+	OldSQL string
+	NewSQL string
+}
+
+// IsUnsafe reports whether recreating the object risks data loss. Only a
+// table holds rows on disk; recreating a view/dictionary/materialized_view is
+// not destructive.
+func (rc RawChange) IsUnsafe() bool { return rc.Kind == "table" }
 
 // DictionaryDiff describes a change to a dictionary. ClickHouse has no
 // useful in-place ALTER DICTIONARY, so any non-empty diff is materialized
@@ -167,7 +186,8 @@ func (dc DatabaseChange) IsEmpty() bool {
 		len(dc.AddViews) == 0 && len(dc.DropViews) == 0 &&
 		len(dc.AlterViews) == 0 &&
 		len(dc.AddDictionaries) == 0 && len(dc.DropDictionaries) == 0 &&
-		len(dc.AlterDictionaries) == 0
+		len(dc.AlterDictionaries) == 0 &&
+		len(dc.AddRaws) == 0 && len(dc.DropRaws) == 0 && len(dc.AlterRaws) == 0
 }
 
 func (td TableDiff) IsEmpty() bool {
@@ -219,6 +239,7 @@ func Diff(from, to *Schema) ChangeSet {
 				AddTables:            append([]TableSpec(nil), t.Tables...),
 				AddMaterializedViews: append([]MaterializedViewSpec(nil), t.MaterializedViews...),
 				AddViews:             append([]ViewSpec(nil), t.Views...),
+				AddRaws:              append([]RawSpec(nil), t.Raws...),
 			}
 		case !tOK:
 			dc = DatabaseChange{Database: name}
@@ -231,6 +252,7 @@ func Diff(from, to *Schema) ChangeSet {
 			for _, v := range f.Views {
 				dc.DropViews = append(dc.DropViews, v.Name)
 			}
+			dc.DropRaws = append(dc.DropRaws, f.Raws...)
 		default:
 			dc = diffDatabase(name, f, t, fromR, toR)
 		}
@@ -363,7 +385,51 @@ func diffDatabase(name string, from, to *DatabaseSpec, fromR, toR TableResolver)
 			dc.AlterDictionaries = append(dc.AlterDictionaries, dd)
 		}
 	}
+
+	fromRaws := indexRaws(from.Raws)
+	toRaws := indexRaws(to.Raws)
+	for _, k := range sortedKeys(toRaws) {
+		if _, ok := fromRaws[k]; !ok {
+			dc.AddRaws = append(dc.AddRaws, *toRaws[k])
+		}
+	}
+	for _, k := range sortedKeys(fromRaws) {
+		if _, ok := toRaws[k]; !ok {
+			dc.DropRaws = append(dc.DropRaws, *fromRaws[k])
+		}
+	}
+	for _, k := range sortedKeys(fromRaws) {
+		t, ok := toRaws[k]
+		if !ok {
+			continue
+		}
+		f := fromRaws[k]
+		if !rawSQLEqual(f.SQL, t.SQL) {
+			dc.AlterRaws = append(dc.AlterRaws, RawChange{
+				Kind: t.Kind, Name: t.Name, OldSQL: f.SQL, NewSQL: t.SQL,
+			})
+		}
+	}
 	return dc
+}
+
+// indexRaws keys raw objects by (kind, name): a raw object's identity is its
+// kind plus its name, so renaming the kind for the same name reads as a
+// drop-of-old-kind plus an add-of-new-kind rather than an in-place change.
+func indexRaws(rs []RawSpec) map[string]*RawSpec {
+	out := make(map[string]*RawSpec, len(rs))
+	for i := range rs {
+		out[rs[i].Kind+"\x00"+rs[i].Name] = &rs[i]
+	}
+	return out
+}
+
+// rawSQLEqual compares two raw SQL bodies. Trailing newlines are never
+// semantically significant in a CREATE statement, so they are ignored; all
+// other whitespace is significant (it may sit inside a string literal) and is
+// compared exactly.
+func rawSQLEqual(a, b string) bool {
+	return strings.TrimRight(a, "\n") == strings.TrimRight(b, "\n")
 }
 
 func indexDictionaries(ds []DictionarySpec) map[string]*DictionarySpec {
@@ -803,6 +869,9 @@ func sortDatabaseChange(dc *DatabaseChange) {
 	sort.Slice(dc.AddViews, func(i, j int) bool { return dc.AddViews[i].Name < dc.AddViews[j].Name })
 	sort.Strings(dc.DropViews)
 	sort.Slice(dc.AlterViews, func(i, j int) bool { return dc.AlterViews[i].Name < dc.AlterViews[j].Name })
+	sort.Slice(dc.AddRaws, func(i, j int) bool { return dc.AddRaws[i].Name < dc.AddRaws[j].Name })
+	sort.Slice(dc.DropRaws, func(i, j int) bool { return dc.DropRaws[i].Name < dc.DropRaws[j].Name })
+	sort.Slice(dc.AlterRaws, func(i, j int) bool { return dc.AlterRaws[i].Name < dc.AlterRaws[j].Name })
 }
 
 // virtualNameSet returns the names recognised as virtual on engine e in

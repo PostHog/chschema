@@ -181,6 +181,7 @@ func runIntrospect(args []string) {
 	nodeFlag := fs.String("node", "", "node name for the emitted node{} block; defaults to the server's hostName()")
 	secure := fs.Bool("secure", cfg.Secure, "connect to ClickHouse over TLS")
 	skipVerify := fs.Bool("tls-skip-verify", cfg.TLSSkipVerify, "skip TLS certificate verification (requires -secure)")
+	allowRaw := fs.Bool("allow-raw", false, "capture objects whose CREATE DDL cannot be parsed or expressed as a raw{} block instead of failing")
 	_ = fs.Parse(args)
 
 	databases := splitList(*dbFlag)
@@ -204,7 +205,7 @@ func runIntrospect(args []string) {
 	defer conn.Close()
 
 	ctx := context.Background()
-	schema, err := introspectSchema(ctx, conn, databases, *nodeFlag)
+	schema, err := introspectSchema(ctx, conn, databases, *nodeFlag, *allowRaw)
 	if err != nil {
 		slog.Error("failed to introspect schema", "err", err)
 		os.Exit(1)
@@ -221,16 +222,16 @@ func runIntrospect(args []string) {
 // identity — and assembles them into a single *hclload.Schema. The nodeName
 // override is passed through to IntrospectNode (empty string makes it use the
 // server's hostName()). It is shared by runIntrospect and runDumpCluster.
-func introspectSchema(ctx context.Context, conn driver.Conn, databases []string, nodeName string) (*hclload.Schema, error) {
+func introspectSchema(ctx context.Context, conn driver.Conn, databases []string, nodeName string, allowRaw bool) (*hclload.Schema, error) {
 	schema := &hclload.Schema{}
 	for _, name := range databases {
-		spec, err := hclload.Introspect(ctx, conn, name)
+		spec, err := hclload.Introspect(ctx, conn, name, allowRaw)
 		if err != nil {
 			return nil, fmt.Errorf("introspect database %q: %w", name, err)
 		}
 		slog.Info("introspected database", "name", spec.Name,
 			"tables", len(spec.Tables), "materialized_views", len(spec.MaterializedViews),
-			"dictionaries", len(spec.Dictionaries))
+			"dictionaries", len(spec.Dictionaries), "raw", len(spec.Raws))
 		schema.Databases = append(schema.Databases, *spec)
 	}
 
@@ -278,6 +279,7 @@ func runDumpCluster(args []string) {
 	outDirFlag := fs.String("out-dir", "", "directory to write one <short-host>.hcl per node (required)")
 	secure := fs.Bool("secure", cfg.Secure, "connect to ClickHouse over TLS")
 	skipVerify := fs.Bool("tls-skip-verify", cfg.TLSSkipVerify, "skip TLS certificate verification (requires -secure)")
+	allowRaw := fs.Bool("allow-raw", false, "capture objects whose CREATE DDL cannot be parsed or expressed as a raw{} block instead of failing the node")
 	_ = fs.Parse(args)
 
 	databases := splitList(*dbFlag)
@@ -344,7 +346,7 @@ func runDumpCluster(args []string) {
 	for _, h := range hosts {
 		nodeCfg := cfg
 		nodeCfg.Host = h
-		if err := dumpNode(ctx, nodeCfg, databases, *outDirFlag); err != nil {
+		if err := dumpNode(ctx, nodeCfg, databases, *outDirFlag, *allowRaw); err != nil {
 			slog.Warn("failed to dump node; continuing", "host", h, "err", err)
 			failures++
 			continue
@@ -358,7 +360,7 @@ func runDumpCluster(args []string) {
 // dumpNode opens a fresh native connection to one host, introspects the
 // requested databases, and writes the whole schema (all databases + named
 // collections + the node block) to <out-dir>/<short-host>.hcl.
-func dumpNode(ctx context.Context, cfg config.ClickHouseConfig, databases []string, outDir string) error {
+func dumpNode(ctx context.Context, cfg config.ClickHouseConfig, databases []string, outDir string, allowRaw bool) error {
 	conn, err := config.NewConnection(cfg)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -366,7 +368,7 @@ func dumpNode(ctx context.Context, cfg config.ClickHouseConfig, databases []stri
 	defer conn.Close()
 
 	// Empty node name: let IntrospectNode use the server's own hostName().
-	schema, err := introspectSchema(ctx, conn, databases, "")
+	schema, err := introspectSchema(ctx, conn, databases, "", allowRaw)
 	if err != nil {
 		return err
 	}
@@ -486,7 +488,10 @@ func loadFromClickHouse(uri string) (*hclload.Schema, error) {
 	ctx := context.Background()
 	schema := &hclload.Schema{}
 	for _, name := range databases {
-		spec, err := hclload.Introspect(ctx, conn, name)
+		// Diff's live side stays strict: an unparseable object surfaces as a
+		// diff error rather than being silently captured. Use `introspect
+		// -allow-raw` to materialize raw blocks into HCL first.
+		spec, err := hclload.Introspect(ctx, conn, name, false)
 		if err != nil {
 			return nil, fmt.Errorf("introspect %s: %w", name, err)
 		}
@@ -619,6 +624,19 @@ func renderChangeSet(w io.Writer, cs hclload.ChangeSet) {
 		}
 		for _, dd := range dc.AlterDictionaries {
 			fmt.Fprintf(w, "  ~ dictionary %s (changed: %s)\n", dd.Name, strings.Join(dd.Changed, ", "))
+		}
+		for _, r := range dc.AddRaws {
+			fmt.Fprintf(w, "  + raw %s %s\n", r.Kind, r.Name)
+		}
+		for _, r := range dc.DropRaws {
+			fmt.Fprintf(w, "  - raw %s %s\n", r.Kind, r.Name)
+		}
+		for _, rc := range dc.AlterRaws {
+			if rc.IsUnsafe() {
+				fmt.Fprintf(w, "  ~ raw %s %s (recreate) ! UNSAFE: destroys data\n", rc.Kind, rc.Name)
+			} else {
+				fmt.Fprintf(w, "  ~ raw %s %s (recreate)\n", rc.Kind, rc.Name)
+			}
 		}
 	}
 

@@ -74,6 +74,10 @@ func TestWrite_RoundTrip_Dictionary(t *testing.T) {
 	roundTrip(t, filepath.Join("testdata", "dictionary.hcl"))
 }
 
+func TestWrite_RoundTrip_RawBlock(t *testing.T) {
+	roundTrip(t, filepath.Join("testdata", "raw_block.hcl"))
+}
+
 func TestWrite_OutputIsStable(t *testing.T) {
 	dbs, err := ParseFile(filepath.Join("testdata", "resolve_basic.hcl"))
 	require.NoError(t, err)

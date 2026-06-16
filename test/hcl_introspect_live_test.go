@@ -52,7 +52,7 @@ func TestLive_HCLIntrospect(t *testing.T) {
 		require.NoError(t, conn.Exec(ctx, s), "failed to create test table")
 	}
 
-	got, err := hclload.Introspect(ctx, conn, dbName)
+	got, err := hclload.Introspect(ctx, conn, dbName, false)
 	require.NoError(t, err)
 
 	want := &hclload.DatabaseSpec{
@@ -157,7 +157,7 @@ func TestLive_HCLIntrospect_TimeSeries(t *testing.T) {
 		require.NoError(t, conn.Exec(ctx, s), "create failed: %s", s)
 	}
 
-	got, err := hclload.Introspect(ctx, conn, dbName)
+	got, err := hclload.Introspect(ctx, conn, dbName, false)
 	require.NoError(t, err)
 
 	var external *hclload.TableSpec
@@ -207,7 +207,7 @@ func TestLive_HCLIntrospect_Join(t *testing.T) {
 		require.NoError(t, conn.Exec(ctx, s), "create failed: %s", s)
 	}
 
-	got, err := hclload.Introspect(ctx, conn, dbName)
+	got, err := hclload.Introspect(ctx, conn, dbName, false)
 	require.NoError(t, err)
 
 	byName := map[string]hclload.Engine{}
@@ -256,7 +256,7 @@ func TestLive_HCLIntrospect_CommonEngines(t *testing.T) {
 		require.NoError(t, conn.Exec(ctx, s), "create failed: %s", s)
 	}
 
-	got, err := hclload.Introspect(ctx, conn, dbName)
+	got, err := hclload.Introspect(ctx, conn, dbName, false)
 	require.NoError(t, err)
 
 	byName := map[string]hclload.Engine{}

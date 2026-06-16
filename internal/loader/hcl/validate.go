@@ -459,6 +459,13 @@ func Validate(dbs []DatabaseSpec, skip SkipSet) []ValidationError {
 		for _, v := range db.Views {
 			declared[ObjectRef{Database: db.Name, Name: v.Name}] = true
 		}
+		// Raw objects are opaque (no outgoing dependency checks), but a
+		// declared raw block still registers its name so a real MV's
+		// to_table or a Distributed table's remote_table that points at it
+		// resolves instead of reporting a missing dependency.
+		for _, r := range db.Raws {
+			declared[ObjectRef{Database: db.Name, Name: r.Name}] = true
+		}
 	}
 
 	deps, err := CollectDependencies(dbs)

@@ -173,6 +173,26 @@ func TestParseFile_Dictionary(t *testing.T) {
 	assert.Equal(t, expected, schema.Databases)
 }
 
+func TestParseFile_RawBlock(t *testing.T) {
+	schema, err := ParseFile(filepath.Join("testdata", "raw_block.hcl"))
+	require.NoError(t, err)
+
+	require.Len(t, schema.Databases, 1)
+	require.Len(t, schema.Databases[0].Raws, 1)
+	raw := schema.Databases[0].Raws[0]
+	assert.Equal(t, "dictionary", raw.Kind)
+	assert.Equal(t, "city_postal_ip_trie", raw.Name)
+	assert.Contains(t, raw.SQL, "CREATE DICTIONARY posthog.city_postal_ip_trie")
+	assert.Contains(t, raw.SQL, "LAYOUT(IP_TRIE)")
+}
+
+func TestParseFile_RawBlock_BadKind(t *testing.T) {
+	_, err := ParseFile(filepath.Join("testdata", "raw_block_bad_kind.hcl"))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "tabel")
+	assert.Contains(t, err.Error(), "kind")
+}
+
 func TestParseFile_NamedCollection(t *testing.T) {
 	schema, err := ParseFile(filepath.Join("testdata", "named_collection.hcl"))
 	require.NoError(t, err)
