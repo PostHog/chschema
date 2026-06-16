@@ -1,0 +1,43 @@
+{{define "content"}}
+<h1>Databases</h1>
+{{if not .Databases}}<p class="muted">No databases in this schema.</p>{{end}}
+{{range .Databases}}
+<section class="db">
+  <h2>{{.Name}}{{if .Cluster}} <span class="muted">ON CLUSTER {{.Cluster}}</span>{{end}}</h2>
+  {{template "objgroup" dict "Title" "Tables" "Items" .Tables}}
+  {{template "objgroup" dict "Title" "Materialized Views" "Items" .MaterializedViews}}
+  {{template "objgroup" dict "Title" "Views" "Items" .Views}}
+  {{template "objgroup" dict "Title" "Dictionaries" "Items" .Dictionaries}}
+  {{template "objgroup" dict "Title" "Raw" "Items" .Raws}}
+</section>
+{{end}}
+
+{{if .NamedCollections}}
+<section class="db">
+  <h2>Named Collections</h2>
+  <ul class="objlist">
+    {{range .NamedCollections}}<li>{{.}}</li>{{end}}
+  </ul>
+</section>
+{{end}}
+
+{{if .Nodes}}
+<section class="db">
+  <h2>Nodes</h2>
+  <ul class="objlist">
+    {{range .Nodes}}<li>{{.}}</li>{{end}}
+  </ul>
+</section>
+{{end}}
+{{end}}
+
+{{define "objgroup"}}
+{{if .Items}}
+<div class="group">
+  <h3>{{.Title}} <span class="count">{{len .Items}}</span></h3>
+  <ul class="objlist">
+    {{range .Items}}<li><a href="{{.Href}}">{{.Name}}</a></li>{{end}}
+  </ul>
+</div>
+{{end}}
+{{end}}

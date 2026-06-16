@@ -1,0 +1,59 @@
+{{define "content"}}
+<nav class="path"><a href="/">databases</a> / {{.Database}} / <span class="muted">{{.KindLabel}}</span></nav>
+<h1>{{.Name}}</h1>
+
+<div class="viewtabs">
+  <a href="{{.HTMLHref}}" class="{{if eq .View "html"}}active{{end}}">Overview</a>
+  <a href="{{.DDLHref}}" class="{{if eq .View "ddl"}}active{{end}}">DDL</a>
+  <a href="{{.HCLHref}}" class="{{if eq .View "hcl"}}active{{end}}">HCL</a>
+</div>
+
+{{if eq .View "html"}}
+  {{if .Props}}
+  <table class="props">
+    <tbody>
+      {{range .Props}}<tr><th>{{.K}}</th><td>{{.V}}</td></tr>{{end}}
+    </tbody>
+  </table>
+  {{end}}
+
+  {{range .Tables}}
+  <h2>{{.Title}}{{if .Collapsible}} <span class="count">{{len .Rows}}</span>{{end}}</h2>
+  {{if .Collapsible}}
+  <label class="toggle"><input type="checkbox" class="collapse-toggle"> Hide rows beyond 10</label>
+  {{end}}
+  <table class="grid{{if .Collapsible}} collapsible{{end}}">
+    <thead><tr>{{range .Headers}}<th>{{.}}</th>{{end}}</tr></thead>
+    <tbody>
+      {{range .Rows}}<tr>{{range .}}<td>{{.}}</td>{{end}}</tr>{{end}}
+    </tbody>
+  </table>
+  {{end}}
+
+  {{if .Query}}<h2>Query</h2><pre class="code">{{.Query}}</pre>{{end}}
+  {{if .RawSQL}}<h2>SQL</h2><pre class="code">{{.RawSQL}}</pre>{{end}}
+{{else}}
+  <pre class="code">{{.Code}}</pre>
+{{end}}
+
+{{if or .DependsOn .DependedBy .FlowAnchor}}
+<h2>Dependencies</h2>
+{{if .FlowAnchor}}<p class="flowlink"><a href="/flows#{{.FlowAnchor}}">→ Appears in a data flow</a></p>{{end}}
+{{if .DependsOn}}
+<div class="group">
+  <h3>Depends on</h3>
+  <ul class="objlist">
+    {{range .DependsOn}}<li><a href="{{.Href}}">{{.Label}}</a></li>{{end}}
+  </ul>
+</div>
+{{end}}
+{{if .DependedBy}}
+<div class="group">
+  <h3>Depended on by</h3>
+  <ul class="objlist">
+    {{range .DependedBy}}<li><a href="{{.Href}}">{{.Label}}</a></li>{{end}}
+  </ul>
+</div>
+{{end}}
+{{end}}
+{{end}}
