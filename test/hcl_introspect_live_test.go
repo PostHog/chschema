@@ -280,3 +280,50 @@ func TestLive_HCLIntrospect_CommonEngines(t *testing.T) {
 	require.Equal(t, dbName, merge.DBRegex)
 	require.Equal(t, "^shard_", merge.TableRegex)
 }
+
+// TestLive_ViewRoundTrip_StarReplace verifies the issue #41 fix end-to-end. A
+// view created the only way ClickHouse accepts — a starred body with no explicit
+// column list — must, after introspect -> GenerateSQL, regenerate a CREATE VIEW
+// that ClickHouse can apply again. Before the fix the regenerated DDL carried
+// ClickHouse's inferred column list and was rejected with BAD_ARGUMENTS.
+func TestLive_ViewRoundTrip_StarReplace(t *testing.T) {
+	if !*clickhouse {
+		t.SkipNow()
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	ctx := context.Background()
+
+	require.NoError(t, conn.Exec(ctx, `CREATE TABLE `+dbName+`.custom_metrics_test (
+		name String,
+		labels Map(String, String),
+		value String,
+		help String,
+		type String
+	) ENGINE = MergeTree ORDER BY name`))
+
+	require.NoError(t, conn.Exec(ctx, `CREATE VIEW `+dbName+`.custom_metrics AS
+		SELECT * REPLACE(toFloat64(value) AS value) FROM `+dbName+`.custom_metrics_test`))
+
+	got, err := hclload.Introspect(ctx, conn, dbName, false)
+	require.NoError(t, err)
+	require.Len(t, got.Views, 1)
+	view := got.Views[0]
+	require.Equal(t, "custom_metrics", view.Name)
+
+	// Regenerate just the CREATE VIEW via the same path as `diff -sql`.
+	cs := hclload.ChangeSet{Databases: []hclload.DatabaseChange{{
+		Database: dbName,
+		AddViews: []hclload.ViewSpec{view},
+	}}}
+	gen := hclload.GenerateSQL(cs)
+	require.Len(t, gen.Statements, 1)
+	ddl := gen.Statements[0]
+	require.NotContains(t, ddl, "(name, labels",
+		"the inferred column list must be omitted for a starred view")
+
+	// Drop and re-create from the regenerated DDL: the assertion that the fix
+	// produces an applyable view.
+	require.NoError(t, conn.Exec(ctx, `DROP VIEW `+dbName+`.custom_metrics`))
+	require.NoError(t, conn.Exec(ctx, ddl), "regenerated CREATE VIEW must be applyable: %s", ddl)
+}

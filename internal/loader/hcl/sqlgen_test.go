@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	chparser "github.com/orian/clickhouse-sql-parser/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -706,6 +707,96 @@ func TestSQLGen_CreateView_FullForm(t *testing.T) {
 	assert.Equal(t,
 		`CREATE VIEW posthog.v ON CLUSTER posthog (team_id, n) DEFINER = alice SQL SECURITY DEFINER AS SELECT team_id, count() AS n FROM events GROUP BY team_id COMMENT 'team-level'`,
 		got.Statements[0])
+}
+
+// A view whose body projects a star cannot carry an explicit column-alias list:
+// ClickHouse rejects `CREATE VIEW v (a, b) AS SELECT * ...` because the column
+// count isn't statically known. The generator must omit the inferred alias list
+// for such views. See issue #41.
+func TestSQLGen_CreateView_OmitsAliasesWhenBodyHasStar(t *testing.T) {
+	tests := []struct {
+		name        string
+		query       string
+		keepAliases bool
+	}{
+		{
+			name:        "plain select star",
+			query:       "SELECT * FROM custom_metrics_test",
+			keepAliases: false,
+		},
+		{
+			name:        "select star with REPLACE and UNION ALL (repro)",
+			query:       "SELECT * REPLACE(toFloat64(value) AS value) FROM custom_metrics_test UNION ALL SELECT 'X' AS name, map('instance', hostname()) AS labels, toFloat64(count()) AS value, 'h' AS help, 'gauge' AS type FROM system.part_log",
+			keepAliases: false,
+		},
+		{
+			name:        "qualified star",
+			query:       "SELECT t.* FROM custom_metrics_test AS t",
+			keepAliases: false,
+		},
+		{
+			name:        "star only in a non-first union branch",
+			query:       "SELECT 'a' AS name FROM x UNION ALL SELECT * FROM y",
+			keepAliases: false,
+		},
+		{
+			name:        "static projection keeps aliases",
+			query:       "SELECT team_id, count() AS n FROM events GROUP BY team_id",
+			keepAliases: true,
+		},
+		{
+			name:        "count star is not a projection star",
+			query:       "SELECT count(*) AS n FROM events",
+			keepAliases: true,
+		},
+		{
+			name:        "multiplication is not a projection star",
+			query:       "SELECT a * b AS p FROM events",
+			keepAliases: true,
+		},
+		{
+			name:        "star only inside a from-subquery keeps aliases",
+			query:       "SELECT a AS x FROM (SELECT * FROM t)",
+			keepAliases: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := ViewSpec{Name: "v", Query: tc.query, ColumnAliases: []string{"name", "labels", "value", "help", "type"}}
+			got := createViewSQL("posthog", v)
+			if tc.keepAliases {
+				assert.Contains(t, got, "(name, labels, value, help, type)", "expected alias list to be kept")
+			} else {
+				assert.NotContains(t, got, "(name, labels, value, help, type)", "expected alias list to be omitted")
+				assert.Contains(t, got, tc.query, "query body must still be present")
+			}
+		})
+	}
+}
+
+// TestSQLGen_CreateView_StarReplace_Reappliable mirrors what introspect captures
+// for the issue #41 view: ClickHouse stores its own inferred column list in
+// create_table_query, so the ViewSpec carries ColumnAliases alongside a starred
+// body. The regenerated DDL must equal the form ClickHouse actually accepts (no
+// column list) and must itself parse as a valid CREATE VIEW.
+func TestSQLGen_CreateView_StarReplace_Reappliable(t *testing.T) {
+	v := ViewSpec{
+		Name:          "custom_metrics",
+		Query:         "SELECT * REPLACE(toFloat64(value) AS value) FROM posthog.custom_metrics_test",
+		ColumnAliases: []string{"name", "labels", "value", "help", "type"},
+	}
+	got := createViewSQL("posthog", v)
+
+	assert.Equal(t,
+		"CREATE VIEW posthog.custom_metrics AS SELECT * REPLACE(toFloat64(value) AS value) FROM posthog.custom_metrics_test",
+		got)
+
+	// The regenerated statement must be syntactically valid CREATE VIEW.
+	stmts, err := chparser.NewParser(got).ParseStmts()
+	require.NoError(t, err, "regenerated CREATE VIEW must parse")
+	require.Len(t, stmts, 1)
+	_, ok := stmts[0].(*chparser.CreateView)
+	assert.True(t, ok, "regenerated statement must be a CREATE VIEW")
 }
 
 func TestSQLGen_DropPlainView(t *testing.T) {
