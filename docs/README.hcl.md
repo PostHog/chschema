@@ -358,6 +358,52 @@ spans ingestion-events / -medium / -small; `data` spans online and offline
 nodes). `-group-by role` uses the deployment role from the node name and
 usually isolates genuine drift.
 
+## SQL → HCL edits — `hclexp sql2hcl`
+
+You already know ClickHouse SQL; `sql2hcl` lets you change a schema with the
+DDL you'd naturally write instead of hand-editing HCL. It loads your existing
+HCL (the **left side**), applies one or more SQL statements to it, and emits the
+updated HCL.
+
+```sh
+# Edit from stdin, preview on stdout
+echo 'ALTER TABLE db.events ADD COLUMN name String AFTER id;' \
+  | hclexp sql2hcl -left ./schema
+
+# Edit from a file, write the updated schema, then preview the migration
+hclexp sql2hcl -left ./schema -in change.sql -out /tmp/updated.hcl
+hclexp diff -left ./schema -right /tmp/updated.hcl -sql
+```
+
+| Flag | Default | Meaning |
+|------|---------|---------|
+| `-left`       | —      | HCL schema to modify: a single file, or comma-separated layer directories (required) |
+| `-in`         | stdin  | SQL file to apply (`-` also means stdin) |
+| `-out`        | stdout | empty → stdout; a directory → one `<db>.hcl` per database; else a single file |
+| `-database`   | —      | default database for unqualified object names (e.g. `CREATE TABLE foo`, not `db.foo`) |
+| `-allow-raw`  | off    | capture a `CREATE` the model can't express as a [`raw`](#raw) block instead of failing |
+
+**Supported statements** (declarative schema changes):
+
+- `CREATE TABLE | MATERIALIZED VIEW | VIEW | DICTIONARY` — adds the object, or
+  replaces an existing object of the same name.
+- `ALTER TABLE … ADD/DROP/MODIFY/RENAME COLUMN`, `ADD/DROP INDEX`,
+  `MODIFY/REMOVE TTL`, `MODIFY/RESET SETTING` — edits the matching `table` block.
+  `RENAME COLUMN` records [`renamed_from`](#column) so a later diff emits
+  `RENAME COLUMN` rather than drop + add.
+- `ALTER TABLE <mv> MODIFY QUERY …` — replaces a materialized view's `query`.
+- `DROP TABLE | VIEW | DICTIONARY | DATABASE` — removes the object (`IF EXISTS`
+  makes a missing target a no-op).
+- `RENAME TABLE a TO b` — renames, moving across databases when they differ.
+
+**Scope boundary.** `sql2hcl` works on schema *state*, not data: `TRUNCATE`,
+`ALTER … DELETE`, partition operations (attach/detach/drop/freeze/replace), and
+`MATERIALIZE INDEX/PROJECTION` are rejected with a clear error. The output is the
+resolved (flat) schema — `sql2hcl` does **not** rewrite your layered source files
+in place. Review the emitted HCL (or the `diff -sql` it implies) and integrate.
+The default database for an unqualified name comes from `-database`, or, when the
+left side has exactly one database, that database.
+
 ## `view`
 
 A `view` block declares a ClickHouse **plain** (non-materialized) view — a

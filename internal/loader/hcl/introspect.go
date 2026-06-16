@@ -112,39 +112,92 @@ func introspectOneObject(db *DatabaseSpec, database, name, createSQL string) err
 	if err != nil {
 		return fmt.Errorf("parse create_table_query for %s.%s: %w", database, name, err)
 	}
+	if err := upsertObjectFromStmt(db, name, stmt); err != nil {
+		return fmt.Errorf("introspect %s.%s: %w", database, name, err)
+	}
+	return nil
+}
+
+// upsertObjectFromStmt builds the typed spec for an already-parsed CREATE
+// statement and stores it on db under name. When an object of the same kind
+// already exists with that name it is replaced in place (otherwise appended),
+// so the helper is safe both for introspection — where names are unique — and
+// for the sql2hcl edit path, where a CREATE redefines an existing object.
+func upsertObjectFromStmt(db *DatabaseSpec, name string, stmt chparser.Expr) error {
 	switch s := stmt.(type) {
 	case *chparser.CreateTable:
 		ts, err := buildTableFromCreateTable(s)
 		if err != nil {
-			return fmt.Errorf("introspect table %s.%s: %w", database, name, err)
+			return fmt.Errorf("table %s: %w", name, err)
 		}
 		ts.Name = name
-		db.Tables = append(db.Tables, ts)
+		upsertTable(db, ts)
 	case *chparser.CreateMaterializedView:
 		mv, err := buildMaterializedViewFromCreateMV(s)
 		if err != nil {
-			return fmt.Errorf("introspect materialized view %s.%s: %w", database, name, err)
+			return fmt.Errorf("materialized view %s: %w", name, err)
 		}
 		mv.Name = name
-		db.MaterializedViews = append(db.MaterializedViews, mv)
+		upsertMaterializedView(db, mv)
 	case *chparser.CreateDictionary:
 		d, err := buildDictionaryFromCreateDictionary(s)
 		if err != nil {
-			return fmt.Errorf("introspect dictionary %s.%s: %w", database, name, err)
+			return fmt.Errorf("dictionary %s: %w", name, err)
 		}
 		d.Name = name
-		db.Dictionaries = append(db.Dictionaries, d)
+		upsertDictionary(db, d)
 	case *chparser.CreateView:
 		v, err := buildViewFromCreateView(s)
 		if err != nil {
-			return fmt.Errorf("introspect view %s.%s: %w", database, name, err)
+			return fmt.Errorf("view %s: %w", name, err)
 		}
 		v.Name = name
-		db.Views = append(db.Views, v)
+		upsertView(db, v)
 	default:
-		return fmt.Errorf("introspect %s.%s: unsupported statement type %T", database, name, stmt)
+		return fmt.Errorf("unsupported statement type %T", stmt)
 	}
 	return nil
+}
+
+// upsertTable replaces the table named t.Name in db, or appends it when absent.
+func upsertTable(db *DatabaseSpec, t TableSpec) {
+	for i := range db.Tables {
+		if db.Tables[i].Name == t.Name {
+			db.Tables[i] = t
+			return
+		}
+	}
+	db.Tables = append(db.Tables, t)
+}
+
+func upsertMaterializedView(db *DatabaseSpec, mv MaterializedViewSpec) {
+	for i := range db.MaterializedViews {
+		if db.MaterializedViews[i].Name == mv.Name {
+			db.MaterializedViews[i] = mv
+			return
+		}
+	}
+	db.MaterializedViews = append(db.MaterializedViews, mv)
+}
+
+func upsertDictionary(db *DatabaseSpec, d DictionarySpec) {
+	for i := range db.Dictionaries {
+		if db.Dictionaries[i].Name == d.Name {
+			db.Dictionaries[i] = d
+			return
+		}
+	}
+	db.Dictionaries = append(db.Dictionaries, d)
+}
+
+func upsertView(db *DatabaseSpec, v ViewSpec) {
+	for i := range db.Views {
+		if db.Views[i].Name == v.Name {
+			db.Views[i] = v
+			return
+		}
+	}
+	db.Views = append(db.Views, v)
 }
 
 // parseCreateStatement parses a single DDL statement (the value of

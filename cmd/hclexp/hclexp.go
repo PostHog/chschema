@@ -43,6 +43,9 @@ func main() {
 	case "drift":
 		runDrift(os.Args[2:])
 		return
+	case "sql2hcl":
+		runSQL2HCL(os.Args[2:])
+		return
 	case "load":
 		runLoad(os.Args[2:])
 		return
@@ -74,6 +77,7 @@ Commands:
   diff         compare two schemas (HCL or live), optionally emit migration DDL
   validate     check that MV and Distributed dependency references resolve
   drift        detect cross-node schema drift across per-node HCL dumps
+  sql2hcl      apply SQL DDL edits (CREATE/ALTER/DROP/RENAME) to an HCL schema
   load         parse and resolve an HCL config (default when flags are given)
   help         print this help
 
