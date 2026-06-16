@@ -153,6 +153,43 @@ pre.code {
 
 .flowlink { margin: 4px 0 12px; }
 
+/* validation problems */
+:root { --warn: #e0a33e; --warn-bg: #2a2113; --warn-border: #5a4520; }
+
+.problems {
+  background: var(--warn-bg);
+  border: 1px solid var(--warn-border);
+  border-radius: 8px;
+  padding: 12px 18px;
+  margin: 12px 0 16px;
+}
+.problems-title { color: var(--warn); border: none; margin: 0 0 6px; font-size: 15px; }
+.problem-list { margin: 0; padding-left: 18px; }
+.problem-list li { margin: 2px 0; }
+.problem-kind {
+  display: inline-block;
+  background: var(--warn-border);
+  color: var(--warn);
+  border-radius: 4px;
+  padding: 0 6px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-right: 6px;
+}
+
+.flow.flow-problem { border-color: var(--warn-border); }
+.flow-badge { color: var(--warn); font-size: 13px; margin-bottom: 10px; }
+.stage.stage-problem { border-left-color: var(--warn); }
+.stage-warn { color: var(--warn); }
+.stage-problem-msg {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+  color: var(--warn);
+  font-size: 12px;
+}
+
 .flow {
   background: var(--panel);
   border: 1px solid var(--border);
