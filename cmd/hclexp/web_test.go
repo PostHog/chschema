@@ -232,6 +232,83 @@ func TestWeb_NoFlowBacklinkWhenNotInFlow(t *testing.T) {
 	assert.NotContains(t, body, "Appears in a data flow")
 }
 
+func TestWeb_FlowProblems(t *testing.T) {
+	// An MV that references a virtual column its source doesn't provide, plus a
+	// second MV whose target table isn't declared.
+	schema := &hclload.Schema{Databases: []hclload.DatabaseSpec{{
+		Name: "posthog",
+		Tables: []hclload.TableSpec{
+			{
+				Name:    "src",
+				OrderBy: []string{"id"},
+				Columns: []hclload.ColumnSpec{{Name: "id", Type: "UInt64"}},
+				Engine:  &hclload.EngineSpec{Kind: "merge_tree", Decoded: hclload.EngineMergeTree{}},
+			},
+			{
+				Name:    "dst",
+				OrderBy: []string{"id"},
+				Columns: []hclload.ColumnSpec{{Name: "id", Type: "UInt64"}},
+				Engine:  &hclload.EngineSpec{Kind: "merge_tree", Decoded: hclload.EngineMergeTree{}},
+			},
+		},
+		MaterializedViews: []hclload.MaterializedViewSpec{
+			{
+				Name:    "bad_columns_mv",
+				ToTable: "posthog.dst",
+				Query:   "SELECT id, _bogus FROM posthog.src",
+			},
+			{
+				Name:    "missing_target_mv",
+				ToTable: "posthog.nope",
+				Query:   "SELECT id FROM posthog.src",
+			},
+		},
+	}}}
+	srv, err := newWebServer(schema)
+	require.NoError(t, err)
+
+	// The undefined-column problem is attributed to the MV.
+	colProblems := srv.problems[indexKey("posthog", "bad_columns_mv")]
+	require.NotEmpty(t, colProblems)
+	assert.Equal(t, "undefined column", colProblems[0].Kind)
+
+	// The missing-target problem is attributed to the other MV.
+	tgtProblems := srv.problems[indexKey("posthog", "missing_target_mv")]
+	require.NotEmpty(t, tgtProblems)
+	assert.Equal(t, "missing target", tgtProblems[0].Kind)
+
+	// At least one reconstructed flow is flagged as having problems.
+	flagged := false
+	for _, f := range srv.flows {
+		if f.HasProblems {
+			flagged = true
+		}
+	}
+	assert.True(t, flagged, "a flow touching a broken MV should be flagged")
+
+	code, body := getBody(t, srv, "/flows")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "this flow has problems")
+	assert.Contains(t, body, "undefined column")
+
+	// The MV's own page surfaces the problem too.
+	code, page := getBody(t, srv, "/db/posthog/materialized_view/bad_columns_mv?view=html")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, page, "Problems")
+	assert.Contains(t, page, "_bogus")
+}
+
+func TestWeb_NoProblemsWhenSchemaIsClean(t *testing.T) {
+	srv, err := newWebServer(kafkaFlowSchema())
+	require.NoError(t, err)
+	for ref, p := range srv.problems {
+		assert.Emptyf(t, p, "unexpected problems for %s", ref)
+	}
+	code, body := getBody(t, srv, "/flows")
+	require.Equal(t, http.StatusOK, code)
+	assert.NotContains(t, body, "this flow has problems")
+}
+
 func TestWeb_NotFound(t *testing.T) {
 	srv, err := newWebServer(webTestSchema())
 	require.NoError(t, err)
