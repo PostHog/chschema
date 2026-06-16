@@ -8,6 +8,17 @@
   <a href="{{.HCLHref}}" class="{{if eq .View "hcl"}}active{{end}}">HCL</a>
 </div>
 
+{{if .Problems}}
+<div class="problems">
+  <h2 class="problems-title">⚠ Problems</h2>
+  <ul class="problem-list">
+    {{range .Problems}}
+    <li><span class="problem-kind">{{.Kind}}</span> {{.Reason}}</li>
+    {{end}}
+  </ul>
+</div>
+{{end}}
+
 {{if eq .View "html"}}
   {{if .Props}}
   <table class="props">
