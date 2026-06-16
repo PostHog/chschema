@@ -1,0 +1,22 @@
+{{define "content"}}
+<h1>Data flows</h1>
+<p class="muted">Ingestion chains reconstructed from materialized-view sources, targets, and Distributed remotes.</p>
+{{if not .Flows}}<p class="muted">No materialized-view ingestion chains found in this schema.</p>{{end}}
+
+{{range .Flows}}
+<section class="flow" id="{{.Anchor}}">
+  <div class="chain">
+    {{range $i, $st := .Stages}}
+    {{if $i}}<div class="arrow"><span class="arrow-label">{{$st.EdgeLabel}}</span><span class="arrow-glyph">▼</span></div>{{end}}
+    <div class="stage stage-{{$st.Kind}}{{if not $st.Declared}} undeclared{{end}}">
+      <div class="stage-kind">{{$st.KindLabel}}{{if $st.Engine}} · {{$st.Engine}}{{end}}</div>
+      <div class="stage-name">
+        {{if $st.Href}}<a href="{{$st.Href}}">{{$st.Name}}</a>{{else}}{{$st.Name}}{{end}}
+      </div>
+      <div class="stage-meta">{{$st.Database}}{{if $st.Detail}} · {{$st.Detail}}{{end}}{{if not $st.Declared}} · not declared{{end}}</div>
+    </div>
+    {{end}}
+  </div>
+</section>
+{{end}}
+{{end}}
