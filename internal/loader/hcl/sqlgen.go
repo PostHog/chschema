@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+
+	chparser "github.com/orian/clickhouse-sql-parser/parser"
 )
 
 // GeneratedSQL holds the result of GenerateSQL: the safe DDL statements ready
@@ -341,13 +343,66 @@ func dropViewSQL(database, name string) string {
 //
 //	CREATE VIEW [ON CLUSTER c] db.name [(aliases)] [DEFINER = u]
 //	  [SQL SECURITY ...] AS <query> [COMMENT '...']
+//
+// viewQueryProjectsStar reports whether the view's top-level output projection
+// (the outer SELECT and any UNION/EXCEPT branch) includes a star (`*` or a
+// qualified `x.*`). It deliberately does not descend into FROM subqueries or
+// expression subqueries — stars there do not determine the view's own output
+// columns. When the query can't be parsed it returns false, leaving alias
+// emission unchanged.
+func viewQueryProjectsStar(query string) bool {
+	stmts, err := chparser.NewParser(query).ParseStmts()
+	if err != nil || len(stmts) == 0 {
+		return false
+	}
+	head, ok := stmts[0].(*chparser.SelectQuery)
+	if !ok {
+		// Fall back to the outermost SelectQuery the walker reports first.
+		for _, n := range chparser.FindAll(stmts[0], isSelectQuery) {
+			head = n.(*chparser.SelectQuery)
+			break
+		}
+	}
+	for sq := head; sq != nil; sq = nextUnionBranch(sq) {
+		for _, item := range sq.SelectItems {
+			if item == nil || item.Expr == nil {
+				continue
+			}
+			expr := strings.TrimSpace(formatNode(item.Expr))
+			if expr == "*" || strings.HasSuffix(expr, ".*") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// nextUnionBranch returns the next branch in a UNION ALL / UNION DISTINCT /
+// EXCEPT chain, or nil at the end.
+func nextUnionBranch(sq *chparser.SelectQuery) *chparser.SelectQuery {
+	switch {
+	case sq.UnionAll != nil:
+		return sq.UnionAll
+	case sq.UnionDistinct != nil:
+		return sq.UnionDistinct
+	case sq.Except != nil:
+		return sq.Except
+	}
+	return nil
+}
+
 func createViewSQL(database string, v ViewSpec) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "CREATE VIEW %s.%s", database, v.Name)
 	if v.Cluster != nil {
 		fmt.Fprintf(&b, " ON CLUSTER %s", *v.Cluster)
 	}
-	if len(v.ColumnAliases) > 0 {
+	// A view whose output projection includes a star can't carry an explicit
+	// column-alias list — ClickHouse rejects `CREATE VIEW v (a, b) AS SELECT *`
+	// because the column count isn't statically known. The list captured at
+	// introspection is ClickHouse-inferred, so omit it and let ClickHouse
+	// re-infer the columns (issue #41).
+	if len(v.ColumnAliases) > 0 && !viewQueryProjectsStar(v.Query) {
 		fmt.Fprintf(&b, " (%s)", strings.Join(v.ColumnAliases, ", "))
 	}
 	if v.Definer != nil {

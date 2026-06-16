@@ -708,6 +708,71 @@ func TestSQLGen_CreateView_FullForm(t *testing.T) {
 		got.Statements[0])
 }
 
+// A view whose body projects a star cannot carry an explicit column-alias list:
+// ClickHouse rejects `CREATE VIEW v (a, b) AS SELECT * ...` because the column
+// count isn't statically known. The generator must omit the inferred alias list
+// for such views. See issue #41.
+func TestSQLGen_CreateView_OmitsAliasesWhenBodyHasStar(t *testing.T) {
+	tests := []struct {
+		name        string
+		query       string
+		keepAliases bool
+	}{
+		{
+			name:        "plain select star",
+			query:       "SELECT * FROM custom_metrics_test",
+			keepAliases: false,
+		},
+		{
+			name:        "select star with REPLACE and UNION ALL (repro)",
+			query:       "SELECT * REPLACE(toFloat64(value) AS value) FROM custom_metrics_test UNION ALL SELECT 'X' AS name, map('instance', hostname()) AS labels, toFloat64(count()) AS value, 'h' AS help, 'gauge' AS type FROM system.part_log",
+			keepAliases: false,
+		},
+		{
+			name:        "qualified star",
+			query:       "SELECT t.* FROM custom_metrics_test AS t",
+			keepAliases: false,
+		},
+		{
+			name:        "star only in a non-first union branch",
+			query:       "SELECT 'a' AS name FROM x UNION ALL SELECT * FROM y",
+			keepAliases: false,
+		},
+		{
+			name:        "static projection keeps aliases",
+			query:       "SELECT team_id, count() AS n FROM events GROUP BY team_id",
+			keepAliases: true,
+		},
+		{
+			name:        "count star is not a projection star",
+			query:       "SELECT count(*) AS n FROM events",
+			keepAliases: true,
+		},
+		{
+			name:        "multiplication is not a projection star",
+			query:       "SELECT a * b AS p FROM events",
+			keepAliases: true,
+		},
+		{
+			name:        "star only inside a from-subquery keeps aliases",
+			query:       "SELECT a AS x FROM (SELECT * FROM t)",
+			keepAliases: true,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := ViewSpec{Name: "v", Query: tc.query, ColumnAliases: []string{"name", "labels", "value", "help", "type"}}
+			got := createViewSQL("posthog", v)
+			if tc.keepAliases {
+				assert.Contains(t, got, "(name, labels, value, help, type)", "expected alias list to be kept")
+			} else {
+				assert.NotContains(t, got, "(name, labels, value, help, type)", "expected alias list to be omitted")
+				assert.Contains(t, got, tc.query, "query body must still be present")
+			}
+		})
+	}
+}
+
 func TestSQLGen_DropPlainView(t *testing.T) {
 	cs := ChangeSet{Databases: []DatabaseChange{{
 		Database:  "posthog",
