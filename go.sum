@@ -54,8 +54,8 @@ github.com/mattn/go-isatty v0.0.19/go.mod h1:W+V8PltTTMOvKvAeJH7IuucS94S2C6jfK/D
 github.com/mitchellh/go-wordwrap v1.0.1 h1:TLuKupo69TCn6TQSyGxwI1EblZZEsQ0vMlAFQflz0v0=
 github.com/mitchellh/go-wordwrap v1.0.1/go.mod h1:R62XHJLzvMFRBbcrT7m7WgmE1eOyTSsCt+hzestvNj0=
 github.com/montanaflynn/stats v0.0.0-20171201202039-1bf9dbcd8cbe/go.mod h1:wL8QJuTMNUDYhXwkmfOly8iTdp5TEcJFWZD2D7SIkUc=
-github.com/orian/clickhouse-sql-parser v0.0.0-20260601143443-2d5bbc5ac581 h1:6wqmvQ05kkbKA85BgGVAi01RCiHXFb+7Zh+fyPZUZ+Q=
-github.com/orian/clickhouse-sql-parser v0.0.0-20260601143443-2d5bbc5ac581/go.mod h1:22D/qoWV/Ipbn5Gcub+0ttta1wgzSDaJMprQRZWghoE=
+github.com/orian/clickhouse-sql-parser v0.0.0-20260615155400-8e1ce69870f5 h1:gClSdUUBQpx3zAk0RLkQxidb1W9DNSs/LnoeFF/g1hg=
+github.com/orian/clickhouse-sql-parser v0.0.0-20260615155400-8e1ce69870f5/go.mod h1:22D/qoWV/Ipbn5Gcub+0ttta1wgzSDaJMprQRZWghoE=
 github.com/paulmach/orb v0.12.0 h1:z+zOwjmG3MyEEqzv92UN49Lg1JFYx0L9GpGKNVDKk1s=
 github.com/paulmach/orb v0.12.0/go.mod h1:5mULz1xQfs3bmQm63QEJA6lNGujuRafwA5S/EnuLaLU=
 github.com/paulmach/protoscan v0.2.1/go.mod h1:SpcSwydNLrxUGSDvXvO0P7g7AuhJ7lcKfDlhJCDw2gY=
