@@ -19,17 +19,20 @@ type flowStage struct {
 	Href      string // detail-page link; "" when the object isn't declared
 	Declared  bool
 	EdgeLabel string // label on the arrow leading into this stage (empty for the first)
+	Problems  []problemView
 }
 
 // A flow is a single linear ingestion chain from a source to a terminal table.
 type flow struct {
-	Anchor string
-	Stages []flowStage
+	Anchor      string
+	Stages      []flowStage
+	HasProblems bool
 }
 
 type flowsData struct {
-	Title string
-	Flows []flow
+	Title          string
+	Flows          []flow
+	GlobalProblems []problemView
 }
 
 // flowBuilder holds the indexes used to reconstruct flows from the dependency
@@ -234,7 +237,7 @@ func (s *webServer) handleFlows(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w)
 		return
 	}
-	s.render(w, s.tmplFlows, flowsData{Title: "Data flows", Flows: s.flows})
+	s.render(w, s.tmplFlows, flowsData{Title: "Data flows", Flows: s.flows, GlobalProblems: s.globalProblems})
 }
 
 // refOfKey reverses indexKey for the root lookup.

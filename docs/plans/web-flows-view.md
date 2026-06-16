@@ -29,6 +29,15 @@ reconstructs and renders these chains.
   participates in a flow.
 - **CSS**: horizontal card chain with labeled arrows.
 
+### Dataflow problems
+
+- Run `hclload.Validate` once in `newWebServer`; index each `ValidationError` by
+  its offending object (`Object`). This surfaces MVs that reference columns their
+  source doesn't provide (`mv_column`), undeclared MV/Distributed targets, etc.
+- `/flows` badges any stage whose object has problems (with the reason) and marks
+  the containing flow; object overview pages gain a "Problems" section.
+- Errors not tied to a specific object become page-level "Schema problems".
+
 ## Files
 
 - `cmd/hclexp/flows.go` — new: flow model, `buildFlows`, `handleFlows`.

@@ -63,14 +63,26 @@ func runWeb(args []string) {
 // webServer holds the resolved schema, parsed templates, and the precomputed
 // dependency graph + object kind index used for cross-linking.
 type webServer struct {
-	schema      *hclload.Schema
-	tmplIndex   *template.Template
-	tmplObject  *template.Template
-	tmplFlows   *template.Template
-	deps        []hclload.Dependency
-	kindIndex   map[string]string // "db\x00name" -> object kind
-	flows       []flow
-	flowAnchors map[string]string // "db\x00name" -> anchor of the first flow it appears in
+	schema         *hclload.Schema
+	tmplIndex      *template.Template
+	tmplObject     *template.Template
+	tmplFlows      *template.Template
+	deps           []hclload.Dependency
+	kindIndex      map[string]string // "db\x00name" -> object kind
+	flows          []flow
+	flowAnchors    map[string]string        // "db\x00name" -> anchor of the first flow it appears in
+	problems       map[string][]problemView // "db\x00name" -> validation problems for that object
+	globalProblems []problemView            // problems not attributable to a specific object
+}
+
+// problemView is a single validation issue rendered in the UI (e.g. a
+// materialized view referencing a column its source table does not provide, or
+// a dependency target that is not declared).
+type problemView struct {
+	Kind        string // friendly category, e.g. "undefined column", "missing target"
+	Reason      string // full human-readable explanation from the validator
+	Missing     string // the offending reference ("db.name" / "db.column")
+	MissingHref string // link to the missing object when it is itself declared
 }
 
 func newWebServer(schema *hclload.Schema) (*webServer, error) {
@@ -123,7 +135,56 @@ func newWebServer(schema *hclload.Schema) (*webServer, error) {
 		}
 	}
 	s.flows, s.flowAnchors = buildFlows(schema, s.deps, s.kindIndex)
+	s.buildProblems()
 	return s, nil
+}
+
+// buildProblems runs the schema validator and indexes each issue by the object
+// it is attributed to, then tags the flow stages whose object has problems.
+func (s *webServer) buildProblems() {
+	s.problems = map[string][]problemView{}
+	for _, e := range hclload.Validate(s.schema.Databases, hclload.ParseSkipSet("")) {
+		pv := problemView{
+			Kind:    problemKind(e.Kind),
+			Reason:  e.Reason,
+			Missing: e.Missing.String(),
+		}
+		if k := s.kindIndex[indexKey(e.Missing.Database, e.Missing.Name)]; k != "" {
+			pv.MissingHref = objectHref(e.Missing.Database, k, e.Missing.Name)
+		}
+		if e.Object.Database == "" && e.Object.Name == "" {
+			s.globalProblems = append(s.globalProblems, pv)
+			continue
+		}
+		key := indexKey(e.Object.Database, e.Object.Name)
+		s.problems[key] = append(s.problems[key], pv)
+	}
+
+	for fi := range s.flows {
+		for si := range s.flows[fi].Stages {
+			st := &s.flows[fi].Stages[si]
+			if p := s.problems[indexKey(st.Database, st.Name)]; len(p) > 0 {
+				st.Problems = p
+				s.flows[fi].HasProblems = true
+			}
+		}
+	}
+}
+
+// problemKind maps a validator dependency kind to a short UI label.
+func problemKind(kind string) string {
+	switch kind {
+	case hclload.KindMVColumn:
+		return "undefined column"
+	case hclload.DepMVSource, hclload.DepViewSource:
+		return "missing source"
+	case hclload.DepMVDest, hclload.DepBufferDestination, hclload.DepTimeSeriesTarget:
+		return "missing target"
+	case hclload.DepDistributedRemote:
+		return "missing remote table"
+	default:
+		return "problem"
+	}
 }
 
 func indexKey(db, name string) string { return db + "\x00" + name }
@@ -196,6 +257,7 @@ type objectData struct {
 	RawSQL     string
 	Code       string // rendered DDL or HCL for those views
 	FlowAnchor string // anchor on /flows when this object participates in a flow
+	Problems   []problemView
 	DependsOn  []objLink
 	DependedBy []objLink
 }
@@ -302,6 +364,7 @@ func (s *webServer) handleObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data.FlowAnchor = s.flowAnchors[indexKey(database, name)]
+	data.Problems = s.problems[indexKey(database, name)]
 	s.buildDeps(&data, database, name)
 	s.render(w, s.tmplObject, data)
 }
