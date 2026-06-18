@@ -62,24 +62,13 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 		}
 	}
 
-	for _, dt := range orderTablesByDependency(gatherTables(cs, addTablesOf), false) {
-		out.Statements = append(out.Statements, createTableSQL(dt.Database, dt.Table))
-	}
-	for _, dc := range cs.Databases {
-		for _, mv := range dc.AddMaterializedViews {
-			out.Statements = append(out.Statements, createMaterializedViewSQL(dc.Database, mv))
-		}
-	}
-	for _, dc := range cs.Databases {
-		for _, v := range dc.AddViews {
-			out.Statements = append(out.Statements, createViewSQL(dc.Database, v))
-		}
-	}
-	for _, dc := range cs.Databases {
-		for _, d := range dictionariesByName(dc.AddDictionaries) {
-			out.Statements = append(out.Statements, createDictionarySQL(dc.Database, d))
-		}
-	}
+	// Tables, materialized views, views, and dictionaries are emitted in one
+	// dependency-respecting order so a referenced object is always created
+	// before the object that references it (Distributed→remote, MV→source/
+	// to_table, view→source view, Buffer→destination, dictionary→source table,
+	// etc.). Objects without a dependency relationship keep their historical
+	// relative order.
+	out.Statements = append(out.Statements, orderedCreates(cs)...)
 	// Raw adds last among creates: a raw object (typically a leaf dictionary
 	// or view) may reference tables created above. Its dependencies cannot be
 	// analysed, so no finer ordering is attempted.
@@ -216,8 +205,180 @@ type dbTable struct {
 	Table    TableSpec
 }
 
-func addTablesOf(dc DatabaseChange) []TableSpec  { return dc.AddTables }
 func dropTablesOf(dc DatabaseChange) []TableSpec { return dc.DropTables }
+
+// createNode is one object to be created, carrying its dependency identity and
+// the DDL that creates it.
+type createNode struct {
+	ref ObjectRef
+	sql string
+}
+
+// orderedCreates returns the CREATE statements for every added table,
+// materialized view, view, and dictionary in a single dependency-respecting
+// order: an object is emitted only after every object it references that is also
+// being created in this change set. Objects without a dependency relationship
+// keep their historical relative order (tables, then materialized views, then
+// views, then dictionaries by name). Raw objects are handled by the caller.
+func orderedCreates(cs ChangeSet) []string {
+	var nodes []createNode
+	add := func(db, name, sql string) {
+		nodes = append(nodes, createNode{ref: ObjectRef{Database: db, Name: name}, sql: sql})
+	}
+	for _, dc := range cs.Databases {
+		for _, t := range dc.AddTables {
+			add(dc.Database, t.Name, createTableSQL(dc.Database, t))
+		}
+	}
+	for _, dc := range cs.Databases {
+		for _, mv := range dc.AddMaterializedViews {
+			add(dc.Database, mv.Name, createMaterializedViewSQL(dc.Database, mv))
+		}
+	}
+	for _, dc := range cs.Databases {
+		for _, v := range dc.AddViews {
+			add(dc.Database, v.Name, createViewSQL(dc.Database, v))
+		}
+	}
+	for _, dc := range cs.Databases {
+		for _, d := range dictionariesByName(dc.AddDictionaries) {
+			add(dc.Database, d.Name, createDictionarySQL(dc.Database, d))
+		}
+	}
+
+	order := topoSortNodes(nodes, createDependencyEdges(cs))
+	out := make([]string, 0, len(order))
+	for _, n := range order {
+		out = append(out, n.sql)
+	}
+	return out
+}
+
+// createDependencyEdges returns {from, to} edges among the added objects: from
+// references to (so to must be created first). It reuses CollectDependencies for
+// tables/materialized views/views and derives dictionary→source edges from the
+// typed dictionary spec, which CollectDependencies does not cover.
+func createDependencyEdges(cs ChangeSet) [][2]ObjectRef {
+	var edges [][2]ObjectRef
+	if deps, err := CollectDependencies(addedSchema(cs)); err == nil {
+		for _, d := range deps {
+			edges = append(edges, [2]ObjectRef{d.From, d.To})
+		}
+	}
+	for _, dc := range cs.Databases {
+		for _, d := range dc.AddDictionaries {
+			from := ObjectRef{Database: dc.Database, Name: d.Name}
+			for _, to := range dictionarySourceRefs(dc.Database, d) {
+				edges = append(edges, [2]ObjectRef{from, to})
+			}
+		}
+	}
+	return edges
+}
+
+// addedSchema projects the change set's added objects into a []DatabaseSpec so
+// the shared dependency collector can analyse them.
+func addedSchema(cs ChangeSet) []DatabaseSpec {
+	dbs := make([]DatabaseSpec, 0, len(cs.Databases))
+	for _, dc := range cs.Databases {
+		dbs = append(dbs, DatabaseSpec{
+			Name:              dc.Database,
+			Tables:            dc.AddTables,
+			MaterializedViews: dc.AddMaterializedViews,
+			Views:             dc.AddViews,
+			Dictionaries:      dc.AddDictionaries,
+		})
+	}
+	return dbs
+}
+
+// dictionarySourceRefs returns the table(s) a dictionary reads from via a
+// ClickHouse source (TABLE or QUERY). Other source kinds (HTTP, file, ...) have
+// no in-schema dependency. An unqualified name defaults to the dictionary's
+// database.
+func dictionarySourceRefs(db string, d DictionarySpec) []ObjectRef {
+	if d.Source == nil {
+		return nil
+	}
+	ch, ok := d.Source.Decoded.(SourceClickHouse)
+	if !ok {
+		return nil
+	}
+	if ch.Table != nil && *ch.Table != "" {
+		ref := ObjectRef{Database: db, Name: *ch.Table}
+		if ch.DB != nil && *ch.DB != "" {
+			ref.Database = *ch.DB
+		}
+		return []ObjectRef{ref}
+	}
+	if ch.Query != nil && *ch.Query != "" {
+		refs, err := extractSourceTables(*ch.Query)
+		if err != nil {
+			return nil
+		}
+		for i := range refs {
+			if refs[i].Database == "" {
+				refs[i].Database = db
+			}
+		}
+		return refs
+	}
+	return nil
+}
+
+// topoSortNodes returns nodes in dependency order: for every edge {from, to}
+// where both endpoints are nodes, to is emitted before from. Independent nodes
+// keep their input order; a dependency cycle is broken by emitting the remaining
+// nodes in input order. Mirrors orderTablesByDependency's Kahn's algorithm,
+// generalised across object kinds.
+func topoSortNodes(nodes []createNode, edges [][2]ObjectRef) []createNode {
+	if len(nodes) < 2 {
+		return nodes
+	}
+	index := make(map[ObjectRef]int, len(nodes))
+	for i, n := range nodes {
+		index[n.ref] = i
+	}
+	indegree := make([]int, len(nodes))
+	dependents := make([][]int, len(nodes))
+	seen := make(map[[2]int]bool)
+	for _, e := range edges {
+		from, okF := index[e[0]]
+		to, okT := index[e[1]]
+		if !okF || !okT || from == to || seen[[2]int{from, to}] {
+			continue
+		}
+		seen[[2]int{from, to}] = true
+		indegree[from]++
+		dependents[to] = append(dependents[to], from)
+	}
+
+	done := make([]bool, len(nodes))
+	order := make([]createNode, 0, len(nodes))
+	for len(order) < len(nodes) {
+		progressed := false
+		for i := range nodes {
+			if done[i] || indegree[i] != 0 {
+				continue
+			}
+			order = append(order, nodes[i])
+			done[i] = true
+			progressed = true
+			for _, d := range dependents[i] {
+				indegree[d]--
+			}
+		}
+		if !progressed { // dependency cycle: emit the rest in input order
+			for i := range nodes {
+				if !done[i] {
+					order = append(order, nodes[i])
+					done[i] = true
+				}
+			}
+		}
+	}
+	return order
+}
 
 // gatherTables flattens one table collection (adds or drops) across every
 // database in the ChangeSet into a single ordered slice.
