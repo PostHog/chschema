@@ -53,7 +53,16 @@ FROM roundtrip.events
 GROUP BY timestamp, team_id
 ;
 
--- NOTE: a DICTIONARY (#49) is still intentionally left out of the default
--- fixture: the round-trip harness found it is dropped by the round-trip. Add it
--- back here once #49 is fixed so this fixture guards against regressions. (The
--- plain VIEW gap, #48, is fixed — events_view above guards it.)
+-- Dictionary over dim_source (guards #49). The ClickHouse source parameters use
+-- the conventional DB-then-TABLE order that hclexp emits; ClickHouse echoes the
+-- written order rather than canonicalizing it.
+CREATE DICTIONARY roundtrip.dim_dict
+(
+    id UInt64,
+    name String
+)
+PRIMARY KEY id
+SOURCE(CLICKHOUSE(DB 'roundtrip' TABLE 'dim_source'))
+LAYOUT(HASHED())
+LIFETIME(MIN 0 MAX 3600)
+;

@@ -239,6 +239,7 @@ func Diff(from, to *Schema) ChangeSet {
 				AddTables:            append([]TableSpec(nil), t.Tables...),
 				AddMaterializedViews: append([]MaterializedViewSpec(nil), t.MaterializedViews...),
 				AddViews:             append([]ViewSpec(nil), t.Views...),
+				AddDictionaries:      append([]DictionarySpec(nil), t.Dictionaries...),
 				AddRaws:              append([]RawSpec(nil), t.Raws...),
 			}
 		case !tOK:
@@ -251,6 +252,9 @@ func Diff(from, to *Schema) ChangeSet {
 			}
 			for _, v := range f.Views {
 				dc.DropViews = append(dc.DropViews, v.Name)
+			}
+			for _, d := range f.Dictionaries {
+				dc.DropDictionaries = append(dc.DropDictionaries, d.Name)
 			}
 			dc.DropRaws = append(dc.DropRaws, f.Raws...)
 		default:
