@@ -289,6 +289,25 @@ summary: 58 nodes, 8 groups, 2 groups with drift, 28 drifting nodes
 > finer deployment role from the node name and usually isolates genuine
 > drift.
 
+## Verify round-trip fidelity
+
+`hclexp dump-sql` captures a database's `CREATE` statements (the `SHOW CREATE`
+equivalent) as a replayable SQL file, and a gated test recreates that schema
+through the full hclexp round-trip and asserts every `CREATE` is byte-identical —
+so you can **dump production and verify it locally**.
+
+```bash
+# Capture a production schema
+hclexp dump-sql -host prod-ch -database posthog -user … -password … -out prod.sql
+
+# Replay it on a local ClickHouse and verify hclexp round-trips it exactly
+docker compose up -d
+ROUNDTRIP_FIXTURE=$PWD/prod.sql go test ./test -run TestLive_RoundTripFidelity -clickhouse
+```
+
+See [docs/roundtrip-fidelity.md](docs/roundtrip-fidelity.md) for the full
+workflow and limitations.
+
 ## TLS / secure connections
 
 `hclexp` connects in plaintext by default. To reach a TLS-only cluster
