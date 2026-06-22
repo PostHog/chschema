@@ -66,6 +66,10 @@ func writeNode(body *hclwrite.Body, n NodeSpec) {
 }
 
 func writeDatabase(body *hclwrite.Body, db DatabaseSpec) {
+	if db.Cluster != nil {
+		body.SetAttributeValue("cluster", cty.StringVal(*db.Cluster))
+	}
+
 	tables := append([]TableSpec(nil), db.Tables...)
 	sort.Slice(tables, func(i, j int) bool {
 		return tables[i].Name < tables[j].Name
@@ -175,12 +179,20 @@ func writeMaterializedView(body *hclwrite.Body, mv MaterializedViewSpec) {
 		body.SetAttributeValue("comment", cty.StringVal(*mv.Comment))
 	}
 	for _, c := range mv.Columns {
-		colBlock := body.AppendNewBlock("column", []string{c.Name})
-		colBlock.Body().SetAttributeValue("type", cty.StringVal(c.Type))
+		writeColumn(body, c)
 	}
 }
 
 func writeTable(body *hclwrite.Body, t TableSpec) {
+	if t.Comment != nil {
+		body.SetAttributeValue("comment", cty.StringVal(*t.Comment))
+	}
+	if t.Cluster != nil {
+		body.SetAttributeValue("cluster", cty.StringVal(*t.Cluster))
+	}
+	if len(t.PrimaryKey) > 0 {
+		body.SetAttributeValue("primary_key", stringList(t.PrimaryKey))
+	}
 	if len(t.OrderBy) > 0 {
 		body.SetAttributeValue("order_by", stringList(t.OrderBy))
 	}
@@ -198,8 +210,7 @@ func writeTable(body *hclwrite.Body, t TableSpec) {
 	}
 
 	for _, c := range t.Columns {
-		colBlock := body.AppendNewBlock("column", []string{c.Name})
-		colBlock.Body().SetAttributeValue("type", cty.StringVal(c.Type))
+		writeColumn(body, c)
 	}
 
 	for _, idx := range t.Indexes {
@@ -212,8 +223,51 @@ func writeTable(body *hclwrite.Body, t TableSpec) {
 		}
 	}
 
+	for _, c := range t.Constraints {
+		cb := body.AppendNewBlock("constraint", []string{c.Name}).Body()
+		if c.Check != nil {
+			cb.SetAttributeValue("check", cty.StringVal(*c.Check))
+		}
+		if c.Assume != nil {
+			cb.SetAttributeValue("assume", cty.StringVal(*c.Assume))
+		}
+	}
+
 	if t.Engine != nil && t.Engine.Decoded != nil {
 		writeEngine(body, t.Engine.Decoded)
+	}
+}
+
+// writeColumn emits a column block with its full ColumnSpec: the type, an
+// optional nullable flag, the mutually-exclusive default/materialized/ephemeral/
+// alias expression, plus codec, per-column TTL, and comment. RenamedFrom is
+// diff-transient metadata and intentionally not emitted. Keeping this in one
+// place ensures table, materialized-view, and TimeSeries-inner columns all
+// round-trip identically (issue #45).
+func writeColumn(parent *hclwrite.Body, c ColumnSpec) {
+	cb := parent.AppendNewBlock("column", []string{c.Name}).Body()
+	cb.SetAttributeValue("type", cty.StringVal(c.Type))
+	if c.Nullable {
+		cb.SetAttributeValue("nullable", cty.True)
+	}
+	switch {
+	case c.Default != nil:
+		cb.SetAttributeValue("default", cty.StringVal(*c.Default))
+	case c.Materialized != nil:
+		cb.SetAttributeValue("materialized", cty.StringVal(*c.Materialized))
+	case c.Ephemeral != nil:
+		cb.SetAttributeValue("ephemeral", cty.StringVal(*c.Ephemeral))
+	case c.Alias != nil:
+		cb.SetAttributeValue("alias", cty.StringVal(*c.Alias))
+	}
+	if c.Codec != nil {
+		cb.SetAttributeValue("codec", cty.StringVal(*c.Codec))
+	}
+	if c.TTL != nil {
+		cb.SetAttributeValue("ttl", cty.StringVal(*c.TTL))
+	}
+	if c.Comment != nil {
+		cb.SetAttributeValue("comment", cty.StringVal(*c.Comment))
 	}
 }
 
@@ -371,8 +425,7 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 			innerBlock := tb.AppendNewBlock("inner", nil)
 			ib := innerBlock.Body()
 			for _, c := range sub.t.Inner.Columns {
-				colBlock := ib.AppendNewBlock("column", []string{c.Name})
-				colBlock.Body().SetAttributeValue("type", cty.StringVal(c.Type))
+				writeColumn(ib, c)
 			}
 			if sub.t.Inner.Engine != nil && sub.t.Inner.Engine.Decoded != nil {
 				writeEngine(ib, sub.t.Inner.Engine.Decoded)

@@ -78,6 +78,53 @@ func TestWrite_RoundTrip_RawBlock(t *testing.T) {
 	roundTrip(t, filepath.Join("testdata", "raw_block.hcl"))
 }
 
+// TestWrite_RoundTrip_IntrospectedColumnModifiers exercises the exact seam from
+// issue #45: ClickHouse DDL parsed by the introspection AST builder must survive
+// the dump → reparse round-trip with all column modifiers, primary key, table
+// comment, and constraints intact. It complements the file-based round-trip
+// (which starts from HCL) by starting from a CREATE TABLE statement, the way
+// `hclexp introspect` does.
+func TestWrite_RoundTrip_IntrospectedColumnModifiers(t *testing.T) {
+	const createSQL = `CREATE TABLE migration_test.query_log_archive (
+		query_id String,
+		exception_code Int32,
+		exception_name String ALIAS errorCodeToName(exception_code),
+		created_at DateTime DEFAULT now() COMMENT 'ingestion time' CODEC(Delta, ZSTD(1)) TTL created_at + toIntervalYear(1),
+		lc_team_id Int64,
+		team_id Int64 ALIAS lc_team_id,
+		team_id_doubled Int64 MATERIALIZED lc_team_id * 2,
+		CONSTRAINT team_id_positive CHECK lc_team_id > 0
+	) ENGINE = MergeTree PRIMARY KEY query_id ORDER BY (query_id, lc_team_id) COMMENT 'query log archive'`
+
+	spec, err := buildTableFromCreateSQL(createSQL)
+	require.NoError(t, err)
+	spec.Name = "query_log_archive" // name is assigned by the introspect caller
+
+	// Sanity: the parser captured the modifiers (the bug is in the dumper).
+	byName := map[string]ColumnSpec{}
+	for _, c := range spec.Columns {
+		byName[c.Name] = c
+	}
+	require.NotNil(t, byName["exception_name"].Alias, "parser should capture ALIAS")
+	require.NotNil(t, byName["team_id_doubled"].Materialized, "parser should capture MATERIALIZED")
+
+	before := &Schema{Databases: []DatabaseSpec{{Name: "migration_test", Tables: []TableSpec{spec}}}}
+	require.NoError(t, Resolve(before))
+
+	var buf bytes.Buffer
+	require.NoError(t, Write(&buf, before))
+
+	tmp := filepath.Join(t.TempDir(), "introspect_round_trip.hcl")
+	require.NoError(t, os.WriteFile(tmp, buf.Bytes(), 0o644))
+	after, err := ParseFile(tmp)
+	require.NoError(t, err, "re-parse failed; dump output:\n%s", buf.String())
+	require.NoError(t, Resolve(after))
+
+	stripEngineBodies(before.Databases)
+	stripEngineBodies(after.Databases)
+	assert.Equal(t, before, after, "introspect → dump → reparse lost data; dump output:\n%s", buf.String())
+}
+
 func TestWrite_OutputIsStable(t *testing.T) {
 	dbs, err := ParseFile(filepath.Join("testdata", "resolve_basic.hcl"))
 	require.NoError(t, err)

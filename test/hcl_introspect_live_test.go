@@ -1,7 +1,10 @@
 package test
 
 import (
+	"bytes"
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
@@ -326,4 +329,71 @@ func TestLive_ViewRoundTrip_StarReplace(t *testing.T) {
 	// produces an applyable view.
 	require.NoError(t, conn.Exec(ctx, `DROP VIEW `+dbName+`.custom_metrics`))
 	require.NoError(t, conn.Exec(ctx, ddl), "regenerated CREATE VIEW must be applyable: %s", ddl)
+}
+
+// TestLive_CreateTableRoundTrip_ColumnModifiers is the end-to-end guard for
+// issue #45: a table carrying ALIAS / MATERIALIZED / DEFAULT / CODEC / per-column
+// TTL / COMMENT columns, a PRIMARY KEY distinct from ORDER BY, a CONSTRAINT, and
+// a table COMMENT must survive the full introspect -> dump HCL -> reparse ->
+// GenerateSQL pipeline. The regenerated CREATE TABLE is applied in place of the
+// original and the stored CREATE statements are compared: they must be identical.
+func TestLive_CreateTableRoundTrip_ColumnModifiers(t *testing.T) {
+	if !*clickhouse {
+		t.SkipNow()
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	ctx := context.Background()
+
+	require.NoError(t, conn.Exec(ctx, `CREATE TABLE `+dbName+`.archive (
+		query_id String,
+		team_id Int64,
+		exception_code Int32,
+		exception_name String ALIAS errorCodeToName(exception_code),
+		team_id_doubled Int64 MATERIALIZED team_id * 2,
+		created_at DateTime DEFAULT now() COMMENT 'ingestion time' CODEC(Delta, ZSTD(1)) TTL created_at + INTERVAL 1 YEAR,
+		CONSTRAINT team_id_positive CHECK team_id > 0
+	) ENGINE = MergeTree
+	PRIMARY KEY query_id
+	ORDER BY (query_id, team_id)
+	COMMENT 'query log archive'`), "create original table")
+
+	showCreate := func(name string) string {
+		var q string
+		require.NoError(t, conn.QueryRow(ctx,
+			"SELECT create_table_query FROM system.tables WHERE database = ? AND name = ?",
+			dbName, name).Scan(&q))
+		return q
+	}
+	original := showCreate("archive")
+
+	// introspect -> dump HCL -> reparse -> resolve
+	got, err := hclload.Introspect(ctx, conn, dbName, false)
+	require.NoError(t, err)
+	require.Len(t, got.Tables, 1)
+
+	var buf bytes.Buffer
+	require.NoError(t, hclload.Write(&buf, &hclload.Schema{Databases: []hclload.DatabaseSpec{*got}}))
+
+	tmp := filepath.Join(t.TempDir(), "dump.hcl")
+	require.NoError(t, os.WriteFile(tmp, buf.Bytes(), 0o644))
+	reparsed, err := hclload.ParseFile(tmp)
+	require.NoError(t, err, "re-parse failed; dump:\n%s", buf.String())
+	require.NoError(t, hclload.Resolve(reparsed))
+
+	// regenerate the CREATE TABLE via the same path as `diff -sql`
+	cs := hclload.ChangeSet{Databases: []hclload.DatabaseChange{{
+		Database: dbName, AddTables: reparsed.Databases[0].Tables,
+	}}}
+	gen := hclload.GenerateSQL(cs)
+	require.Len(t, gen.Statements, 1)
+
+	// recreate in place and compare the stored CREATE statements
+	require.NoError(t, conn.Exec(ctx, `DROP TABLE `+dbName+`.archive`))
+	require.NoError(t, conn.Exec(ctx, gen.Statements[0]),
+		"apply regenerated DDL:\n%s", gen.Statements[0])
+
+	rebuilt := showCreate("archive")
+	require.Equal(t, original, rebuilt,
+		"CREATE TABLE changed after round-trip\n--- dump HCL ---\n%s\n--- regenerated DDL ---\n%s", buf.String(), gen.Statements[0])
 }
