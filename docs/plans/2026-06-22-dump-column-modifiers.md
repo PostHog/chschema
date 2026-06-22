@@ -48,10 +48,12 @@ fields.
   create a table with all modifiers, introspect → dump → reparse → GenerateSQL,
   recreate in place, and assert the stored `CREATE TABLE` is byte-identical.
 
-## Note (out of scope)
+## Note: column-modifier order is `DEFAULT … COMMENT … CODEC … TTL`
 
-The chparser accepts column modifiers in `DEFAULT … COMMENT … CODEC … TTL`
-order; `COMMENT` after `TTL` is rejected. If ClickHouse's `create_table_query`
-emits a different order for some columns, introspect could fail to parse them —
-worth a follow-up check against a live cluster (the gated e2e test would surface
-it).
+ClickHouse's column grammar fixes the modifier order as
+`[DEFAULT|MATERIALIZED|EPHEMERAL|ALIAS] [COMMENT] [CODEC] [TTL]`; `COMMENT`
+after `TTL` is a syntax error in ClickHouse itself (verified in CI: `code 62`).
+The chparser enforces the same order, and the SQL generator (`columnDefSQL`)
+emits it correctly — no parser issue. An earlier draft of the live e2e test
+hand-wrote the original `CREATE TABLE` with `COMMENT` after `TTL`; that was a
+test bug, fixed to the valid order.

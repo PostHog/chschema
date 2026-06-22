@@ -351,7 +351,7 @@ func TestLive_CreateTableRoundTrip_ColumnModifiers(t *testing.T) {
 		exception_code Int32,
 		exception_name String ALIAS errorCodeToName(exception_code),
 		team_id_doubled Int64 MATERIALIZED team_id * 2,
-		created_at DateTime DEFAULT now() CODEC(Delta, ZSTD(1)) TTL created_at + INTERVAL 1 YEAR COMMENT 'ingestion time',
+		created_at DateTime DEFAULT now() COMMENT 'ingestion time' CODEC(Delta, ZSTD(1)) TTL created_at + INTERVAL 1 YEAR,
 		CONSTRAINT team_id_positive CHECK team_id > 0
 	) ENGINE = MergeTree
 	PRIMARY KEY query_id
