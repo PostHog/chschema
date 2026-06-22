@@ -457,6 +457,107 @@ func TestSQLGen_DropOrdersDistributedBeforeRemote(t *testing.T) {
 	assert.Less(t, dist, local, "Distributed table must be dropped before its remote table")
 }
 
+func TestSQLGen_CreateOrder_ViewDependsOnView(t *testing.T) {
+	// v_outer reads from v_inner; both are created in this change set. v_inner
+	// must be emitted first even though it is declared second.
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		AddViews: []ViewSpec{
+			{Name: "v_outer", Query: "SELECT * FROM posthog.v_inner"},
+			{Name: "v_inner", Query: "SELECT id FROM posthog.base"},
+		},
+	}}})
+	inner := stmtIndex(out.Statements, "CREATE VIEW posthog.v_inner")
+	outer := stmtIndex(out.Statements, "CREATE VIEW posthog.v_outer")
+	require.NotEqual(t, -1, inner)
+	require.NotEqual(t, -1, outer)
+	assert.Less(t, inner, outer, "v_inner must be created before v_outer")
+}
+
+func TestSQLGen_CreateOrder_BufferAfterDestination(t *testing.T) {
+	buf := TableSpec{
+		Name:    "buf",
+		Columns: []ColumnSpec{{Name: "id", Type: "UInt64"}},
+		Engine: &EngineSpec{Kind: "buffer", Decoded: EngineBuffer{
+			Database: "posthog", Table: "dest", NumLayers: 1,
+			MinTime: 1, MaxTime: 10, MinRows: 1, MaxRows: 10, MinBytes: 1, MaxBytes: 10,
+		}},
+	}
+	dest := mkTable("dest", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UInt64"})
+	dest.OrderBy = []string{"id"}
+	// Buffer declared first; it must still be emitted after its destination.
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog", AddTables: []TableSpec{buf, dest},
+	}}})
+	d := stmtIndex(out.Statements, "CREATE TABLE posthog.dest")
+	b := stmtIndex(out.Statements, "CREATE TABLE posthog.buf")
+	require.NotEqual(t, -1, d)
+	require.NotEqual(t, -1, b)
+	assert.Less(t, d, b, "destination table must be created before the Buffer")
+}
+
+func TestSQLGen_CreateOrder_DictionaryAfterSourceTable(t *testing.T) {
+	dict := mkDict("d", SourceClickHouse{Table: ptr("src")}, LayoutFlat{},
+		DictionaryAttribute{Name: "v", Type: "String"})
+	src := mkTable("src", EngineMergeTree{}, ColumnSpec{Name: "k", Type: "UInt64"})
+	src.OrderBy = []string{"k"}
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog", AddTables: []TableSpec{src}, AddDictionaries: []DictionarySpec{dict},
+	}}})
+	s := stmtIndex(out.Statements, "posthog.src")
+	d := stmtIndex(out.Statements, "DICTIONARY posthog.d")
+	require.NotEqual(t, -1, s)
+	require.NotEqual(t, -1, d)
+	assert.Less(t, s, d, "source table must be created before the dictionary")
+}
+
+func TestSQLGen_CreateOrder_DictionaryDependsOnDictionary(t *testing.T) {
+	// Dictionary 'a' sources from dictionary 'b'. By name they sort a, b; the
+	// dependency must still emit b before a.
+	a := mkDict("a", SourceClickHouse{Table: ptr("b")}, LayoutFlat{}, DictionaryAttribute{Name: "v", Type: "String"})
+	b := mkDict("b", SourceClickHouse{Table: ptr("base")}, LayoutFlat{}, DictionaryAttribute{Name: "v", Type: "String"})
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog", AddDictionaries: []DictionarySpec{a, b},
+	}}})
+	ib := stmtIndex(out.Statements, "DICTIONARY posthog.b")
+	ia := stmtIndex(out.Statements, "DICTIONARY posthog.a")
+	require.NotEqual(t, -1, ib)
+	require.NotEqual(t, -1, ia)
+	assert.Less(t, ib, ia, "dict b must be created before dict a which sources from it")
+}
+
+func TestSQLGen_CreateOrder_CrossKind_MVSourceIsView(t *testing.T) {
+	// A materialized view reads from a plain view; the view must be created
+	// before the MV even though MVs are emitted before views by default.
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		AddMaterializedViews: []MaterializedViewSpec{
+			{Name: "mv", ToTable: "posthog.dest", Query: "SELECT id FROM posthog.src_view"},
+		},
+		AddViews: []ViewSpec{
+			{Name: "src_view", Query: "SELECT id FROM posthog.base"},
+		},
+	}}})
+	v := stmtIndex(out.Statements, "CREATE VIEW posthog.src_view")
+	mv := stmtIndex(out.Statements, "posthog.mv")
+	require.NotEqual(t, -1, v)
+	require.NotEqual(t, -1, mv)
+	assert.Less(t, v, mv, "the source view must be created before the materialized view that reads it")
+}
+
+func TestSQLGen_CreateOrder_CycleDoesNotHang(t *testing.T) {
+	// Two views reference each other. The generator must not hang or drop a
+	// statement; it breaks the cycle by falling back to input order.
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "posthog",
+		AddViews: []ViewSpec{
+			{Name: "v1", Query: "SELECT * FROM posthog.v2"},
+			{Name: "v2", Query: "SELECT * FROM posthog.v1"},
+		},
+	}}})
+	assert.Len(t, out.Statements, 2)
+}
+
 func TestSQLGen_OrderingAcrossDatabases(t *testing.T) {
 	// A Distributed table can forward to a table in another database; the
 	// ordering must hold across the whole ChangeSet, not just per-database.
