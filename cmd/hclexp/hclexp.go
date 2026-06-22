@@ -52,6 +52,9 @@ func main() {
 	case "web":
 		runWeb(os.Args[2:])
 		return
+	case "dump-sql":
+		runDumpSQL(os.Args[2:])
+		return
 	}
 
 	// A flag as the first argument (e.g. -config, -layer) is the
@@ -77,6 +80,7 @@ Usage:
 Commands:
   introspect   dump a live ClickHouse schema as canonical HCL
   dump-cluster enumerate a cluster's nodes and dump one <host>.hcl per node
+  dump-sql     dump a database's CREATE statements as ClickHouse DDL (replayable seed)
   diff         compare two schemas (HCL or live), optionally emit migration DDL
   validate     check that MV and Distributed dependency references resolve
   drift        detect cross-node schema drift across per-node HCL dumps
