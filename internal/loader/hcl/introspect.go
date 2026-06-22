@@ -342,16 +342,22 @@ func buildViewFromCreateView(cv *chparser.CreateView) (ViewSpec, error) {
 	}
 
 	// chparser exposes CREATE VIEW v (a, b, c) AS … via TableSchema with
-	// ColumnDef entries that carry only a Name (the type is empty for
-	// a bare alias).
+	// ColumnDef entries that carry only a Name (a typeless "bare alias").
+	//
+	// ClickHouse, however, ALWAYS stores a fully *typed* column schema for a
+	// view in create_table_query (e.g. `(team_id Int64, event String)`). That
+	// is inferred metadata, not an author-specified column list: re-emitting it
+	// produces a different, malformed CREATE VIEW (issue #48). So only capture
+	// typeless entries — the genuine `CREATE VIEW v (a, b)` author list — and
+	// skip the typed schema, letting the SELECT body define the columns.
 	if cv.TableSchema != nil {
 		for _, c := range cv.TableSchema.Columns {
 			cd, ok := c.(*chparser.ColumnDef)
-			if !ok {
+			if !ok || cd.Name == nil {
 				continue
 			}
-			if cd.Name == nil {
-				continue
+			if cd.Type != nil {
+				continue // ClickHouse's inferred column schema, not an alias list
 			}
 			v.ColumnAliases = append(v.ColumnAliases, identName(cd.Name))
 		}
