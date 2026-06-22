@@ -373,6 +373,30 @@ func TestProcessIntrospectRows_PlainView(t *testing.T) {
 	assert.Contains(t, db.Views[0].Query, "FROM posthog.events")
 }
 
+func TestProcessIntrospectRows_ViewInferredSchemaNotCapturedAsAliases(t *testing.T) {
+	// ClickHouse always stores a TYPED column schema for a view in
+	// create_table_query; it is inferred metadata, not an author-specified
+	// column list, so it must not be captured as column_aliases. Re-emitting it
+	// changes the stored CREATE VIEW (issue #48). Only a typeless
+	// `CREATE VIEW v (a, b)` list is a real author alias list.
+	rows := &fakeRows{rows: []fakeRow{
+		{
+			name: "events_view",
+			sql:  "CREATE VIEW posthog.events_view (`team_id` Int64, `event` String) AS SELECT team_id, event FROM posthog.events",
+		},
+	}}
+	db := &DatabaseSpec{Name: "posthog"}
+	require.NoError(t, processIntrospectRows(db, "posthog", rows))
+	require.Len(t, db.Views, 1)
+	v := db.Views[0]
+	assert.Empty(t, v.ColumnAliases, "the inferred typed column schema must not be captured as aliases")
+	// Regenerated DDL omits the column list, so ClickHouse re-infers the schema
+	// and the round-trip is faithful.
+	assert.Equal(t,
+		"CREATE VIEW posthog.events_view AS SELECT team_id, event FROM posthog.events",
+		createViewSQL("posthog", v))
+}
+
 func TestProcessIntrospectRows_ViewWithColumnAliasesAndComment(t *testing.T) {
 	rows := &fakeRows{rows: []fakeRow{
 		{
