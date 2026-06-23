@@ -118,7 +118,7 @@ func writeDictionaryLayout(parent *hclwrite.Body, l DictionaryLayout) {
 	b := block.Body()
 	switch v := l.(type) {
 	case LayoutFlat, LayoutHashed, LayoutSparseHashed, LayoutComplexKeySparseHashed,
-		LayoutDirect, LayoutComplexKeyDirect:
+		LayoutDirect, LayoutComplexKeyDirect, LayoutRegexpTree:
 		// no fields
 	case LayoutComplexKeyHashed:
 		writeOptInt(b, "preallocate", v.Preallocate)

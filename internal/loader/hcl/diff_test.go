@@ -1031,3 +1031,29 @@ func TestDiff_TimeSeries_NoChange(t *testing.T) {
 	cs := Diff(mk(), mk())
 	assert.True(t, cs.IsEmpty(), "no change should produce empty diff")
 }
+
+func TestDiff_NewDatabase_IncludesDictionaries(t *testing.T) {
+	// A database present only on the right (a brand-new database) must add ALL
+	// of its objects, including dictionaries. Regression test for the
+	// introspect → diff round-trip dropping dictionaries (issue #49).
+	to := &Schema{Databases: []DatabaseSpec{{
+		Name:         "db",
+		Tables:       []TableSpec{mkTable("t", EngineMergeTree{})},
+		Dictionaries: []DictionarySpec{mkDict("d", SourceNull{}, LayoutFlat{})},
+	}}}
+	cs := Diff(&Schema{}, to)
+	require.Len(t, cs.Databases, 1)
+	require.Len(t, cs.Databases[0].AddTables, 1)
+	require.Len(t, cs.Databases[0].AddDictionaries, 1, "a new database's dictionaries must be added")
+	assert.Equal(t, "d", cs.Databases[0].AddDictionaries[0].Name)
+}
+
+func TestDiff_DroppedDatabase_DropsDictionaries(t *testing.T) {
+	from := &Schema{Databases: []DatabaseSpec{{
+		Name:         "db",
+		Dictionaries: []DictionarySpec{mkDict("d", SourceNull{}, LayoutFlat{})},
+	}}}
+	cs := Diff(from, &Schema{})
+	require.Len(t, cs.Databases, 1)
+	assert.Equal(t, []string{"d"}, cs.Databases[0].DropDictionaries, "a dropped database's dictionaries must be dropped")
+}

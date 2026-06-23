@@ -138,6 +138,8 @@ func layoutSQL(l DictionaryLayout) string {
 		return "HASHED()"
 	case LayoutSparseHashed:
 		return "SPARSE_HASHED()"
+	case LayoutRegexpTree:
+		return "REGEXP_TREE()"
 	case LayoutComplexKeySparseHashed:
 		return "COMPLEX_KEY_SPARSE_HASHED()"
 	case LayoutDirect:

@@ -92,7 +92,7 @@ func TestParseSQLFixture(t *testing.T) {
 
 	db, stmts := parseSQLFixture(string(raw))
 	require.Equal(t, "roundtrip", db)
-	require.Len(t, stmts, 5, "expected 5 objects in the default fixture")
+	require.Len(t, stmts, 6, "expected 6 objects in the default fixture")
 	for _, s := range stmts {
 		require.True(t, strings.HasPrefix(s, "CREATE "), "statement should start with CREATE:\n%s", s)
 		require.NotContains(t, s, "--", "comment lines must be stripped")

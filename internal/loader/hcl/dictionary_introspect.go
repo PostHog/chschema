@@ -279,6 +279,8 @@ func buildDictionaryLayoutFromAST(l *chparser.DictionaryLayoutClause) (*Dictiona
 		decoded = LayoutHashed{}
 	case "sparse_hashed":
 		decoded = LayoutSparseHashed{}
+	case "regexp_tree":
+		decoded = LayoutRegexpTree{}
 	case "complex_key_sparse_hashed":
 		decoded = LayoutComplexKeySparseHashed{}
 	case "direct":
