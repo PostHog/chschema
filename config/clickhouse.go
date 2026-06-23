@@ -21,6 +21,16 @@ type ClickHouseConfig struct {
 	Password      string
 	Secure        bool // connect over native TLS (port 9440 by convention)
 	TLSSkipVerify bool // skip server certificate verification (internal-CA clusters)
+
+	// ShowSecrets enables the format_display_secrets_in_show_and_select session
+	// setting so create_table_query / SHOW CREATE / system.named_collections
+	// return real secret values (passwords, broker lists) instead of the
+	// redacted "[HIDDEN]" placeholder. It only takes effect when the server is
+	// configured with display_secrets_in_show_and_select = 1 and the connecting
+	// user holds the displaySecretsInShowAndSelect privilege; otherwise values
+	// stay redacted. Off by default so secrets are never captured into a dump
+	// unintentionally.
+	ShowSecrets bool
 }
 
 // GetDefaultConfig returns default configuration based on environment.
@@ -67,6 +77,11 @@ func buildOptions(cfg ClickHouseConfig) *clickhouse.Options {
 		opts.TLS = &tls.Config{
 			InsecureSkipVerify: cfg.TLSSkipVerify, //nolint:gosec // opted in via -tls-skip-verify
 		}
+	}
+	if cfg.ShowSecrets {
+		// Session-level format setting; the server config + grant still gate
+		// whether secrets are actually revealed.
+		opts.Settings = clickhouse.Settings{"format_display_secrets_in_show_and_select": 1}
 	}
 	return opts
 }

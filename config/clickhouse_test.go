@@ -65,6 +65,16 @@ func TestBuildOptions_TLS(t *testing.T) {
 		opts := buildOptions(ClickHouseConfig{Host: "h", Port: 9000, User: "u", Database: "d", TLSSkipVerify: true})
 		require.Nil(t, opts.TLS)
 	})
+
+	t.Run("ShowSecrets off by default", func(t *testing.T) {
+		opts := buildOptions(ClickHouseConfig{Host: "h", Port: 9000})
+		require.Nil(t, opts.Settings["format_display_secrets_in_show_and_select"])
+	})
+
+	t.Run("ShowSecrets sets the session format setting", func(t *testing.T) {
+		opts := buildOptions(ClickHouseConfig{Host: "h", Port: 9000, ShowSecrets: true})
+		require.Equal(t, 1, opts.Settings["format_display_secrets_in_show_and_select"])
+	})
 }
 
 // guard against accidental import shadowing
