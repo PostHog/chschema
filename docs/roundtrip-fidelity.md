@@ -74,3 +74,19 @@ see exactly which object and which clause changed.
   cluster names.
 - The default fixture is intentionally small (it proves the harness in CI). The
   real value is pointing `ROUNDTRIP_FIXTURE` at your own captured schema.
+- **Dictionary source parameter order.** ClickHouse echoes the written order of
+  `SOURCE(CLICKHOUSE(...))` parameters in `create_table_query` rather than
+  canonicalizing it. hclexp's typed source model is order-agnostic and emits the
+  canonical order (`HOST, PORT, USER, PASSWORD, DB, TABLE, QUERY, …`). So a
+  dictionary whose source clause was written in a different order shows up as a
+  byte difference in this test, even though it is semantically identical. This
+  does **not** affect `hclexp diff`, which compares dictionaries structurally
+  (it never reports such a dictionary as drifted). Redacted secrets are dropped
+  on introspect, so a dictionary with a `PASSWORD` also won't be byte-identical
+  against its redacted `create_table_query` — see the secrets note below.
+- **Redacted secrets.** A dictionary source `PASSWORD` (and named-collection
+  params) come back from ClickHouse as `[HIDDEN]` unless the connecting user has
+  `displaySecretsInShowAndSelect` and the server has
+  `display_secrets_in_show_and_select = 1`. hclexp drops redacted values rather
+  than re-emit them (which would overwrite the real secret), so such objects
+  won't round-trip byte-identically against a redacted source.
