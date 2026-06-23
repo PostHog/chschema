@@ -3,6 +3,7 @@ package hcl
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"strings"
 
@@ -97,7 +98,7 @@ func buildDictionaryFromCreateDictionary(cd *chparser.CreateDictionary) (Diction
 	}
 
 	if eng.Source != nil {
-		src, err := buildDictionarySourceFromAST(eng.Source)
+		src, err := buildDictionarySourceFromAST(formatNode(cd.Name), eng.Source)
 		if err != nil {
 			return DictionarySpec{}, err
 		}
@@ -203,19 +204,35 @@ func parseInt64Literal(n *chparser.NumberLiteral) int64 {
 	return v
 }
 
-func buildDictionarySourceFromAST(s *chparser.DictionarySourceClause) (*DictionarySourceSpec, error) {
+func buildDictionarySourceFromAST(dictName string, s *chparser.DictionarySourceClause) (*DictionarySourceSpec, error) {
 	if s == nil || s.Source == nil {
 		return nil, errors.New("dictionary has no source")
 	}
 	kind := strings.ToLower(s.Source.Name)
 	args := dictArgsMap(s.Args)
 
+	// optSecret captures a credential, but drops a value ClickHouse redacted to
+	// "[HIDDEN]" (returning nil) so it is never re-emitted and applied back —
+	// which would overwrite the real secret. See issue #52. To capture real
+	// values, grant displaySecretsInShowAndSelect and set
+	// display_secrets_in_show_and_select = 1.
+	optSecret := func(field string) *string {
+		v := args[field]
+		if v == RedactedValue {
+			slog.Warn("dictionary source secret is redacted; dropping it to avoid overwriting the real value on apply",
+				"dictionary", dictName, "source", kind, "field", field,
+				"hint", "grant displaySecretsInShowAndSelect AND set display_secrets_in_show_and_select=1")
+			return nil
+		}
+		return optStr(v)
+	}
+
 	var decoded DictionarySource
 	switch kind {
 	case "clickhouse":
 		decoded = SourceClickHouse{
 			Host: optStr(args["host"]), Port: optInt64(args["port"]),
-			User: optStr(args["user"]), Password: optStr(args["password"]),
+			User: optStr(args["user"]), Password: optSecret("password"),
 			DB: optStr(args["db"]), Table: optStr(args["table"]),
 			Query:           optStr(args["query"]),
 			InvalidateQuery: optStr(args["invalidate_query"]),
@@ -225,7 +242,7 @@ func buildDictionarySourceFromAST(s *chparser.DictionarySourceClause) (*Dictiona
 	case "mysql":
 		decoded = SourceMySQL{
 			Host: optStr(args["host"]), Port: optInt64(args["port"]),
-			User: optStr(args["user"]), Password: optStr(args["password"]),
+			User: optStr(args["user"]), Password: optSecret("password"),
 			DB: optStr(args["db"]), Table: optStr(args["table"]),
 			Query:           optStr(args["query"]),
 			InvalidateQuery: optStr(args["invalidate_query"]),
@@ -235,7 +252,7 @@ func buildDictionarySourceFromAST(s *chparser.DictionarySourceClause) (*Dictiona
 	case "postgresql":
 		decoded = SourcePostgreSQL{
 			Host: optStr(args["host"]), Port: optInt64(args["port"]),
-			User: optStr(args["user"]), Password: optStr(args["password"]),
+			User: optStr(args["user"]), Password: optSecret("password"),
 			DB: optStr(args["db"]), Table: optStr(args["table"]),
 			Query:           optStr(args["query"]),
 			InvalidateQuery: optStr(args["invalidate_query"]),
@@ -246,7 +263,7 @@ func buildDictionarySourceFromAST(s *chparser.DictionarySourceClause) (*Dictiona
 		decoded = SourceHTTP{
 			URL: args["url"], Format: args["format"],
 			CredentialsUser:     optStr(args["credentials_user"]),
-			CredentialsPassword: optStr(args["credentials_password"]),
+			CredentialsPassword: optSecret("credentials_password"),
 		}
 	case "file":
 		decoded = SourceFile{Path: args["path"], Format: args["format"]}
