@@ -545,6 +545,22 @@ LIFETIME(0)`
 	assert.Contains(t, err.Error(), "unsupported dictionary source kind")
 }
 
+func TestBuildDictionaryFromAST_RegexpTreeLayout(t *testing.T) {
+	// A REGEXP_TREE() dictionary (no inner layout params), from prod
+	// (posthog.web_bot_definition_dict). Issue #54.
+	const sql = "CREATE DICTIONARY posthog.web_bot_definition_dict " +
+		"(`regexp` String, `name` String) PRIMARY KEY regexp " +
+		"SOURCE(CLICKHOUSE(TABLE web_bot_definition DB 'posthog' USER 'default')) " +
+		"LIFETIME(MIN 3000 MAX 3600) LAYOUT(REGEXP_TREE())"
+	d, err := buildDictionaryFromCreateSQL(sql)
+	require.NoError(t, err)
+	require.NotNil(t, d.Layout)
+	assert.Equal(t, "regexp_tree", d.Layout.Kind)
+	_, ok := d.Layout.Decoded.(LayoutRegexpTree)
+	assert.True(t, ok, "layout should decode to LayoutRegexpTree")
+	assert.Contains(t, createDictionarySQL("posthog", d), "LAYOUT(REGEXP_TREE())")
+}
+
 func TestBuildDictionaryFromAST_UnsupportedLayout(t *testing.T) {
 	src := `CREATE DICTIONARY db.d (` + "`k`" + ` UInt64, ` + "`v`" + ` String) PRIMARY KEY k
 SOURCE(NULL())

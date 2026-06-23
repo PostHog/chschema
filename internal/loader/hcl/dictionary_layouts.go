@@ -18,6 +18,12 @@ type LayoutSparseHashed struct{}
 
 func (LayoutSparseHashed) Kind() string { return "sparse_hashed" }
 
+// LayoutRegexpTree backs a dictionary that matches keys against an ordered tree
+// of regular expressions. The layout itself takes no inner parameters.
+type LayoutRegexpTree struct{}
+
+func (LayoutRegexpTree) Kind() string { return "regexp_tree" }
+
 type LayoutComplexKeyHashed struct {
 	Preallocate *int64 `hcl:"preallocate,optional"`
 }
@@ -101,6 +107,8 @@ func DecodeDictionaryLayout(spec *DictionaryLayoutSpec) (DictionaryLayout, error
 		return LayoutHashed{}, nil
 	case "sparse_hashed":
 		return LayoutSparseHashed{}, nil
+	case "regexp_tree":
+		return LayoutRegexpTree{}, nil
 	case "complex_key_sparse_hashed":
 		return LayoutComplexKeySparseHashed{}, nil
 	case "direct":
