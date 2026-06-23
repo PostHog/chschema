@@ -86,6 +86,11 @@ hclexp introspect -host ch.prod.internal -port 9440 -user readonly \
   - any other path → write all databases to that single file
 - `-allow-raw` — capture objects whose `CREATE` DDL can't be parsed or
   expressed as a `raw {}` block instead of failing (see below)
+- `-show-secrets` — capture real secret values (dictionary source passwords,
+  named-collection params) instead of the redacted `[HIDDEN]`. Off by default;
+  requires the server's `display_secrets_in_show_and_select = 1` and the
+  `displaySecretsInShowAndSelect` grant. **Writes real secrets to the output —
+  handle with care.** See [docs/secrets.md](docs/secrets.md).
 
 Introspection reads each object's `create_table_query` and parses it with
 the ClickHouse SQL parser, so columns (types, defaults, codecs, comments,

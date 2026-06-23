@@ -31,6 +31,7 @@ func runDumpSQL(args []string) {
 	outFlag := fs.String("out", "", "output .sql file; empty writes to stdout")
 	secure := fs.Bool("secure", cfg.Secure, "connect to ClickHouse over TLS")
 	skipVerify := fs.Bool("tls-skip-verify", cfg.TLSSkipVerify, "skip TLS certificate verification (requires -secure)")
+	showSecrets := fs.Bool("show-secrets", false, "capture real secret values instead of '[HIDDEN]'; requires server display_secrets_in_show_and_select=1 and the displaySecretsInShowAndSelect grant")
 	_ = fs.Parse(args)
 
 	if *dbFlag == "" {
@@ -39,6 +40,7 @@ func runDumpSQL(args []string) {
 	}
 
 	cfg.Host, cfg.Port, cfg.User, cfg.Password, cfg.Database = *host, *port, *user, *password, *dbFlag
+	cfg.ShowSecrets = *showSecrets
 	if err := applyTLSFlags(&cfg, *secure, *skipVerify); err != nil {
 		slog.Error("invalid TLS flag combination", "err", err)
 		os.Exit(2)

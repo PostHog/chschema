@@ -194,6 +194,7 @@ func runIntrospect(args []string) {
 	secure := fs.Bool("secure", cfg.Secure, "connect to ClickHouse over TLS")
 	skipVerify := fs.Bool("tls-skip-verify", cfg.TLSSkipVerify, "skip TLS certificate verification (requires -secure)")
 	allowRaw := fs.Bool("allow-raw", false, "capture objects whose CREATE DDL cannot be parsed or expressed as a raw{} block instead of failing")
+	showSecrets := fs.Bool("show-secrets", false, "capture real secret values (passwords, broker lists) instead of '[HIDDEN]'; requires server display_secrets_in_show_and_select=1 and the displaySecretsInShowAndSelect grant")
 	_ = fs.Parse(args)
 
 	databases := splitList(*dbFlag)
@@ -204,6 +205,7 @@ func runIntrospect(args []string) {
 
 	cfg.Host, cfg.Port, cfg.User, cfg.Password = *host, *port, *user, *password
 	cfg.Database = databases[0] // connection requires a database to bind to
+	cfg.ShowSecrets = *showSecrets
 	if err := applyTLSFlags(&cfg, *secure, *skipVerify); err != nil {
 		slog.Error("invalid TLS flag combination", "err", err)
 		os.Exit(2)
