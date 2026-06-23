@@ -476,9 +476,10 @@ COMMENT 'fx rates by date'`
 	require.NotNil(t, got.Source)
 	assert.Equal(t, "clickhouse", got.Source.Kind)
 	assert.Equal(t, SourceClickHouse{
-		Query:    ptr("SELECT currency, start_date, end_date, rate FROM db.exchange_rate"),
-		User:     ptr("default"),
-		Password: ptr("[HIDDEN]"),
+		Query: ptr("SELECT currency, start_date, end_date, rate FROM db.exchange_rate"),
+		User:  ptr("default"),
+		// Password '[HIDDEN]' is redacted by ClickHouse and intentionally dropped
+		// on introspect so it is never re-emitted (issue #52).
 	}, got.Source.Decoded)
 
 	require.NotNil(t, got.Layout)
@@ -559,6 +560,23 @@ func TestBuildDictionaryFromAST_RegexpTreeLayout(t *testing.T) {
 	_, ok := d.Layout.Decoded.(LayoutRegexpTree)
 	assert.True(t, ok, "layout should decode to LayoutRegexpTree")
 	assert.Contains(t, createDictionarySQL("posthog", d), "LAYOUT(REGEXP_TREE())")
+}
+
+func TestBuildDictionarySource_DropsRedactedPassword(t *testing.T) {
+	// ClickHouse redacts secrets to [HIDDEN] in create_table_query; introspect
+	// must not capture or re-emit it, or applying a dump would overwrite the
+	// real password with "[HIDDEN]" (issue #52).
+	const sql = "CREATE DICTIONARY db.d (`k` UInt64, `v` String) PRIMARY KEY k " +
+		"SOURCE(CLICKHOUSE(TABLE 't' DB 'db' USER 'default' PASSWORD '[HIDDEN]')) " +
+		"LAYOUT(HASHED()) LIFETIME(0)"
+	d, err := buildDictionaryFromCreateSQL(sql)
+	require.NoError(t, err)
+	src, ok := d.Source.Decoded.(SourceClickHouse)
+	require.True(t, ok)
+	assert.Nil(t, src.Password, "redacted [HIDDEN] password must not be captured")
+	assert.NotContains(t, createDictionarySQL("db", d), "[HIDDEN]")
+	// a non-redacted password is still captured
+	assert.NotNil(t, src.User)
 }
 
 func TestBuildDictionaryFromAST_UnsupportedLayout(t *testing.T) {
