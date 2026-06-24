@@ -127,10 +127,68 @@ type TableDiff struct {
 	SettingsChanged []SettingChange
 }
 
+// ColumnChange is an in-name modification of a column: its type and/or any
+// modifier (default/materialized/ephemeral/alias/codec/ttl/comment/nullable)
+// differs between Old and New. Name is the column's (current) name.
 type ColumnChange struct {
-	Name    string
-	OldType string
-	NewType string
+	Name string
+	Old  ColumnSpec
+	New  ColumnSpec
+}
+
+// IsUnsafe reports whether the change switches the column's storage class —
+// into or out of ALIAS / MATERIALIZED / EPHEMERAL. ClickHouse accepts such a
+// MODIFY COLUMN but it is data-affecting (e.g. plain → ALIAS silently replaces
+// stored values with the computed expression), so it is never auto-emitted.
+// Changes within the same kind, or plain ↔ DEFAULT, plus codec/comment/ttl/
+// nullable/type changes, are in-place safe.
+func (c ColumnChange) IsUnsafe() bool {
+	ok, nk := columnKind(c.Old), columnKind(c.New)
+	if ok == nk {
+		return false
+	}
+	computed := func(k string) bool {
+		return k == "alias" || k == "materialized" || k == "ephemeral"
+	}
+	return computed(ok) || computed(nk)
+}
+
+// columnKind names a column's mutually-exclusive default form.
+func columnKind(c ColumnSpec) string {
+	switch {
+	case c.Alias != nil:
+		return "alias"
+	case c.Materialized != nil:
+		return "materialized"
+	case c.Ephemeral != nil:
+		return "ephemeral"
+	case c.Default != nil:
+		return "default"
+	default:
+		return "plain"
+	}
+}
+
+// columnsEqual reports whether two columns are identical for diff purposes:
+// same type and every modifier. Name is the comparison key (handled by the
+// caller) and RenamedFrom is diff-transient, so neither is compared here.
+func columnsEqual(a, b ColumnSpec) bool {
+	return a.Type == b.Type &&
+		a.Nullable == b.Nullable &&
+		eqStrPtr(a.Default, b.Default) &&
+		eqStrPtr(a.Materialized, b.Materialized) &&
+		eqStrPtr(a.Ephemeral, b.Ephemeral) &&
+		eqStrPtr(a.Alias, b.Alias) &&
+		eqStrPtr(a.Codec, b.Codec) &&
+		eqStrPtr(a.TTL, b.TTL) &&
+		eqStrPtr(a.Comment, b.Comment)
+}
+
+func eqStrPtr(a, b *string) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return *a == *b
 }
 
 // RenameColumn captures an explicit renamed_from directive that the diff
@@ -203,8 +261,16 @@ func (td TableDiff) IsEmpty() bool {
 // in place (engine swap, order_by/partition_by change). Such changes require
 // table recreation.
 func (td TableDiff) IsUnsafe() bool {
-	return td.EngineChange != nil || td.OrderByChange != nil ||
-		td.PartitionByChange != nil || td.SampleByChange != nil
+	if td.EngineChange != nil || td.OrderByChange != nil ||
+		td.PartitionByChange != nil || td.SampleByChange != nil {
+		return true
+	}
+	for _, c := range td.ModifyColumns {
+		if c.IsUnsafe() {
+			return true
+		}
+	}
+	return false
 }
 
 // Diff compares two resolved schemas and returns a deterministic ChangeSet.
@@ -618,10 +684,10 @@ func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 		td.RenameColumns = append(td.RenameColumns, RenameColumn{Old: oldName, New: toCol.Name})
 		renamed[oldName] = true
 		created[toCol.Name] = true
-		// Type changes on a renamed column still need MODIFY COLUMN.
-		if fromCols[oldName].Type != toCol.Type {
+		// Type/modifier changes on a renamed column still need MODIFY COLUMN.
+		if !columnsEqual(*fromCols[oldName], *toCol) {
 			td.ModifyColumns = append(td.ModifyColumns, ColumnChange{
-				Name: toCol.Name, OldType: fromCols[oldName].Type, NewType: toCol.Type,
+				Name: toCol.Name, Old: *fromCols[oldName], New: *toCol,
 			})
 		}
 	}
@@ -652,9 +718,9 @@ func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 			continue
 		}
 		f := fromCols[n]
-		if f.Type != t.Type {
+		if !columnsEqual(*f, *t) {
 			td.ModifyColumns = append(td.ModifyColumns, ColumnChange{
-				Name: n, OldType: f.Type, NewType: t.Type,
+				Name: n, Old: *f, New: *t,
 			})
 		}
 	}

@@ -700,7 +700,11 @@ func renderTableDiff(w io.Writer, td hclload.TableDiff) {
 		fmt.Fprintf(w, "      - column %s\n", name)
 	}
 	for _, c := range td.ModifyColumns {
-		fmt.Fprintf(w, "      ~ column %s: %s -> %s\n", c.Name, c.OldType, c.NewType)
+		unsafe := ""
+		if c.IsUnsafe() {
+			unsafe = " (UNSAFE)"
+		}
+		fmt.Fprintf(w, "      ~ column %s: %s -> %s%s\n", c.Name, colDesc(c.Old), colDesc(c.New), unsafe)
 	}
 	for _, idx := range td.AddIndexes {
 		fmt.Fprintf(w, "      + index %s\n", idx.Name)
@@ -732,6 +736,35 @@ func renderTableDiff(w io.Writer, td hclload.TableDiff) {
 	for _, c := range td.SettingsChanged {
 		fmt.Fprintf(w, "      ~ setting %s: %s -> %s\n", c.Key, c.OldValue, c.NewValue)
 	}
+}
+
+// colDesc renders a compact one-line column descriptor for the diff summary:
+// type plus its default form and any codec/comment/ttl markers.
+func colDesc(c hclload.ColumnSpec) string {
+	t := c.Type
+	if c.Nullable {
+		t = "Nullable(" + t + ")"
+	}
+	switch {
+	case c.Alias != nil:
+		t += " ALIAS " + *c.Alias
+	case c.Materialized != nil:
+		t += " MATERIALIZED " + *c.Materialized
+	case c.Ephemeral != nil:
+		t += " EPHEMERAL"
+	case c.Default != nil:
+		t += " DEFAULT " + *c.Default
+	}
+	if c.Codec != nil {
+		t += " CODEC(" + *c.Codec + ")"
+	}
+	if c.TTL != nil {
+		t += " TTL " + *c.TTL
+	}
+	if c.Comment != nil {
+		t += " COMMENT " + *c.Comment
+	}
+	return t
 }
 
 func load(configFlag, layersFlag string) (*hclload.Schema, error) {

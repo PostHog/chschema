@@ -151,9 +151,11 @@ func TestDiff_ModifyColumnType(t *testing.T) {
 	require := assert.New(t)
 	require.Len(cs.Databases, 1)
 	require.Len(cs.Databases[0].AlterTables, 1)
-	assert.Equal(t, []ColumnChange{
-		{Name: "count", OldType: "UInt32", NewType: "UInt64"},
-	}, cs.Databases[0].AlterTables[0].ModifyColumns)
+	mc := cs.Databases[0].AlterTables[0].ModifyColumns
+	require.Len(mc, 1)
+	assert.Equal(t, "count", mc[0].Name)
+	assert.Equal(t, "UInt32", mc[0].Old.Type)
+	assert.Equal(t, "UInt64", mc[0].New.Type)
 }
 
 func TestDiff_EngineChange(t *testing.T) {
@@ -346,7 +348,10 @@ func TestDiff_RenameWithTypeChange(t *testing.T) {
 	require.Len(cs.Databases[0].AlterTables, 1)
 	td := cs.Databases[0].AlterTables[0]
 	assert.Equal(t, []RenameColumn{{Old: "old", New: "new"}}, td.RenameColumns)
-	assert.Equal(t, []ColumnChange{{Name: "new", OldType: "UInt32", NewType: "UInt64"}}, td.ModifyColumns)
+	require.Len(td.ModifyColumns, 1)
+	assert.Equal(t, "new", td.ModifyColumns[0].Name)
+	assert.Equal(t, "UInt32", td.ModifyColumns[0].Old.Type)
+	assert.Equal(t, "UInt64", td.ModifyColumns[0].New.Type)
 }
 
 func TestDiff_RenameStaleDirectiveIsNoOp(t *testing.T) {
@@ -873,8 +878,8 @@ func TestDiff_VirtualColumnGuard_DeclaredOnBothSides_TypeChangeStillSurfaces(t *
 	require.Len(t, cs.Databases[0].AlterTables[0].ModifyColumns, 1)
 	mc := cs.Databases[0].AlterTables[0].ModifyColumns[0]
 	assert.Equal(t, "_key", mc.Name)
-	assert.Equal(t, "String", mc.OldType)
-	assert.Equal(t, "FixedString(8)", mc.NewType)
+	assert.Equal(t, "String", mc.Old.Type)
+	assert.Equal(t, "FixedString(8)", mc.New.Type)
 }
 
 func TestDiff_VirtualColumnGuard_NonVirtualNamesUnaffected(t *testing.T) {
@@ -1056,4 +1061,65 @@ func TestDiff_DroppedDatabase_DropsDictionaries(t *testing.T) {
 	cs := Diff(from, &Schema{})
 	require.Len(t, cs.Databases, 1)
 	assert.Equal(t, []string{"d"}, cs.Databases[0].DropDictionaries, "a dropped database's dictionaries must be dropped")
+}
+
+func TestDiff_ColumnModifierOnlyChanges(t *testing.T) {
+	base := func(y ColumnSpec) []DatabaseSpec {
+		return []DatabaseSpec{mkDB("d", mkTable("t", EngineMergeTree{},
+			ColumnSpec{Name: "x", Type: "Int64"}, y))}
+	}
+	plainY := ColumnSpec{Name: "y", Type: "Int64"}
+	modify := func(from, to ColumnSpec) []ColumnChange {
+		cs := Diff(&Schema{Databases: base(from)}, &Schema{Databases: base(to)})
+		if len(cs.Databases) == 0 {
+			return nil
+		}
+		return cs.Databases[0].AlterTables[0].ModifyColumns
+	}
+
+	t.Run("alias-only change is detected and UNSAFE", func(t *testing.T) {
+		mc := modify(plainY, ColumnSpec{Name: "y", Type: "Int64", Alias: ptr("x")})
+		require.Len(t, mc, 1)
+		assert.Equal(t, "y", mc[0].Name)
+		assert.True(t, mc[0].IsUnsafe(), "plain -> ALIAS switches storage class")
+	})
+	t.Run("materialized-only change is detected and UNSAFE", func(t *testing.T) {
+		mc := modify(plainY, ColumnSpec{Name: "y", Type: "Int64", Materialized: ptr("x * 2")})
+		require.Len(t, mc, 1)
+		assert.True(t, mc[0].IsUnsafe())
+	})
+	t.Run("ephemeral switch is UNSAFE", func(t *testing.T) {
+		mc := modify(plainY, ColumnSpec{Name: "y", Type: "Int64", Ephemeral: ptr("")})
+		require.Len(t, mc, 1)
+		assert.True(t, mc[0].IsUnsafe())
+	})
+	t.Run("alias -> materialized is UNSAFE", func(t *testing.T) {
+		mc := modify(ColumnSpec{Name: "y", Type: "Int64", Alias: ptr("x")},
+			ColumnSpec{Name: "y", Type: "Int64", Materialized: ptr("x")})
+		require.Len(t, mc, 1)
+		assert.True(t, mc[0].IsUnsafe())
+	})
+	t.Run("comment-only change is detected and SAFE", func(t *testing.T) {
+		mc := modify(plainY, ColumnSpec{Name: "y", Type: "Int64", Comment: ptr("hi")})
+		require.Len(t, mc, 1)
+		assert.False(t, mc[0].IsUnsafe())
+	})
+	t.Run("codec-only change is detected and SAFE", func(t *testing.T) {
+		mc := modify(plainY, ColumnSpec{Name: "y", Type: "Int64", Codec: ptr("Delta, ZSTD(1)")})
+		require.Len(t, mc, 1)
+		assert.False(t, mc[0].IsUnsafe())
+	})
+	t.Run("default add is SAFE (plain <-> DEFAULT)", func(t *testing.T) {
+		mc := modify(plainY, ColumnSpec{Name: "y", Type: "Int64", Default: ptr("5")})
+		require.Len(t, mc, 1)
+		assert.False(t, mc[0].IsUnsafe())
+	})
+	t.Run("nullable change is SAFE", func(t *testing.T) {
+		mc := modify(plainY, ColumnSpec{Name: "y", Type: "Int64", Nullable: true})
+		require.Len(t, mc, 1)
+		assert.False(t, mc[0].IsUnsafe())
+	})
+	t.Run("identical columns: no change", func(t *testing.T) {
+		assert.Empty(t, modify(plainY, plainY))
+	})
 }
