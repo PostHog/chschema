@@ -313,6 +313,37 @@ ROUNDTRIP_FIXTURE=$PWD/prod.sql go test ./test -run TestLive_RoundTripFidelity -
 See [docs/roundtrip-fidelity.md](docs/roundtrip-fidelity.md) for the full
 workflow and limitations.
 
+## Mint a GitHub App token
+
+`hclexp github-token` exchanges a GitHub App's credentials for a short-lived
+(~1 h) **installation access token** and prints **only the token** to stdout, so
+a workload can authenticate to GitHub as an App instead of a long-lived PAT. The
+ops image already ships `hclexp`, so the JWT signing + token exchange happen in
+Go — no `openssl`/shell needed in the (distroless) image.
+
+```bash
+# Private key from env (never touches disk); token captured by the caller
+export GITHUB_APP_PRIVATE_KEY="$(cat app.private-key.pem)"
+TOKEN=$(hclexp github-token -app-id 123456 -installation-id 7654321)
+
+# …then push over HTTPS as x-access-token:$TOKEN
+```
+
+**Flags:**
+
+- `-app-id` — GitHub App ID (required)
+- `-installation-id` — the App's installation ID on the target org/repo (required)
+- `-private-key-file` — path to the App private key PEM; defaults to the
+  `GITHUB_APP_PRIVATE_KEY` env var (PKCS#1 or PKCS#8)
+- `-repo owner/name` — optional: scope the token to a single repository and
+  print the resolved `repository_selection` / `permissions` to stderr
+
+It builds an RS256 JWT (`iss` = App ID, `exp` ≤ 10 min) signed with the private
+key, `POST`s it to `/app/installations/{id}/access_tokens`, and prints the
+resulting token. Diagnostics go to stderr and a failure exits non-zero, so
+`TOKEN=$(hclexp github-token …)` is safe. `HTTPS_PROXY`/`HTTP_PROXY` are honoured
+(api.github.com egresses through Smokescreen in our clusters).
+
 ## TLS / secure connections
 
 `hclexp` connects in plaintext by default. To reach a TLS-only cluster
