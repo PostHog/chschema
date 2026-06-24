@@ -679,13 +679,18 @@ func alterTableSQL(database string, td TableDiff) string {
 		ops = append(ops, fmt.Sprintf("RENAME COLUMN %s TO %s", r.Old, r.New))
 	}
 	for _, c := range td.AddColumns {
-		ops = append(ops, fmt.Sprintf("ADD COLUMN %s %s", c.Name, c.Type))
+		ops = append(ops, "ADD COLUMN "+columnDefSQL(c))
 	}
 	for _, n := range td.DropColumns {
 		ops = append(ops, fmt.Sprintf("DROP COLUMN %s", n))
 	}
 	for _, c := range td.ModifyColumns {
-		ops = append(ops, fmt.Sprintf("MODIFY COLUMN %s %s", c.Name, c.NewType))
+		// A storage-class switch (to/from ALIAS/MATERIALIZED/EPHEMERAL) is
+		// data-affecting and not auto-emitted; it surfaces via unsafeReasons.
+		if c.IsUnsafe() {
+			continue
+		}
+		ops = append(ops, "MODIFY COLUMN "+columnDefSQL(c.New))
 	}
 	for _, n := range td.DropIndexes {
 		ops = append(ops, fmt.Sprintf("DROP INDEX %s", n))
@@ -1082,6 +1087,15 @@ func unsafeReasons(database string, td TableDiff) []UnsafeChange {
 			Database: database, Table: td.Table,
 			Reason: "SAMPLE BY change requires recreating the table",
 		})
+	}
+	for _, c := range td.ModifyColumns {
+		if c.IsUnsafe() {
+			out = append(out, UnsafeChange{
+				Database: database, Table: td.Table,
+				Reason: fmt.Sprintf("column %q change from %s to %s switches its storage class and is data-affecting; not auto-applied",
+					c.Name, columnKind(c.Old), columnKind(c.New)),
+			})
+		}
 	}
 	return out
 }

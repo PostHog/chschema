@@ -154,7 +154,7 @@ func TestSQLGen_AlterTableMultipleOps(t *testing.T) {
 		Table:         "events",
 		AddColumns:    []ColumnSpec{{Name: "new_col", Type: "UInt64"}},
 		DropColumns:   []string{"old_col"},
-		ModifyColumns: []ColumnChange{{Name: "count", OldType: "UInt32", NewType: "UInt64"}},
+		ModifyColumns: []ColumnChange{{Name: "count", Old: ColumnSpec{Name: "count", Type: "UInt32"}, New: ColumnSpec{Name: "count", Type: "UInt64"}}},
 	}
 	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
 		{Database: "posthog", AlterTables: []TableDiff{td}},
@@ -1191,4 +1191,39 @@ func TestSQLGen_Null_Memory_Merge(t *testing.T) {
 		}}})
 		assert.Contains(t, out.Statements[0], c.expect)
 	}
+}
+
+func TestSQLGen_ColumnModifierChanges(t *testing.T) {
+	alter := func(mc ColumnChange) GeneratedSQL {
+		return GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+			Database: "d", AlterTables: []TableDiff{{Table: "t", ModifyColumns: []ColumnChange{mc}}},
+		}}})
+	}
+
+	t.Run("safe COMMENT change emits MODIFY COLUMN with the modifier", func(t *testing.T) {
+		out := alter(ColumnChange{Name: "y",
+			Old: ColumnSpec{Name: "y", Type: "Int64"},
+			New: ColumnSpec{Name: "y", Type: "Int64", Comment: ptr("hi")}})
+		require.Len(t, out.Statements, 1)
+		assert.Contains(t, out.Statements[0], "MODIFY COLUMN y Int64 COMMENT 'hi'")
+		assert.Empty(t, out.Unsafe)
+	})
+
+	t.Run("unsafe ALIAS switch is flagged and NOT auto-emitted", func(t *testing.T) {
+		out := alter(ColumnChange{Name: "y",
+			Old: ColumnSpec{Name: "y", Type: "Int64"},
+			New: ColumnSpec{Name: "y", Type: "Int64", Alias: ptr("x")}})
+		assert.Empty(t, out.Statements, "destructive storage-class switch must not be auto-emitted")
+		require.Len(t, out.Unsafe, 1)
+		assert.Contains(t, out.Unsafe[0].Reason, "storage class")
+	})
+
+	t.Run("ADD COLUMN carries modifiers", func(t *testing.T) {
+		out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+			Database: "d", AlterTables: []TableDiff{{Table: "t",
+				AddColumns: []ColumnSpec{{Name: "z", Type: "Int64", Alias: ptr("x")}}}},
+		}}})
+		require.Len(t, out.Statements, 1)
+		assert.Contains(t, out.Statements[0], "ADD COLUMN z Int64 ALIAS x")
+	})
 }
