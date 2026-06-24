@@ -55,6 +55,9 @@ func main() {
 	case "dump-sql":
 		runDumpSQL(os.Args[2:])
 		return
+	case "github-token":
+		runGitHubToken(os.Args[2:])
+		return
 	}
 
 	// A flag as the first argument (e.g. -config, -layer) is the
@@ -87,6 +90,7 @@ Commands:
   sql2hcl      apply SQL DDL edits (CREATE/ALTER/DROP/RENAME) to an HCL schema
   load         parse and resolve an HCL config (default when flags are given)
   web          serve a read-only web UI to browse the resolved schema
+  github-token mint a short-lived GitHub App installation token (prints to stdout)
   help         print this help
 
 Run "hclexp <command> -h" for command-specific flags.
