@@ -81,13 +81,31 @@ whole topology and resolves `cluster_name="ops"` via node macros can order it.
 ## Command (implemented)
 
 ```
-hclexp plan -manifest <role→stack> -dump <topology-dir> [-layer-root <dir>] -format json|text
+hclexp plan -manifest <manifest.hcl> -env <env> -dump <topology-dir> [-layer-root <dir>] -format json|text
 ```
 
-- `-manifest`: lines of `<role> <layer> [<layer>…]`. `role` is **not opaque** —
-  it must equal the dump's `hostClusterRole` so matching + edge resolution work.
-  (Equivalently, `stack_for` keyed by role.) Blank/`#` lines ignored; duplicate
-  roles rejected. The composed stack is each role's **desired** schema (target).
+- `-manifest`: an **HCL** manifest, role-first with one `env` block per
+  environment a role is deployed in — so all of a cluster's environments sit in
+  one place (how an operator/LLM edits "the ops cluster"):
+
+  ```hcl
+  role "ops" {
+    env "prod-us" { layers = ["base", "prod", "env/prod-us"] }
+    env "prod-eu" { layers = ["base", "prod", "env/prod-eu"] }
+  }
+  role "data" {
+    env "prod-us" { layers = ["base", "env/prod-us"] }   # not in every env
+  }
+  ```
+
+  `role` is **not opaque** — it must equal the dump's `hostClusterRole` so
+  matching + edge resolution work. Duplicate roles, and duplicate env labels
+  within a role, are rejected. Decoded with `gohcl` (typed, line-numbered
+  diagnostics) — same parser as the schema. Could become the single source of
+  truth replacing the bash `stack_for()` in `check.sh`/`diff.sh`.
+- `-env`: selects each role's matching `env` block. A role with no block for the
+  env is not deployed there and is skipped. The composed stack is that role's
+  **desired** schema (target).
 - `-dump`: directory of per-node **current**-state HCL files, each carrying a
   `node { macros }` block. Nodes are matched to manifest roles by their
   `hostClusterRole` macro; replicas/shards collapse to the lexically-first

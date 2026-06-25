@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -11,11 +10,36 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/hashicorp/hcl/v2/gohcl"
+	"github.com/hashicorp/hcl/v2/hclparse"
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
 
-// manifestRole is one line of a plan manifest: a node role and the ordered
-// layer dirs whose composition is that role's desired schema.
+// planManifest is the HCL manifest: role blocks, each with one env block per
+// environment the role is deployed in. Grouping role-first keeps all of a
+// cluster's environments in one place — the way an operator (or an LLM) edits
+// "the ops cluster".
+//
+//	role "ops" {
+//	  env "prod-us" { layers = ["base", "prod", "env/prod-us"] }
+//	  env "prod-eu" { layers = ["base", "prod", "env/prod-eu"] }
+//	}
+type planManifest struct {
+	Roles []manifestRoleBlock `hcl:"role,block"`
+}
+
+type manifestRoleBlock struct {
+	Name string             `hcl:"name,label"`
+	Envs []manifestEnvBlock `hcl:"env,block"`
+}
+
+type manifestEnvBlock struct {
+	Name   string   `hcl:"name,label"`
+	Layers []string `hcl:"layers"`
+}
+
+// manifestRole is a resolved role for one selected environment: a node role and
+// the ordered layer dirs whose composition is that role's desired schema.
 type manifestRole struct {
 	Role   string
 	Layers []string
@@ -28,14 +52,15 @@ type manifestRole struct {
 // replicas collapsed to one representative per role).
 func runPlan(args []string) {
 	fs := flag.NewFlagSet("hclexp plan", flag.ExitOnError)
-	manifestFlag := fs.String("manifest", "", "manifest file: lines of '<role> <layer> [<layer>...]' (desired composition per role)")
+	manifestFlag := fs.String("manifest", "", "HCL manifest: role blocks with one env block per environment (desired composition)")
+	envFlag := fs.String("env", "", "environment to plan (selects each role's matching env block in the manifest)")
 	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under (e.g. a committed snapshot)")
 	dumpFlag := fs.String("dump", "", "directory of per-node current-state HCL dumps; nodes are matched to roles by their hostClusterRole macro")
 	formatFlag := fs.String("format", "json", "output format: json (default) or text")
 	_ = fs.Parse(args)
 
-	if *manifestFlag == "" || *dumpFlag == "" {
-		slog.Error("both -manifest and -dump are required")
+	if *manifestFlag == "" || *dumpFlag == "" || *envFlag == "" {
+		slog.Error("-manifest, -env and -dump are required")
 		os.Exit(2)
 	}
 	if *formatFlag != "json" && *formatFlag != "text" {
@@ -43,9 +68,9 @@ func runPlan(args []string) {
 		os.Exit(2)
 	}
 
-	manifest, err := parseManifest(*manifestFlag)
+	manifest, err := parseManifest(*manifestFlag, *envFlag)
 	if err != nil {
-		slog.Error("failed to parse manifest", "file", *manifestFlag, "err", err)
+		slog.Error("failed to parse manifest", "file", *manifestFlag, "env", *envFlag, "err", err)
 		os.Exit(1)
 	}
 
@@ -87,38 +112,55 @@ func runPlan(args []string) {
 	renderPlanText(os.Stdout, plan)
 }
 
-// parseManifest reads a manifest file. Blank lines and lines beginning with '#'
-// are ignored; every other line is '<role> <layer> [<layer>...]'.
-func parseManifest(path string) ([]manifestRole, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil, err
+// parseManifest decodes the HCL manifest and resolves each role to the layer
+// stack for the selected environment. A role with no env block for env is not
+// deployed there and is skipped. Duplicate role names, or duplicate env labels
+// within a role, are rejected.
+func parseManifest(path, env string) ([]manifestRole, error) {
+	parser := hclparse.NewParser()
+	f, diags := parser.ParseHCLFile(path)
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("%s", diags)
 	}
-	defer f.Close()
+	var m planManifest
+	if diags := gohcl.DecodeBody(f.Body, nil, &m); diags.HasErrors() {
+		return nil, fmt.Errorf("%s", diags)
+	}
+	if len(m.Roles) == 0 {
+		return nil, fmt.Errorf("manifest declares no roles")
+	}
 
 	var roles []manifestRole
-	seen := map[string]bool{}
-	sc := bufio.NewScanner(f)
-	for line := 1; sc.Scan(); line++ {
-		fields := strings.Fields(sc.Text())
-		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
-			continue
+	seenRole := map[string]bool{}
+	for _, rb := range m.Roles {
+		if seenRole[rb.Name] {
+			return nil, fmt.Errorf("duplicate role %q", rb.Name)
 		}
-		if len(fields) < 2 {
-			return nil, fmt.Errorf("line %d: want '<role> <layer> [<layer>...]', got %q", line, sc.Text())
+		seenRole[rb.Name] = true
+
+		seenEnv := map[string]bool{}
+		var layers []string
+		found := false
+		for _, eb := range rb.Envs {
+			if seenEnv[eb.Name] {
+				return nil, fmt.Errorf("role %q: duplicate env %q", rb.Name, eb.Name)
+			}
+			seenEnv[eb.Name] = true
+			if eb.Name == env {
+				layers = eb.Layers
+				found = true
+			}
 		}
-		role := fields[0]
-		if seen[role] {
-			return nil, fmt.Errorf("line %d: duplicate role %q", line, role)
+		if !found {
+			continue // role not deployed in this env
 		}
-		seen[role] = true
-		roles = append(roles, manifestRole{Role: role, Layers: fields[1:]})
-	}
-	if err := sc.Err(); err != nil {
-		return nil, err
+		if len(layers) == 0 {
+			return nil, fmt.Errorf("role %q env %q: layers is empty", rb.Name, env)
+		}
+		roles = append(roles, manifestRole{Role: rb.Name, Layers: layers})
 	}
 	if len(roles) == 0 {
-		return nil, fmt.Errorf("manifest is empty")
+		return nil, fmt.Errorf("no roles deployed in env %q", env)
 	}
 	return roles, nil
 }

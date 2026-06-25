@@ -15,44 +15,72 @@ func writeFileT(t *testing.T, path, content string) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 }
 
-func TestParseManifest(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "manifest.txt")
-	writeFileT(t, path, `# comment line
-ops    layers/ops
-data   layers/base  layers/data
+const sampleManifest = `
+role "ops" {
+  env "local"   { layers = ["base", "env/local"] }
+  env "prod-us" { layers = ["base", "prod", "env/prod-us"] }
+}
+role "data" {
+  # data is only deployed in prod-us
+  env "prod-us" { layers = ["base", "env/prod-us"] }
+}
+`
 
-# trailing comment
-`)
-	roles, err := parseManifest(path)
+func TestParseManifest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "manifest.hcl")
+	writeFileT(t, path, sampleManifest)
+
+	// prod-us: both roles resolve.
+	roles, err := parseManifest(path, "prod-us")
 	require.NoError(t, err)
 	require.Len(t, roles, 2)
 	assert.Equal(t, "ops", roles[0].Role)
-	assert.Equal(t, []string{"layers/ops"}, roles[0].Layers)
+	assert.Equal(t, []string{"base", "prod", "env/prod-us"}, roles[0].Layers)
 	assert.Equal(t, "data", roles[1].Role)
-	assert.Equal(t, []string{"layers/base", "layers/data"}, roles[1].Layers)
+	assert.Equal(t, []string{"base", "env/prod-us"}, roles[1].Layers)
+
+	// local: only ops is deployed; data is skipped.
+	roles, err = parseManifest(path, "local")
+	require.NoError(t, err)
+	require.Len(t, roles, 1)
+	assert.Equal(t, "ops", roles[0].Role)
+	assert.Equal(t, []string{"base", "env/local"}, roles[0].Layers)
 }
 
 func TestParseManifest_Errors(t *testing.T) {
 	dir := t.TempDir()
 
-	roleOnly := filepath.Join(dir, "roleonly.txt")
-	writeFileT(t, roleOnly, "ops\n")
-	_, err := parseManifest(roleOnly)
+	noEnv := filepath.Join(dir, "noenv.hcl")
+	writeFileT(t, noEnv, sampleManifest)
+	_, err := parseManifest(noEnv, "prod-eu")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "want '<role>")
+	assert.Contains(t, err.Error(), `no roles deployed in env "prod-eu"`)
 
-	dup := filepath.Join(dir, "dup.txt")
-	writeFileT(t, dup, "ops layers/a\nops layers/b\n")
-	_, err = parseManifest(dup)
+	dup := filepath.Join(dir, "dup.hcl")
+	writeFileT(t, dup, `role "ops" {
+  env "prod-us" { layers = ["a"] }
+}
+role "ops" {
+  env "prod-us" { layers = ["b"] }
+}`)
+	_, err = parseManifest(dup, "prod-us")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "duplicate role")
 
-	empty := filepath.Join(dir, "empty.txt")
-	writeFileT(t, empty, "# nothing here\n")
-	_, err = parseManifest(empty)
+	dupEnv := filepath.Join(dir, "dupenv.hcl")
+	writeFileT(t, dupEnv, `role "ops" {
+  env "prod-us" { layers = ["a"] }
+  env "prod-us" { layers = ["b"] }
+}`)
+	_, err = parseManifest(dupEnv, "prod-us")
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "empty")
+	assert.Contains(t, err.Error(), "duplicate env")
+
+	empty := filepath.Join(dir, "empty.hcl")
+	writeFileT(t, empty, "# nothing here\n")
+	_, err = parseManifest(empty, "prod-us")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no roles")
 }
 
 // TestCurrentByRole verifies dump nodes are keyed by their hostClusterRole macro
