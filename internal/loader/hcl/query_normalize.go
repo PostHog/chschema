@@ -48,6 +48,19 @@ func beautifyNode(n chparser.Expr) string {
 	return strings.TrimSpace(v.String())
 }
 
+// BeautifySQL parses a single CREATE statement and returns it re-rendered in
+// the parser's beautified (indented, multi-line) form — the same visitor that
+// produces readable view/MV queries elsewhere. It returns ok=false with the
+// input unchanged when the statement can't be parsed, so callers can fall back
+// to the verbatim SQL (e.g. for DDL the parser doesn't yet handle).
+func BeautifySQL(sql string) (string, bool) {
+	stmt, err := parseCreateStatement(sql)
+	if err != nil {
+		return sql, false
+	}
+	return beautifyNode(stmt), true
+}
+
 // normalizeQuery canonicalizes a view/MV SELECT body to the beautified form. It
 // parses the query — wrapped in a throwaway CREATE VIEW so a bare SELECT is
 // accepted — and beautifies the SELECT subtree, matching what introspect emits

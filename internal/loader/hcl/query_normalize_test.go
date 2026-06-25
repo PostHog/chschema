@@ -19,6 +19,27 @@ func TestNormalizeQuery_BeautifiesAndIsIdempotent(t *testing.T) {
 	assert.Equal(t, got, again, "normalization must be idempotent")
 }
 
+func TestBeautifySQL(t *testing.T) {
+	got, ok := BeautifySQL("CREATE VIEW posthog.v AS SELECT a, b FROM posthog.events WHERE team_id = 1")
+	require.True(t, ok)
+	assert.Contains(t, got, "\n", "a CREATE VIEW is rendered multi-line")
+	assert.Contains(t, got, "CREATE VIEW posthog.v")
+	assert.Contains(t, got, "SELECT a, b")
+	assert.Contains(t, got, "FROM posthog.events")
+
+	// Idempotent: beautifying already-beautified DDL is stable.
+	again, ok := BeautifySQL(got)
+	require.True(t, ok)
+	assert.Equal(t, got, again)
+}
+
+func TestBeautifySQL_UnparseableKeepsRaw(t *testing.T) {
+	raw := "this is not valid clickhouse ddl"
+	got, ok := BeautifySQL(raw)
+	assert.False(t, ok)
+	assert.Equal(t, raw, got)
+}
+
 func TestNormalizeQuery_UnparseableKeepsRaw(t *testing.T) {
 	raw := "this is definitely not valid clickhouse sql"
 	got, ok := normalizeQuery(raw)

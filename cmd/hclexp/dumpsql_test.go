@@ -17,6 +17,31 @@ func TestDumpOrderPriority(t *testing.T) {
 	assert.Equal(t, 3, dumpOrderPriority("MaterializedView"))
 }
 
+func TestRenderCreate_BeautifiesLongViews(t *testing.T) {
+	longView := "CREATE VIEW posthog.v AS SELECT a, b, c, d, e FROM posthog.events WHERE team_id = 1 AND ts > now() - 86400 GROUP BY a, b, c, d, e"
+	require.Greater(t, len(longView), beautifyThreshold)
+
+	// A long view is beautified to multi-line.
+	got := renderCreate(dumpObject{name: "v", engine: "View", create: longView})
+	assert.Contains(t, got, "\n", "long view should be beautified")
+	assert.Contains(t, got, "FROM posthog.events")
+
+	// A long MV is beautified too.
+	longMV := "CREATE MATERIALIZED VIEW posthog.mv TO posthog.dest AS SELECT a, count() AS n FROM posthog.src WHERE team_id = 1 GROUP BY a"
+	require.Greater(t, len(longMV), beautifyThreshold)
+	assert.Contains(t, renderCreate(dumpObject{name: "mv", engine: "MaterializedView", create: longMV}), "\n")
+
+	// A long TABLE is left verbatim (beautification is reserved for SELECT-bearing objects).
+	longTable := "CREATE TABLE posthog.events (id UInt64, a String, b String, c String, d String, e String, f String) ENGINE = MergeTree ORDER BY id"
+	require.Greater(t, len(longTable), beautifyThreshold)
+	assert.Equal(t, longTable, renderCreate(dumpObject{name: "events", engine: "MergeTree", create: longTable}))
+
+	// A short view stays inline (under threshold).
+	shortView := "CREATE VIEW posthog.s AS SELECT 1"
+	require.LessOrEqual(t, len(shortView), beautifyThreshold)
+	assert.Equal(t, shortView, renderCreate(dumpObject{name: "s", engine: "View", create: shortView}))
+}
+
 // TestRenderDump verifies the apply-order sort (MV last, tables first) and the
 // output format, without a live connection.
 func TestRenderDump(t *testing.T) {
