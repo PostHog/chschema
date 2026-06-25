@@ -434,6 +434,55 @@ in place. Review the emitted HCL (or the `diff -sql` it implies) and integrate.
 The default database for an unqualified name comes from `-database`, or, when the
 left side has exactly one database, that database.
 
+## Cross-role planning — `hclexp plan`
+
+A node's schema is composed along two axes — **environment** (dev/prod-us/…)
+and **node role** (ops/data/logs/…). When an object on one role references an
+object physically hosted on another — a per-role `writable_query_log_archive`
+(Distributed) forwarding to the OPS `sharded_query_log_archive` — no
+single-role diff sees both ends, so the migration order can't be reconstructed
+by merging per-role diffs. `hclexp plan` diffs **every role in one run** and
+emits a single, globally-ordered operation list with cross-role dependency
+ordering.
+
+```bash
+hclexp plan -manifest roles.hcl -env prod-us -dump ./topology -format json
+```
+
+The **manifest** is HCL, role-first with one `env` block per environment a role
+is deployed in (so all of a cluster's environments sit in one place):
+
+```hcl
+role "ops" {
+  env "prod-us" { layers = ["base", "prod", "env/prod-us"] }
+  env "prod-eu" { layers = ["base", "prod", "env/prod-eu"] }
+}
+role "data" {
+  env "prod-us" { layers = ["base", "env/prod-us"] }   # not in every env
+}
+```
+
+- `-env` selects each role's matching `env` block; a role with no block for the
+  env is not deployed there and is skipped. The composed stack is that role's
+  **desired** schema.
+- `-dump` is a directory of per-node current-state HCL (e.g. from
+  [`dump-cluster`](#cross-node-drift--hclexp-drift)); nodes are matched to roles
+  by their `hostClusterRole` macro, and replicas collapse to one representative
+  per role. `role` must equal `hostClusterRole`.
+- `-layer-root` prefixes the manifest's layer paths (point it at a committed
+  snapshot or the working tree).
+- Output: `-format json` (default) or `text`. CREATE and widening ALTERs flow in
+  dependency order (a referenced object before its referrers — storage → proxies
+  → MV); DROP runs in reverse. Identical statements across roles dedupe to one
+  operation carrying the union of contributing `roles`.
+
+## Browsing a schema — `hclexp web`
+
+`hclexp web -config <file>` (or `-layer <dirs>`) loads and resolves an HCL
+schema and serves a read-only web UI (default `-addr :8080`) to browse
+databases, objects, their columns/engine/settings, and dependency cross-links.
+No cluster connection.
+
 ## `view`
 
 A `view` block declares a ClickHouse **plain** (non-materialized) view — a

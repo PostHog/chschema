@@ -6,7 +6,7 @@ state, and round-tripped against a live cluster.
 
 ## What hclexp does
 
-`hclexp` has four modes:
+`hclexp` is a multi-command CLI. The core modes:
 
 1. **Introspect** — connect to a live ClickHouse instance and dump its
    databases as HCL (to stdout, a file, or a directory). Round-trips
@@ -20,7 +20,24 @@ state, and round-tripped against a live cluster.
    schema is satisfied, without connecting to a cluster.
 4. **Diff** — compare two schemas (HCL sources or live clusters, in any
    combination) and report the changes — or the migration DDL — between
-   them.
+   them; `-format json` emits a dependency-ordered, machine-readable plan.
+
+Additional commands:
+
+- **plan** — diff every node role in a `-manifest` against a `-dump`
+  topology in one run, emitting a single globally-ordered, cross-role
+  operation list (storage before its Distributed/Buffer proxies before the
+  MV). See **[Cross-role planning](docs/README.hcl.md#cross-role-planning--hclexp-plan)**.
+- **drift** — detect cross-node schema drift across per-node HCL dumps.
+- **dump-cluster** — enumerate a cluster's nodes and dump one `<host>.hcl`
+  per node. **dump-sql** — dump a database's CREATE statements as replayable
+  DDL.
+- **sql2hcl** — apply ClickHouse DDL edits to an HCL schema and emit
+  updated HCL.
+- **web** — serve a read-only web UI to browse a resolved schema.
+- **github-token** — mint a short-lived GitHub App installation token.
+
+Run `hclexp <command> -h` for command-specific flags.
 
 Connections can be plaintext (default) or TLS (see
 **[TLS / secure connections](#tls--secure-connections)**). `hclexp` also
