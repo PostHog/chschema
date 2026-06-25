@@ -11,10 +11,21 @@
 # Output of the go coverage tool
 *.out
 
+# Built binaries (statically named, not caught by *.exe)
+/hclexp
+/chschema
+
+# macOS
+.DS_Store
+
 # IDE settings
 .idea/
 /schema-dump/
 /clickhouse-docs
+
+# Local run scratch
+logs/
+prod/
 
 # Test-run scratch output
 test/dump/dumper_test*/
