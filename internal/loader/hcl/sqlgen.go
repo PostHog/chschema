@@ -13,9 +13,37 @@ import (
 // to execute, plus a list of unsafe changes (engine, order_by, partition_by,
 // sample_by) that ClickHouse cannot apply in place and require manual table
 // recreation.
+//
+// Ops is a structured, parallel view of Statements: Ops[i] describes
+// Statements[i] (same order, same length), carrying the operation kind and the
+// target object's identity so consumers don't have to re-parse the SQL text or
+// re-derive the dependency order.
 type GeneratedSQL struct {
 	Statements []string
+	Ops        []Operation
 	Unsafe     []UnsafeChange
+}
+
+// Operation kinds.
+const (
+	OpCreate = "CREATE"
+	OpAlter  = "ALTER"
+	OpDrop   = "DROP"
+	OpRename = "RENAME"
+)
+
+// KindNamedCollection is the object_type for named collections; the other
+// object_type values reuse the Kind* constants in render.go (table,
+// materialized_view, view, dictionary, raw).
+const KindNamedCollection = "named_collection"
+
+// Operation is the typed description of one generated DDL statement.
+type Operation struct {
+	Kind       string // OpCreate | OpAlter | OpDrop | OpRename
+	ObjectType string // table | materialized_view | view | dictionary | named_collection | raw
+	Database   string // empty for named collections (cluster-scoped)
+	Object     string
+	SQL        string // the statement, without a trailing ';'
 }
 
 // UnsafeChange describes a diff entry that can't be expressed as an ALTER.
@@ -38,13 +66,19 @@ type UnsafeChange struct {
 // recreate-and-swap procedure.
 func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	var out GeneratedSQL
+	// emit records one statement and its structured Operation in lockstep, so
+	// Ops[i] always describes Statements[i].
+	emit := func(kind, objType, db, object, sql string) {
+		out.Statements = append(out.Statements, sql)
+		out.Ops = append(out.Ops, Operation{Kind: kind, ObjectType: objType, Database: db, Object: object, SQL: sql})
+	}
 
 	// 1. Named-collection recreates (DROP+CREATE adjacent, at the FRONT
 	// before any other create — dependent tables can rely on the new NC).
 	for _, ncc := range cs.NamedCollections {
 		if ncc.Recreate && ncc.Add != nil {
-			out.Statements = append(out.Statements, dropNamedCollectionSQL(ncc.Name))
-			out.Statements = append(out.Statements, createNamedCollectionSQL(*ncc.Add))
+			emit(OpDrop, KindNamedCollection, "", ncc.Name, dropNamedCollectionSQL(ncc.Name))
+			emit(OpCreate, KindNamedCollection, "", ncc.Name, createNamedCollectionSQL(*ncc.Add))
 		}
 		if ncc.Error != "" {
 			out.Unsafe = append(out.Unsafe, UnsafeChange{
@@ -58,7 +92,7 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	// 2. Fresh NC adds.
 	for _, ncc := range cs.NamedCollections {
 		if ncc.Add != nil && !ncc.Recreate {
-			out.Statements = append(out.Statements, createNamedCollectionSQL(*ncc.Add))
+			emit(OpCreate, KindNamedCollection, "", ncc.Name, createNamedCollectionSQL(*ncc.Add))
 		}
 	}
 
@@ -68,13 +102,15 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	// to_table, view→source view, Buffer→destination, dictionary→source table,
 	// etc.). Objects without a dependency relationship keep their historical
 	// relative order.
-	out.Statements = append(out.Statements, orderedCreates(cs)...)
+	for _, op := range orderedCreates(cs) {
+		emit(op.Kind, op.ObjectType, op.Database, op.Object, op.SQL)
+	}
 	// Raw adds last among creates: a raw object (typically a leaf dictionary
 	// or view) may reference tables created above. Its dependencies cannot be
 	// analysed, so no finer ordering is attempted.
 	for _, dc := range cs.Databases {
 		for _, r := range dc.AddRaws {
-			out.Statements = append(out.Statements, createRawSQL(r))
+			emit(OpCreate, KindRaw, dc.Database, r.Name, createRawSQL(r))
 		}
 	}
 	for _, dc := range cs.Databases {
@@ -83,7 +119,7 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 				out.Unsafe = append(out.Unsafe, unsafeReasons(dc.Database, td)...)
 			}
 			if stmt := alterTableSQL(dc.Database, td); stmt != "" {
-				out.Statements = append(out.Statements, stmt)
+				emit(OpAlter, KindTable, dc.Database, td.Table, stmt)
 			}
 		}
 	}
@@ -97,7 +133,7 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 				continue
 			}
 			if mvd.QueryChange != nil && mvd.QueryChange.New != nil {
-				out.Statements = append(out.Statements, modifyQuerySQL(dc.Database, mvd.Name, *mvd.QueryChange.New))
+				emit(OpAlter, KindMaterializedView, dc.Database, mvd.Name, modifyQuerySQL(dc.Database, mvd.Name, *mvd.QueryChange.New))
 			}
 		}
 	}
@@ -111,10 +147,10 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 				continue
 			}
 			if vd.QueryChange != nil && vd.QueryChange.New != nil {
-				out.Statements = append(out.Statements, modifyQuerySQL(dc.Database, vd.Name, *vd.QueryChange.New))
+				emit(OpAlter, KindView, dc.Database, vd.Name, modifyQuerySQL(dc.Database, vd.Name, *vd.QueryChange.New))
 			}
 			if vd.Comment != nil && vd.Comment.New != nil {
-				out.Statements = append(out.Statements, modifyCommentSQL(dc.Database, vd.Name, *vd.Comment.New))
+				emit(OpAlter, KindView, dc.Database, vd.Name, modifyCommentSQL(dc.Database, vd.Name, *vd.Comment.New))
 			}
 		}
 	}
@@ -141,8 +177,8 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 				})
 				continue
 			}
-			out.Statements = append(out.Statements, dropRawSQL(rc.Kind, dc.Database, rc.Name))
-			out.Statements = append(out.Statements, createRawSQL(RawSpec{Kind: rc.Kind, Name: rc.Name, SQL: rc.NewSQL}))
+			emit(OpDrop, KindRaw, dc.Database, rc.Name, dropRawSQL(rc.Kind, dc.Database, rc.Name))
+			emit(OpCreate, KindRaw, dc.Database, rc.Name, createRawSQL(RawSpec{Kind: rc.Kind, Name: rc.Name, SQL: rc.NewSQL}))
 		}
 	}
 
@@ -152,47 +188,47 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 			continue
 		}
 		if stmt := alterNamedCollectionSetSQL(ncc.Name, ncc.SetParams); stmt != "" {
-			out.Statements = append(out.Statements, stmt)
+			emit(OpAlter, KindNamedCollection, "", ncc.Name, stmt)
 		}
 		if stmt := alterNamedCollectionDeleteSQL(ncc.Name, ncc.DeleteParams); stmt != "" {
-			out.Statements = append(out.Statements, stmt)
+			emit(OpAlter, KindNamedCollection, "", ncc.Name, stmt)
 		}
 	}
 
 	for _, dc := range cs.Databases {
 		for _, name := range dc.DropMaterializedViews {
-			out.Statements = append(out.Statements, dropViewSQL(dc.Database, name))
+			emit(OpDrop, KindMaterializedView, dc.Database, name, dropViewSQL(dc.Database, name))
 		}
 	}
 	for _, dc := range cs.Databases {
 		names := append([]string(nil), dc.DropViews...)
 		sort.Strings(names)
 		for _, name := range names {
-			out.Statements = append(out.Statements, dropViewSQL(dc.Database, name))
+			emit(OpDrop, KindView, dc.Database, name, dropViewSQL(dc.Database, name))
 		}
 	}
 	for _, dc := range cs.Databases {
 		names := append([]string(nil), dc.DropDictionaries...)
 		sort.Strings(names)
 		for _, name := range names {
-			out.Statements = append(out.Statements, dropDictionarySQL(dc.Database, name))
+			emit(OpDrop, KindDictionary, dc.Database, name, dropDictionarySQL(dc.Database, name))
 		}
 	}
 	// Raw drops before table drops: a raw object may read from a table (e.g. a
 	// raw materialized view), so it must be removed first.
 	for _, dc := range cs.Databases {
 		for _, r := range dc.DropRaws {
-			out.Statements = append(out.Statements, dropRawSQL(r.Kind, dc.Database, r.Name))
+			emit(OpDrop, KindRaw, dc.Database, r.Name, dropRawSQL(r.Kind, dc.Database, r.Name))
 		}
 	}
 	for _, dt := range orderTablesByDependency(gatherTables(cs, dropTablesOf), true) {
-		out.Statements = append(out.Statements, dropTableSQL(dt.Database, dt.Table.Name))
+		emit(OpDrop, KindTable, dt.Database, dt.Table.Name, dropTableSQL(dt.Database, dt.Table.Name))
 	}
 
 	// 12. NC pure drops (not recreate). After tables — anything referencing them is gone.
 	for _, ncc := range cs.NamedCollections {
 		if ncc.Drop && !ncc.Recreate {
-			out.Statements = append(out.Statements, dropNamedCollectionSQL(ncc.Name))
+			emit(OpDrop, KindNamedCollection, "", ncc.Name, dropNamedCollectionSQL(ncc.Name))
 		}
 	}
 	return out
@@ -207,11 +243,12 @@ type dbTable struct {
 
 func dropTablesOf(dc DatabaseChange) []TableSpec { return dc.DropTables }
 
-// createNode is one object to be created, carrying its dependency identity and
-// the DDL that creates it.
+// createNode is one object to be created, carrying its dependency identity, its
+// object type, and the DDL that creates it.
 type createNode struct {
-	ref ObjectRef
-	sql string
+	ref        ObjectRef
+	objectType string
+	sql        string
 }
 
 // orderedCreates returns the CREATE statements for every added table,
@@ -220,36 +257,42 @@ type createNode struct {
 // being created in this change set. Objects without a dependency relationship
 // keep their historical relative order (tables, then materialized views, then
 // views, then dictionaries by name). Raw objects are handled by the caller.
-func orderedCreates(cs ChangeSet) []string {
+func orderedCreates(cs ChangeSet) []Operation {
 	var nodes []createNode
-	add := func(db, name, sql string) {
-		nodes = append(nodes, createNode{ref: ObjectRef{Database: db, Name: name}, sql: sql})
+	add := func(objType, db, name, sql string) {
+		nodes = append(nodes, createNode{ref: ObjectRef{Database: db, Name: name}, objectType: objType, sql: sql})
 	}
 	for _, dc := range cs.Databases {
 		for _, t := range dc.AddTables {
-			add(dc.Database, t.Name, createTableSQL(dc.Database, t))
+			add(KindTable, dc.Database, t.Name, createTableSQL(dc.Database, t))
 		}
 	}
 	for _, dc := range cs.Databases {
 		for _, mv := range dc.AddMaterializedViews {
-			add(dc.Database, mv.Name, createMaterializedViewSQL(dc.Database, mv))
+			add(KindMaterializedView, dc.Database, mv.Name, createMaterializedViewSQL(dc.Database, mv))
 		}
 	}
 	for _, dc := range cs.Databases {
 		for _, v := range dc.AddViews {
-			add(dc.Database, v.Name, createViewSQL(dc.Database, v))
+			add(KindView, dc.Database, v.Name, createViewSQL(dc.Database, v))
 		}
 	}
 	for _, dc := range cs.Databases {
 		for _, d := range dictionariesByName(dc.AddDictionaries) {
-			add(dc.Database, d.Name, createDictionarySQL(dc.Database, d))
+			add(KindDictionary, dc.Database, d.Name, createDictionarySQL(dc.Database, d))
 		}
 	}
 
 	order := topoSortNodes(nodes, createDependencyEdges(cs))
-	out := make([]string, 0, len(order))
+	out := make([]Operation, 0, len(order))
 	for _, n := range order {
-		out = append(out, n.sql)
+		out = append(out, Operation{
+			Kind:       OpCreate,
+			ObjectType: n.objectType,
+			Database:   n.ref.Database,
+			Object:     n.ref.Name,
+			SQL:        n.sql,
+		})
 	}
 	return out
 }
