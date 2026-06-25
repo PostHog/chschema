@@ -310,9 +310,7 @@ func Diff(from, to *Schema) ChangeSet {
 			}
 		case !tOK:
 			dc = DatabaseChange{Database: name}
-			for _, tbl := range f.Tables {
-				dc.DropTables = append(dc.DropTables, tbl)
-			}
+			dc.DropTables = append(dc.DropTables, f.Tables...)
 			for _, mv := range f.MaterializedViews {
 				dc.DropMaterializedViews = append(dc.DropMaterializedViews, mv.Name)
 			}

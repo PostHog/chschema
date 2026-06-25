@@ -564,7 +564,7 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		return EngineReplicatedAggregatingMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
 	case "Distributed":
 		if len(params) < 3 {
-			return nil, nil, fmt.Errorf("Distributed needs (cluster, db, table[, sharding_key])")
+			return nil, nil, fmt.Errorf("engine Distributed needs (cluster, db, table[, sharding_key])")
 		}
 		ee := EngineDistributed{ClusterName: params[0], RemoteDatabase: params[1], RemoteTable: params[2]}
 		if len(params) > 3 {
@@ -575,7 +575,7 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		return EngineLog{}, allSettings, nil
 	case "Join":
 		if len(params) < 3 {
-			return nil, nil, fmt.Errorf("Join needs (strictness, type, key[, key...])")
+			return nil, nil, fmt.Errorf("engine Join needs (strictness, type, key[, key...])")
 		}
 		return EngineJoin{
 			Strictness: params[0],
@@ -588,17 +588,17 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		return EngineMemory{}, allSettings, nil
 	case "Merge":
 		if len(params) != 2 {
-			return nil, nil, fmt.Errorf("Merge needs (db_regex, table_regex)")
+			return nil, nil, fmt.Errorf("engine Merge needs (db_regex, table_regex)")
 		}
 		return EngineMerge{DBRegex: params[0], TableRegex: params[1]}, allSettings, nil
 	case "Buffer":
 		if len(params) < 9 || len(params) > 12 {
-			return nil, nil, fmt.Errorf("Buffer needs 9-12 args (db, table, num_layers, min/max time/rows/bytes [, flush_time [, flush_rows [, flush_bytes]]])")
+			return nil, nil, fmt.Errorf("engine Buffer needs 9-12 args (db, table, num_layers, min/max time/rows/bytes [, flush_time [, flush_rows [, flush_bytes]]])")
 		}
 		toInt := func(s string) (int64, error) {
 			n, err := strconv.ParseInt(s, 10, 64)
 			if err != nil {
-				return 0, fmt.Errorf("Buffer arg %q: %w", s, err)
+				return 0, fmt.Errorf("engine Buffer arg %q: %w", s, err)
 			}
 			return n, nil
 		}
@@ -772,18 +772,6 @@ func splitTopLevelCSV(s string) []string {
 	return out
 }
 
-func splitCSV(s string) []string {
-	if s == "" {
-		return nil
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		out = append(out, strings.TrimSpace(p))
-	}
-	return out
-}
-
 func identName(n *chparser.NestedIdentifier) string {
 	if n == nil {
 		return ""
@@ -922,7 +910,7 @@ func ParseEngineString(engineFull string) (Engine, error) {
 			return nil, err
 		}
 		if len(p) < 3 {
-			return nil, fmt.Errorf("Distributed needs (cluster, db, table[, sharding_key]); got %v", p)
+			return nil, fmt.Errorf("engine Distributed needs (cluster, db, table[, sharding_key]); got %v", p)
 		}
 		e := EngineDistributed{ClusterName: p[0], RemoteDatabase: p[1], RemoteTable: p[2]}
 		if len(p) > 3 {
@@ -1218,13 +1206,6 @@ func splitKeyList(s string) []string {
 		out = append(out, strings.TrimSpace(p))
 	}
 	return out
-}
-
-func nilIfEmpty(s string) *string {
-	if s == "" {
-		return nil
-	}
-	return &s
 }
 
 func stringSliceEqual(a, b []string) bool {
