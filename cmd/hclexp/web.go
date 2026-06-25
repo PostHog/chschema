@@ -612,7 +612,7 @@ func engineProps(spec *hclload.EngineSpec) []kv {
 		return out
 	}
 	v := reflect.ValueOf(spec.Decoded)
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return out
 		}
@@ -641,7 +641,7 @@ func engineProps(spec *hclload.EngineSpec) []kv {
 }
 
 func formatValue(v reflect.Value) string {
-	for v.Kind() == reflect.Ptr {
+	for v.Kind() == reflect.Pointer {
 		if v.IsNil() {
 			return ""
 		}
