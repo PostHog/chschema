@@ -417,10 +417,15 @@ func runDiff(args []string) {
 	leftFlag := fs.String("left", "", "left side: HCL file, comma-separated layer dirs, or clickhouse://user:pass@host:port/db")
 	rightFlag := fs.String("right", "", "right side: same forms as -left")
 	asSQL := fs.Bool("sql", false, "emit migration DDL (left -> right) instead of a change summary")
+	formatFlag := fs.String("format", "text", "output format: text (default) or json (structured, dependency-ordered operations)")
 	_ = fs.Parse(args)
 
 	if *leftFlag == "" || *rightFlag == "" {
 		slog.Error("both -left and -right are required")
+		os.Exit(2)
+	}
+	if *formatFlag != "text" && *formatFlag != "json" {
+		slog.Error("invalid -format (want text or json)", "format", *formatFlag)
 		os.Exit(2)
 	}
 
@@ -436,6 +441,17 @@ func runDiff(args []string) {
 	}
 
 	cs := hclload.Diff(left, right)
+
+	if *formatFlag == "json" {
+		gen := hclload.GenerateSQL(cs)
+		out, err := hclload.RenderDiffJSON(gen, left, right)
+		if err != nil {
+			slog.Error("failed to render JSON diff", "err", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+		return
+	}
 
 	if *asSQL {
 		gen := hclload.GenerateSQL(cs)
