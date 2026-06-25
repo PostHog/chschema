@@ -106,7 +106,7 @@ func TestParseFile_MaterializedView(t *testing.T) {
 				{
 					Name:    "app_metrics_mv",
 					ToTable: "default.sharded_app_metrics",
-					Query:   "SELECT team_id, category FROM default.kafka_app_metrics",
+					Query:   "SELECT team_id, category\nFROM default.kafka_app_metrics",
 					Cluster: ptr("posthog"),
 					Comment: ptr("rolls metrics up"),
 					Columns: []ColumnSpec{
