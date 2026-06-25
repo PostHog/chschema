@@ -11,7 +11,13 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/posthog/chschema/config"
+	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
+
+// beautifyThreshold is the create_table_query length above which a view /
+// materialized-view CREATE is re-rendered in beautified multi-line form. Short
+// definitions stay on one line so trivial views don't churn.
+const beautifyThreshold = 120
 
 // runDumpSQL connects to ClickHouse and writes the raw create_table_query for
 // every object in a database, in apply order, each terminated by `;` on its own
@@ -122,9 +128,25 @@ func renderDump(objs []dumpObject, database string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "-- database: %s\n", database)
 	for _, o := range objs {
-		fmt.Fprintf(&b, "\n%s\n;\n", strings.TrimSpace(o.create))
+		fmt.Fprintf(&b, "\n%s\n;\n", renderCreate(o))
 	}
 	return b.String()
+}
+
+// renderCreate returns an object's CREATE DDL, beautified into readable
+// multi-line form for long view / materialized-view definitions and left
+// verbatim otherwise. Tables and dictionaries keep ClickHouse's canonical text
+// (their bodies are already column-structured and beautification is reserved for
+// the SELECT-bearing objects #70 targets). An unparseable statement falls back
+// to verbatim.
+func renderCreate(o dumpObject) string {
+	create := strings.TrimSpace(o.create)
+	if (o.engine == "View" || o.engine == "MaterializedView") && len(create) > beautifyThreshold {
+		if pretty, ok := hclload.BeautifySQL(create); ok {
+			return pretty
+		}
+	}
+	return create
 }
 
 // dumpOrderPriority orders objects so dependencies come first: plain tables,
