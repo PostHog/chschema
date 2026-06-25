@@ -29,33 +29,42 @@ func runSQL2HCL(args []string) {
 		os.Exit(2)
 	}
 
-	schema, err := loadLeft(*leftFlag)
+	applied, dbs, err := applySQL2HCL(*leftFlag, *inFlag, *outFlag, *dbFlag, *allowRaw)
 	if err != nil {
-		slog.Error("failed to load -left schema", "err", err)
+		slog.Error("sql2hcl failed", "err", err)
 		os.Exit(1)
+	}
+	slog.Info("SQL applied", "statements", applied, "databases", dbs)
+}
+
+// applySQL2HCL is the testable core of runSQL2HCL: it loads and resolves the
+// left schema, reads the SQL from in (file or stdin), folds the DDL into the
+// schema, and writes the updated HCL to out. All I/O is parameterized so it can
+// be driven from tests without touching os.Exit. Returns the number of applied
+// statements and the resulting database count.
+func applySQL2HCL(left, in, out, db string, allowRaw bool) (applied, databases int, err error) {
+	schema, err := loadLeft(left)
+	if err != nil {
+		return 0, 0, fmt.Errorf("load -left schema: %w", err)
 	}
 	if err := hclload.Resolve(schema); err != nil {
-		slog.Error("failed to resolve -left schema", "err", err)
-		os.Exit(1)
+		return 0, 0, fmt.Errorf("resolve -left schema: %w", err)
 	}
 
-	sql, err := readSQL(*inFlag)
+	sql, err := readSQL(in)
 	if err != nil {
-		slog.Error("failed to read SQL input", "err", err)
-		os.Exit(1)
+		return 0, 0, fmt.Errorf("read SQL input: %w", err)
 	}
 
-	applied, err := hclload.ApplySQL(schema, sql, *dbFlag, *allowRaw)
+	applied, err = hclload.ApplySQL(schema, sql, db, allowRaw)
 	if err != nil {
-		slog.Error("failed to apply SQL", "err", err)
-		os.Exit(1)
+		return 0, 0, fmt.Errorf("apply SQL: %w", err)
 	}
 
-	if err := writeIntrospected(*outFlag, schema); err != nil {
-		slog.Error("failed to write updated schema", "err", err)
-		os.Exit(1)
+	if err := writeIntrospected(out, schema); err != nil {
+		return 0, 0, fmt.Errorf("write updated schema: %w", err)
 	}
-	slog.Info("SQL applied", "statements", applied, "databases", len(schema.Databases))
+	return applied, len(schema.Databases), nil
 }
 
 // loadLeft loads the left-side schema. A path naming a directory (or a

@@ -74,7 +74,7 @@ jobs:
       run: go mod download
 
     - name: Run unit tests
-      run: go test -v -race -coverprofile=coverage.out ./internal/...
+      run: go test -v -race -coverprofile=coverage.out ./internal/... ./cmd/...
 
     - name: Run integration tests
       run: go test -v ./test/...
@@ -146,14 +146,12 @@ jobs:
     - name: Smoke-test hclexp help
       run: ./hclexp -h
 
-    - name: Smoke-test hclexp diff help
-      run: ./hclexp diff -h
-
-    - name: Smoke-test hclexp introspect help
-      run: ./hclexp introspect -h
-
-    - name: Smoke-test hclexp validate help
-      run: ./hclexp validate -h
+    - name: Smoke-test every subcommand's help
+      run: |
+        for cmd in introspect dump-cluster dump-sql diff plan validate drift sql2hcl load web github-token; do
+          echo "== hclexp $cmd -h =="
+          ./hclexp "$cmd" -h
+        done
 
   docker:
     runs-on: depot-ubuntu-24.04

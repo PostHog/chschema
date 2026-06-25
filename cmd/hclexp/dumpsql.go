@@ -103,6 +103,14 @@ func dumpCreateStatements(ctx context.Context, conn driver.Conn, database string
 		return "", fmt.Errorf("rows iteration: %w", err)
 	}
 
+	return renderDump(objs, database), nil
+}
+
+// renderDump sorts objects into apply order (dependencies before dependents)
+// and renders them with a `-- database: <db>` header, each CREATE terminated by
+// `;` on its own line. Split out from dumpCreateStatements so the ordering and
+// formatting can be tested without a live connection.
+func renderDump(objs []dumpObject, database string) string {
 	sort.SliceStable(objs, func(i, j int) bool {
 		pi, pj := dumpOrderPriority(objs[i].engine), dumpOrderPriority(objs[j].engine)
 		if pi != pj {
@@ -116,7 +124,7 @@ func dumpCreateStatements(ctx context.Context, conn driver.Conn, database string
 	for _, o := range objs {
 		fmt.Fprintf(&b, "\n%s\n;\n", strings.TrimSpace(o.create))
 	}
-	return b.String(), nil
+	return b.String()
 }
 
 // dumpOrderPriority orders objects so dependencies come first: plain tables,
