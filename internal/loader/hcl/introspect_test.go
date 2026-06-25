@@ -393,7 +393,7 @@ func TestProcessIntrospectRows_ViewInferredSchemaNotCapturedAsAliases(t *testing
 	// Regenerated DDL omits the column list, so ClickHouse re-infers the schema
 	// and the round-trip is faithful.
 	assert.Equal(t,
-		"CREATE VIEW posthog.events_view AS SELECT team_id, event FROM posthog.events",
+		"CREATE VIEW posthog.events_view AS SELECT team_id, event\nFROM posthog.events",
 		createViewSQL("posthog", v))
 }
 

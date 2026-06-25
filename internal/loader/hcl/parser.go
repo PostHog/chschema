@@ -26,12 +26,13 @@ func ParseFile(path string) (*Schema, error) {
 	}
 
 	var spec fileSpec
-	if diags := gohcl.DecodeBody(f.Body, nil, &spec); diags.HasErrors() {
+	if diags := gohcl.DecodeBody(f.Body, evalContextForFile(path), &spec); diags.HasErrors() {
 		return nil, formatDiagnostics(parser, diags)
 	}
 
 	for di := range spec.Databases {
 		db := &spec.Databases[di]
+		normalizeQueries(db)
 		for i := range db.Raws {
 			r := &db.Raws[i]
 			if !rawKinds[r.Kind] {

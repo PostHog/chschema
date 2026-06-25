@@ -187,6 +187,8 @@ func TestDumpSchema_RendersViewBlocks(t *testing.T) {
 		Definer:       ptr("alice"),
 		Comment:       ptr("team-level event counter"),
 	}
+	// The canonical (beautified) query is what survives a dump -> load round-trip.
+	want.Query, _ = normalizeQuery(want.Query)
 	s := &Schema{Databases: []DatabaseSpec{{Name: "posthog", Views: []ViewSpec{want}}}}
 
 	var buf bytes.Buffer

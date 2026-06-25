@@ -266,6 +266,36 @@ omit both the column list and `extend` — ClickHouse derives the MV's
 schema from the `SELECT`. See the FAQ for the full worked passthrough vs.
 aggregating comparison.
 
+### Long queries: heredoc and `file()`
+
+A view/MV `query` can be written three ways — all equivalent:
+
+```hcl
+# one line
+query = "SELECT a, b FROM t WHERE x = 1"
+
+# heredoc (multi-line, readable)
+query = <<-SQL
+  SELECT a, b
+  FROM t
+  WHERE x = 1
+SQL
+
+# external .sql file, resolved relative to this HCL file
+query = file("my_query.sql")
+```
+
+The loaded query is **normalized to a canonical (beautified) form** before any
+comparison, so source formatting never shows as drift: a heredoc-formatted
+query, a one-liner, and a `file()` reference to the same SQL all diff equal.
+`introspect`/`dump` emit long queries as heredocs, so a captured schema is
+readable out of the box. A query the SQL parser can't handle is kept verbatim
+(with a warning) rather than blocking the load.
+
+`file()` works for any string attribute (e.g. a long `default`/`materialized`
+expression), not just `query`; the path resolves relative to the HCL file that
+calls it.
+
 An `abstract = true` materialized_view is accepted for symmetry (it is
 dropped after resolution, like an abstract table), but has no common use
 case — MVs are usually concrete glue.

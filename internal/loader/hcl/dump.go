@@ -150,8 +150,21 @@ func setSQLAttribute(body *hclwrite.Body, name, sql string) {
 	})
 }
 
+// setQueryAttribute writes a view/MV query, as a readable heredoc when it spans
+// multiple lines (the beautified canonical form) and a quoted string otherwise.
+// Multi-line bodies get a trailing newline so the heredoc terminator sits on its
+// own line; the re-parsed value is re-normalized on load, so the round-trip is
+// stable.
+func setQueryAttribute(body *hclwrite.Body, query string) {
+	if !strings.Contains(query, "\n") {
+		body.SetAttributeValue("query", cty.StringVal(query))
+		return
+	}
+	setSQLAttribute(body, "query", query+"\n")
+}
+
 func writeView(body *hclwrite.Body, v ViewSpec) {
-	body.SetAttributeValue("query", cty.StringVal(v.Query))
+	setQueryAttribute(body, v.Query)
 	if len(v.ColumnAliases) > 0 {
 		body.SetAttributeValue("column_aliases", stringList(v.ColumnAliases))
 	}
@@ -171,7 +184,7 @@ func writeView(body *hclwrite.Body, v ViewSpec) {
 
 func writeMaterializedView(body *hclwrite.Body, mv MaterializedViewSpec) {
 	body.SetAttributeValue("to_table", cty.StringVal(mv.ToTable))
-	body.SetAttributeValue("query", cty.StringVal(mv.Query))
+	setQueryAttribute(body, mv.Query)
 	if mv.Cluster != nil {
 		body.SetAttributeValue("cluster", cty.StringVal(*mv.Cluster))
 	}

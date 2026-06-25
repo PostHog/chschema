@@ -334,7 +334,7 @@ func buildViewFromCreateView(cv *chparser.CreateView) (ViewSpec, error) {
 	v := ViewSpec{}
 
 	if cv.SubQuery != nil && cv.SubQuery.Select != nil {
-		v.Query = strings.TrimSpace(formatNode(cv.SubQuery.Select))
+		v.Query = beautifyNode(cv.SubQuery.Select)
 	}
 
 	if cv.OnCluster != nil && cv.OnCluster.Expr != nil {
@@ -411,7 +411,7 @@ func buildMaterializedViewFromCreateMV(mv *chparser.CreateMaterializedView) (Mat
 	}
 
 	if mv.SubQuery != nil && mv.SubQuery.Select != nil {
-		out.Query = formatNode(mv.SubQuery.Select)
+		out.Query = beautifyNode(mv.SubQuery.Select)
 	}
 
 	if mv.OnCluster != nil && mv.OnCluster.Expr != nil {
