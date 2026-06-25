@@ -35,6 +35,14 @@ jobs:
           exit 1
         fi
 
+    - name: Run golangci-lint
+      uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+      with:
+        # v2.12.2's prebuilt binary is built with go1.26, so it type-checks this
+        # module's go1.26 source. (Older v2.4.0 was built with go1.25 and
+        # panicked: "file requires newer Go version go1.26".)
+        version: v2.12.2
+
   vet:
     runs-on: depot-ubuntu-24.04
     steps:
@@ -74,7 +82,7 @@ jobs:
       run: go mod download
 
     - name: Run unit tests
-      run: go test -v -race -coverprofile=coverage.out ./internal/...
+      run: go test -v -race -coverprofile=coverage.out ./internal/... ./cmd/...
 
     - name: Run integration tests
       run: go test -v ./test/...
@@ -146,14 +154,12 @@ jobs:
     - name: Smoke-test hclexp help
       run: ./hclexp -h
 
-    - name: Smoke-test hclexp diff help
-      run: ./hclexp diff -h
-
-    - name: Smoke-test hclexp introspect help
-      run: ./hclexp introspect -h
-
-    - name: Smoke-test hclexp validate help
-      run: ./hclexp validate -h
+    - name: Smoke-test every subcommand's help
+      run: |
+        for cmd in introspect dump-cluster dump-sql diff plan validate drift sql2hcl load web github-token; do
+          echo "== hclexp $cmd -h =="
+          ./hclexp "$cmd" -h
+        done
 
   docker:
     runs-on: depot-ubuntu-24.04

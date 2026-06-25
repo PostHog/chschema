@@ -106,7 +106,7 @@ func engineFor(db, object string, schemas ...*Schema) string {
 // Go type: EngineReplicatedMergeTree -> "ReplicatedMergeTree".
 func engineFamilyName(e Engine) string {
 	rt := reflect.TypeOf(e)
-	for rt != nil && rt.Kind() == reflect.Ptr {
+	for rt != nil && rt.Kind() == reflect.Pointer {
 		rt = rt.Elem()
 	}
 	if rt == nil {

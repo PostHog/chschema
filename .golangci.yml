@@ -1,0 +1,26 @@
+version: "2"
+
+# Default linters (errcheck, govet, ineffassign, staticcheck, unused) plus a few
+# high-signal extras. The build separately runs gofmt and go vet.
+linters:
+  enable:
+    - misspell
+    - unconvert
+  settings:
+    errcheck:
+      # Idiomatic fire-and-forget calls: writes to stdout/stderr/strings.Builder
+      # and deferred Close on read/cleanup paths. Not worth a `_ =` at every site.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (github.com/ClickHouse/clickhouse-go/v2/lib/driver.Conn).Close
+        - (github.com/ClickHouse/clickhouse-go/v2/lib/driver.Rows).Close
+  exclusions:
+    rules:
+      # Test helpers routinely ignore cleanup errors (Close/Remove on temp files).
+      - path: _test\.go
+        linters:
+          - errcheck
