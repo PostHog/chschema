@@ -34,6 +34,9 @@ func main() {
 	case "dump-cluster":
 		runDumpCluster(os.Args[2:])
 		return
+	case "plan":
+		runPlan(os.Args[2:])
+		return
 	case "diff":
 		runDiff(os.Args[2:])
 		return
@@ -85,6 +88,8 @@ Commands:
   dump-cluster enumerate a cluster's nodes and dump one <host>.hcl per node
   dump-sql     dump a database's CREATE statements as ClickHouse DDL (replayable seed)
   diff         compare two schemas (HCL or live), optionally emit migration DDL
+  plan         diff every role in a manifest against a topology dump, emitting a
+               single globally-ordered, cross-role operation list
   validate     check that MV and Distributed dependency references resolve
   drift        detect cross-node schema drift across per-node HCL dumps
   sql2hcl      apply SQL DDL edits (CREATE/ALTER/DROP/RENAME) to an HCL schema
