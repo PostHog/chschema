@@ -39,6 +39,10 @@ jobs:
       uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
       with:
         version: v2.4.0
+        # Build golangci-lint from source with the runner's Go toolchain. The
+        # prebuilt v2.4.0 binary is built with go1.25 and panics type-checking
+        # this module's go1.26 source ("file requires newer Go version go1.26").
+        install-mode: goinstall
 
   vet:
     runs-on: depot-ubuntu-24.04
