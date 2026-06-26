@@ -106,6 +106,33 @@ func TestWebManifest_BrowseSchemas(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, code)
 }
 
+// TestWebManifest_Example builds the committed examples/manifest fleet through
+// the web-manifest path, guarding the example against rot.
+func TestWebManifest_Example(t *testing.T) {
+	root := filepath.Join("..", "..", "examples", "manifest")
+	comps, err := manifestCompositions(filepath.Join(root, "manifest.hcl"), "")
+	require.NoError(t, err)
+	require.Len(t, comps, 6, "2 roles x 3 envs")
+
+	ms, err := buildMultiServer(comps, root, 0)
+	require.NoError(t, err)
+	require.Len(t, ms.servers, 6)
+
+	// ops role composes the ops layer (system_metrics); the env patch adds region.
+	code, body := getMulti(t, ms, "/s/prod-us/ops/")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "system_metrics")
+	code, body = getMulti(t, ms, "/s/prod-us/ops/db/posthog/table/events?view=html")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "region", "prod-us patch_table adds the region column")
+
+	// data role omits the ops layer; dev adds debug_events.
+	code, body = getMulti(t, ms, "/s/dev/data/")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "debug_events")
+	assert.NotContains(t, body, "system_metrics")
+}
+
 func TestWebManifest_EnvFilter(t *testing.T) {
 	root := manifestFixture(t)
 	comps, err := manifestCompositions(filepath.Join(root, "manifest.hcl"), "prod-eu")
