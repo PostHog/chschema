@@ -143,7 +143,7 @@ func runLoad(args []string) {
 	fs := flag.NewFlagSet("hclexp", flag.ExitOnError)
 	configFlag := fs.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
 	layersFlag := fs.String("layer", "", "comma-separated list of layer directories (loaded in order)")
-	outFlag := fs.String("out", "", "if set, write the resolved schema to this file as canonical HCL")
+	outFlag := fs.String("out", "", "if set, write the resolved schema to this file as canonical HCL ('-' for stdout)")
 	_ = fs.Parse(args)
 
 	slog.Info("HCL experiment is up")
@@ -172,7 +172,12 @@ func runLoad(args []string) {
 		}
 	}
 
-	if *outFlag != "" {
+	if *outFlag == "-" {
+		if err := hclload.Write(os.Stdout, schema); err != nil {
+			slog.Error("failed to write resolved schema", "err", err)
+			os.Exit(1)
+		}
+	} else if *outFlag != "" {
 		f, err := os.Create(*outFlag)
 		if err != nil {
 			slog.Error("failed to open output file", "path", *outFlag, "err", err)
@@ -198,7 +203,7 @@ func runIntrospect(args []string) {
 	dbFlag := fs.String("database", cfg.Database, "comma-separated databases to introspect")
 	user := fs.String("user", cfg.User, "ClickHouse user")
 	password := fs.String("password", cfg.Password, "ClickHouse password")
-	outFlag := fs.String("out", "", "output .hcl file, or a directory (one <db>.hcl per database); empty writes to stdout")
+	outFlag := fs.String("out", "", "output .hcl file, a directory (one <db>.hcl per database), or '-'/empty for stdout")
 	nodeFlag := fs.String("node", "", "node name for the emitted node{} block; defaults to the server's hostName()")
 	secure := fs.Bool("secure", cfg.Secure, "connect to ClickHouse over TLS")
 	skipVerify := fs.Bool("tls-skip-verify", cfg.TLSSkipVerify, "skip TLS certificate verification (requires -secure)")
@@ -819,8 +824,12 @@ func load(configFlag, layersFlag string) (*hclload.Schema, error) {
 // writeIntrospected dumps the introspected databases. An empty target writes
 // to stdout; a directory target writes one <db>.hcl file per database;
 // anything else is treated as a single output file holding all databases.
+// stdoutTarget reports whether an -out value means "write to stdout": either
+// unset ("") or the conventional dash ("-").
+func stdoutTarget(out string) bool { return out == "" || out == "-" }
+
 func writeIntrospected(out string, schema *hclload.Schema) error {
-	if out == "" {
+	if stdoutTarget(out) {
 		return hclload.Write(os.Stdout, schema)
 	}
 

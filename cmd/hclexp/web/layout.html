@@ -10,8 +10,8 @@
 <body>
   <header>
     <a class="brand" href="/">hclexp</a>
-    <span class="crumb">schema browser</span>
-    <a class="navlink" href="/flows">data flows</a>
+    {{if .Label}}<a class="crumb" href="/">all schemas</a><span class="crumb">{{.Label}}</span>{{else}}<span class="crumb">schema browser</span>{{end}}
+    <a class="navlink" href="{{.Base}}/flows">data flows</a>
   </header>
   <main>
     {{template "content" .}}

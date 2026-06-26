@@ -4,11 +4,11 @@
 {{range .Databases}}
 <section class="db">
   <h2>{{.Name}}{{if .Cluster}} <span class="muted">ON CLUSTER {{.Cluster}}</span>{{end}}</h2>
-  {{template "objgroup" dict "Title" "Tables" "Items" .Tables}}
-  {{template "objgroup" dict "Title" "Materialized Views" "Items" .MaterializedViews}}
-  {{template "objgroup" dict "Title" "Views" "Items" .Views}}
-  {{template "objgroup" dict "Title" "Dictionaries" "Items" .Dictionaries}}
-  {{template "objgroup" dict "Title" "Raw" "Items" .Raws}}
+  {{template "objgroup" dict "Title" "Tables" "Items" .Tables "Base" $.Base}}
+  {{template "objgroup" dict "Title" "Materialized Views" "Items" .MaterializedViews "Base" $.Base}}
+  {{template "objgroup" dict "Title" "Views" "Items" .Views "Base" $.Base}}
+  {{template "objgroup" dict "Title" "Dictionaries" "Items" .Dictionaries "Base" $.Base}}
+  {{template "objgroup" dict "Title" "Raw" "Items" .Raws "Base" $.Base}}
 </section>
 {{end}}
 
@@ -36,7 +36,7 @@
 <div class="group">
   <h3>{{.Title}} <span class="count">{{len .Items}}</span></h3>
   <ul class="objlist">
-    {{range .Items}}<li><a href="{{.Href}}">{{.Name}}</a></li>{{end}}
+    {{range .Items}}<li><a href="{{$.Base}}{{.Href}}">{{.Name}}</a></li>{{end}}
   </ul>
 </div>
 {{end}}

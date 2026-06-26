@@ -1,0 +1,12 @@
+{{define "content"}}
+<h1>Schemas</h1>
+{{if not .Groups}}<p class="muted">No schemas in this manifest.</p>{{end}}
+{{range .Groups}}
+<section class="db">
+  <h2>{{.Env}}</h2>
+  <ul class="objlist">
+    {{range .Schemas}}<li><a href="{{.Href}}">{{.Role}}</a></li>{{end}}
+  </ul>
+</section>
+{{end}}
+{{end}}

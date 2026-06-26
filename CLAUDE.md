@@ -201,6 +201,9 @@ The `justfile` has the full recipe list.
 - ✅ Auto-reloads on source change: each request re-stats the source files at
   most once per `-reload-interval` (default 2s; 0 disables) and reloads when a
   file's mod time changes; a broken edit keeps the last good schema
+- ✅ `-manifest` (role/env/layers, like `plan`) browses every composed schema in
+  one server: a schema list at `/`, each `(env, role)` under `/s/<env>/<role>/`;
+  `-env` filters to one env, `-layer-root` prefixes the manifest's layer paths
 
 ### Supported Table Engines
 MergeTree, ReplicatedMergeTree, ReplacingMergeTree (with `version_column`),

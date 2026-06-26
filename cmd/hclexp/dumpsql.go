@@ -34,7 +34,7 @@ func runDumpSQL(args []string) {
 	dbFlag := fs.String("database", cfg.Database, "database to dump")
 	user := fs.String("user", cfg.User, "ClickHouse user")
 	password := fs.String("password", cfg.Password, "ClickHouse password")
-	outFlag := fs.String("out", "", "output .sql file; empty writes to stdout")
+	outFlag := fs.String("out", "", "output .sql file; empty or '-' writes to stdout")
 	secure := fs.Bool("secure", cfg.Secure, "connect to ClickHouse over TLS")
 	skipVerify := fs.Bool("tls-skip-verify", cfg.TLSSkipVerify, "skip TLS certificate verification (requires -secure)")
 	showSecrets := fs.Bool("show-secrets", false, "capture real secret values instead of '[HIDDEN]'; requires server display_secrets_in_show_and_select=1 and the displaySecretsInShowAndSelect grant")
@@ -65,7 +65,7 @@ func runDumpSQL(args []string) {
 		os.Exit(1)
 	}
 
-	if *outFlag == "" {
+	if stdoutTarget(*outFlag) {
 		fmt.Print(out)
 		return
 	}

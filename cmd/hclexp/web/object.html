@@ -1,11 +1,11 @@
 {{define "content"}}
-<nav class="path"><a href="/">databases</a> / {{.Database}} / <span class="muted">{{.KindLabel}}</span></nav>
+<nav class="path"><a href="{{.Base}}/">databases</a> / {{.Database}} / <span class="muted">{{.KindLabel}}</span></nav>
 <h1>{{.Name}}</h1>
 
 <div class="viewtabs">
-  <a href="{{.HTMLHref}}" class="{{if eq .View "html"}}active{{end}}">Overview</a>
-  <a href="{{.DDLHref}}" class="{{if eq .View "ddl"}}active{{end}}">DDL</a>
-  <a href="{{.HCLHref}}" class="{{if eq .View "hcl"}}active{{end}}">HCL</a>
+  <a href="{{.Base}}{{.HTMLHref}}" class="{{if eq .View "html"}}active{{end}}">Overview</a>
+  <a href="{{.Base}}{{.DDLHref}}" class="{{if eq .View "ddl"}}active{{end}}">DDL</a>
+  <a href="{{.Base}}{{.HCLHref}}" class="{{if eq .View "hcl"}}active{{end}}">HCL</a>
 </div>
 
 {{if .Problems}}
@@ -49,12 +49,12 @@
 
 {{if or .DependsOn .DependedBy .FlowAnchor}}
 <h2>Dependencies</h2>
-{{if .FlowAnchor}}<p class="flowlink"><a href="/flows#{{.FlowAnchor}}">→ Appears in a data flow</a></p>{{end}}
+{{if .FlowAnchor}}<p class="flowlink"><a href="{{.Base}}/flows#{{.FlowAnchor}}">→ Appears in a data flow</a></p>{{end}}
 {{if .DependsOn}}
 <div class="group">
   <h3>Depends on</h3>
   <ul class="objlist">
-    {{range .DependsOn}}<li><a href="{{.Href}}">{{.Label}}</a></li>{{end}}
+    {{range .DependsOn}}<li><a href="{{$.Base}}{{.Href}}">{{.Label}}</a></li>{{end}}
   </ul>
 </div>
 {{end}}
@@ -62,7 +62,7 @@
 <div class="group">
   <h3>Depended on by</h3>
   <ul class="objlist">
-    {{range .DependedBy}}<li><a href="{{.Href}}">{{.Label}}</a></li>{{end}}
+    {{range .DependedBy}}<li><a href="{{$.Base}}{{.Href}}">{{.Label}}</a></li>{{end}}
   </ul>
 </div>
 {{end}}
