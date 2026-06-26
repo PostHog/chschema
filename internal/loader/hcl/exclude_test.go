@@ -23,9 +23,21 @@ func TestExcludeMatcher_Matches(t *testing.T) {
 	assert.False(t, m.Matches("posthog", "events"))
 	assert.False(t, m.Matches("posthog", "sharded_query_log_archive"))
 
+	// Match returns the pattern that matched (for logging).
+	pat, ok := m.Match("posthog", "tmp_person_0007")
+	assert.True(t, ok)
+	assert.Equal(t, "tmp_*", pat)
+	pat, ok = m.Match("posthog", "web_stats_staging")
+	assert.True(t, ok)
+	assert.Equal(t, "posthog.*_staging", pat)
+	_, ok = m.Match("posthog", "events")
+	assert.False(t, ok)
+
 	// nil matcher excludes nothing
 	var nilM *ExcludeMatcher
 	assert.False(t, nilM.Matches("posthog", "tmp_anything"))
+	_, ok = nilM.Match("posthog", "tmp_anything")
+	assert.False(t, ok)
 	assert.True(t, nilM.Empty())
 }
 

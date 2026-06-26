@@ -100,10 +100,10 @@ func processIntrospectRowsOpt(db *DatabaseSpec, database string, rows rowScanner
 		if err := rows.Scan(&name, &createSQL, &engine); err != nil {
 			return fmt.Errorf("scan system.tables: %w", err)
 		}
-		if exclude.Matches(database, name) {
+		if pattern, ok := exclude.Match(database, name); ok {
 			// Skip before parsing: transient objects (tmp_*, _tmp_replace_*, …)
 			// shouldn't land in the dump, and their DDL often can't be parsed.
-			slog.Debug("excluded object", "object", database+"."+name)
+			slog.Info("skipping excluded object", "object", database+"."+name, "pattern", pattern)
 			continue
 		}
 		if err := introspectOneObject(db, database, name, createSQL); err != nil {

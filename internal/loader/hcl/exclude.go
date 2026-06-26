@@ -61,22 +61,29 @@ func NewExcludeMatcher(patterns ...string) *ExcludeMatcher {
 	return &ExcludeMatcher{patterns: patterns}
 }
 
-// Matches reports whether an object is excluded. It tries each pattern against
-// the bare name and the "<database>.<name>" qualified form.
-func (m *ExcludeMatcher) Matches(database, name string) bool {
+// Match reports whether an object is excluded and, if so, the pattern that
+// matched (for logging). It tries each pattern against the bare name and the
+// "<database>.<name>" qualified form.
+func (m *ExcludeMatcher) Match(database, name string) (pattern string, ok bool) {
 	if m == nil {
-		return false
+		return "", false
 	}
 	qualified := database + "." + name
 	for _, p := range m.patterns {
-		if ok, _ := filepath.Match(p, name); ok {
-			return true
+		if matched, _ := filepath.Match(p, name); matched {
+			return p, true
 		}
-		if ok, _ := filepath.Match(p, qualified); ok {
-			return true
+		if matched, _ := filepath.Match(p, qualified); matched {
+			return p, true
 		}
 	}
-	return false
+	return "", false
+}
+
+// Matches reports whether an object is excluded.
+func (m *ExcludeMatcher) Matches(database, name string) bool {
+	_, ok := m.Match(database, name)
+	return ok
 }
 
 // Empty reports whether the matcher has no patterns (so it excludes nothing).
