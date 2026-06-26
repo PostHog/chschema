@@ -21,7 +21,7 @@
     <div class="stage stage-{{$st.Kind}}{{if not $st.Declared}} undeclared{{end}}{{if $st.Problems}} stage-problem{{end}}">
       <div class="stage-kind">{{$st.KindLabel}}{{if $st.Engine}} · {{$st.Engine}}{{end}}{{if $st.Problems}} <span class="stage-warn">⚠</span>{{end}}</div>
       <div class="stage-name">
-        {{if $st.Href}}<a href="{{$st.Href}}">{{$st.Name}}</a>{{else}}{{$st.Name}}{{end}}
+        {{if $st.Href}}<a href="{{$.Base}}{{$st.Href}}">{{$st.Name}}</a>{{else}}{{$st.Name}}{{end}}
       </div>
       <div class="stage-meta">{{$st.Database}}{{if $st.Detail}} · {{$st.Detail}}{{end}}{{if not $st.Declared}} · not declared{{end}}</div>
       {{range $st.Problems}}
