@@ -34,6 +34,15 @@ type rowScanner interface {
 // engine, ORDER BY, PARTITION BY, SAMPLE BY, table TTL, SETTINGS, and
 // table comment.
 func Introspect(ctx context.Context, conn driver.Conn, database string, allowRaw bool) (*DatabaseSpec, error) {
+	return IntrospectWithExclude(ctx, conn, database, allowRaw, nil)
+}
+
+// IntrospectWithExclude is Introspect with an optional exclude matcher: objects
+// whose name matches a pattern are skipped before their DDL is parsed, so
+// transient tables (e.g. ClickHouse's _tmp_replace_*, migration tmp_* tables)
+// neither appear in the dump nor abort introspection when their DDL can't be
+// parsed. A nil matcher excludes nothing.
+func IntrospectWithExclude(ctx context.Context, conn driver.Conn, database string, allowRaw bool, exclude *ExcludeMatcher) (*DatabaseSpec, error) {
 	db := &DatabaseSpec{Name: database}
 
 	const q = `SELECT name, create_table_query, engine
@@ -46,7 +55,7 @@ func Introspect(ctx context.Context, conn driver.Conn, database string, allowRaw
 	}
 	defer rows.Close()
 
-	if err := processIntrospectRowsOpt(db, database, rows, allowRaw); err != nil {
+	if err := processIntrospectRowsOpt(db, database, rows, allowRaw, exclude); err != nil {
 		return nil, err
 	}
 	if err := rows.Err(); err != nil {
@@ -76,7 +85,7 @@ func rawKindForEngine(engine string) string {
 // create_table_query) via Scan. Plain views (CREATE VIEW) are silently
 // skipped; inner-engine and refreshable MVs return an error.
 func processIntrospectRows(db *DatabaseSpec, database string, rows rowScanner) error {
-	return processIntrospectRowsOpt(db, database, rows, false)
+	return processIntrospectRowsOpt(db, database, rows, false, nil)
 }
 
 // processIntrospectRowsOpt fills db from rows. When allowRaw is false (the
@@ -85,11 +94,17 @@ func processIntrospectRows(db *DatabaseSpec, database string, rows rowScanner) e
 // When allowRaw is true, such an object is instead captured verbatim as a
 // RawSpec (its kind taken from system.tables.engine) and introspection
 // continues, so one unparseable object never breaks the whole dump.
-func processIntrospectRowsOpt(db *DatabaseSpec, database string, rows rowScanner, allowRaw bool) error {
+func processIntrospectRowsOpt(db *DatabaseSpec, database string, rows rowScanner, allowRaw bool, exclude *ExcludeMatcher) error {
 	for rows.Next() {
 		var name, createSQL, engine string
 		if err := rows.Scan(&name, &createSQL, &engine); err != nil {
 			return fmt.Errorf("scan system.tables: %w", err)
+		}
+		if pattern, ok := exclude.Match(database, name); ok {
+			// Skip before parsing: transient objects (tmp_*, _tmp_replace_*, …)
+			// shouldn't land in the dump, and their DDL often can't be parsed.
+			slog.Info("skipping excluded object", "object", database+"."+name, "pattern", pattern)
+			continue
 		}
 		if err := introspectOneObject(db, database, name, createSQL); err != nil {
 			if !allowRaw {

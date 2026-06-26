@@ -619,7 +619,7 @@ func TestProcessIntrospectRows_RawFallback_AllowRaw(t *testing.T) {
 		{name: "weird", sql: "this is definitely not valid clickhouse sql", engine: "Dictionary"},
 	}}
 	db := &DatabaseSpec{Name: "db"}
-	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, true))
+	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, true, nil))
 
 	require.Len(t, db.Tables, 1, "the parseable table is still introspected normally")
 	require.Len(t, db.Raws, 1)
@@ -634,10 +634,29 @@ func TestProcessIntrospectRows_RawFallback_StrictErrorsWithFlagHint(t *testing.T
 		{name: "weird", sql: "this is definitely not valid clickhouse sql", engine: "Dictionary"},
 	}}
 	db := &DatabaseSpec{Name: "db"}
-	err := processIntrospectRowsOpt(db, "db", rows, false)
+	err := processIntrospectRowsOpt(db, "db", rows, false, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "-allow-raw")
 	assert.Empty(t, db.Raws, "strict mode captures nothing")
+}
+
+// TestProcessIntrospectRows_ExcludeSkipsBeforeParse: an excluded object is
+// skipped before its DDL is parsed, so a transient table with unparseable DDL
+// neither lands in the dump nor aborts introspection (even in strict mode).
+func TestProcessIntrospectRows_ExcludeSkipsBeforeParse(t *testing.T) {
+	rows := &fakeRows{rows: []fakeRow{
+		{name: "events", sql: "CREATE TABLE db.events (`id` UInt64) ENGINE = MergeTree ORDER BY id", engine: "MergeTree"},
+		{name: "_tmp_replace_5c4a29_abc", sql: "this is not valid clickhouse ddl {{{", engine: "MergeTree"},
+		{name: "tmp_person_0007", sql: "also not valid", engine: "MergeTree"},
+	}}
+	db := &DatabaseSpec{Name: "db"}
+	exclude := NewExcludeMatcher("_tmp_replace_*", "tmp_*")
+
+	// strict mode (allowRaw=false): would normally abort on the unparseable rows.
+	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, false, exclude))
+	require.Len(t, db.Tables, 1)
+	assert.Equal(t, "events", db.Tables[0].Name)
+	assert.Empty(t, db.Raws, "excluded objects are not captured as raw either")
 }
 
 func TestParseKafkaEngine_Cases(t *testing.T) {

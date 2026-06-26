@@ -208,6 +208,7 @@ func runIntrospect(args []string) {
 	secure := fs.Bool("secure", cfg.Secure, "connect to ClickHouse over TLS")
 	skipVerify := fs.Bool("tls-skip-verify", cfg.TLSSkipVerify, "skip TLS certificate verification (requires -secure)")
 	allowRaw := fs.Bool("allow-raw", false, "capture objects whose CREATE DDL cannot be parsed or expressed as a raw{} block instead of failing")
+	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects whose name matches a pattern are skipped (see docs)")
 	showSecrets := fs.Bool("show-secrets", false, "capture real secret values (passwords, broker lists) instead of '[HIDDEN]'; requires server display_secrets_in_show_and_select=1 and the displaySecretsInShowAndSelect grant")
 	_ = fs.Parse(args)
 
@@ -216,6 +217,7 @@ func runIntrospect(args []string) {
 		slog.Error("no database specified")
 		os.Exit(1)
 	}
+	exclude := loadExclude(*excludeFlag)
 
 	cfg.Host, cfg.Port, cfg.User, cfg.Password = *host, *port, *user, *password
 	cfg.Database = databases[0] // connection requires a database to bind to
@@ -233,7 +235,7 @@ func runIntrospect(args []string) {
 	defer conn.Close()
 
 	ctx := context.Background()
-	schema, err := introspectSchema(ctx, conn, databases, *nodeFlag, *allowRaw)
+	schema, err := introspectSchema(ctx, conn, databases, *nodeFlag, *allowRaw, exclude)
 	if err != nil {
 		slog.Error("failed to introspect schema", "err", err)
 		os.Exit(1)
@@ -250,10 +252,24 @@ func runIntrospect(args []string) {
 // identity — and assembles them into a single *hclload.Schema. The nodeName
 // override is passed through to IntrospectNode (empty string makes it use the
 // server's hostName()). It is shared by runIntrospect and runDumpCluster.
-func introspectSchema(ctx context.Context, conn driver.Conn, databases []string, nodeName string, allowRaw bool) (*hclload.Schema, error) {
+// loadExclude loads an exclude-pattern config from path, exiting on error. An
+// empty path returns a nil matcher (excludes nothing).
+func loadExclude(path string) *hclload.ExcludeMatcher {
+	if path == "" {
+		return nil
+	}
+	m, err := hclload.LoadExcludeConfig(path)
+	if err != nil {
+		slog.Error("failed to load -exclude config", "path", path, "err", err)
+		os.Exit(1)
+	}
+	return m
+}
+
+func introspectSchema(ctx context.Context, conn driver.Conn, databases []string, nodeName string, allowRaw bool, exclude *hclload.ExcludeMatcher) (*hclload.Schema, error) {
 	schema := &hclload.Schema{}
 	for _, name := range databases {
-		spec, err := hclload.Introspect(ctx, conn, name, allowRaw)
+		spec, err := hclload.IntrospectWithExclude(ctx, conn, name, allowRaw, exclude)
 		if err != nil {
 			return nil, fmt.Errorf("introspect database %q: %w", name, err)
 		}
@@ -308,6 +324,7 @@ func runDumpCluster(args []string) {
 	secure := fs.Bool("secure", cfg.Secure, "connect to ClickHouse over TLS")
 	skipVerify := fs.Bool("tls-skip-verify", cfg.TLSSkipVerify, "skip TLS certificate verification (requires -secure)")
 	allowRaw := fs.Bool("allow-raw", false, "capture objects whose CREATE DDL cannot be parsed or expressed as a raw{} block instead of failing the node")
+	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects whose name matches a pattern are skipped on every node (see docs)")
 	_ = fs.Parse(args)
 
 	databases := splitList(*dbFlag)
@@ -315,6 +332,7 @@ func runDumpCluster(args []string) {
 		slog.Error("no database specified")
 		os.Exit(2)
 	}
+	exclude := loadExclude(*excludeFlag)
 	if *clusterFlag == "" {
 		slog.Error("-cluster is required")
 		os.Exit(2)
@@ -374,7 +392,7 @@ func runDumpCluster(args []string) {
 	for _, h := range hosts {
 		nodeCfg := cfg
 		nodeCfg.Host = h
-		if err := dumpNode(ctx, nodeCfg, databases, *outDirFlag, *allowRaw); err != nil {
+		if err := dumpNode(ctx, nodeCfg, databases, *outDirFlag, *allowRaw, exclude); err != nil {
 			slog.Warn("failed to dump node; continuing", "host", h, "err", err)
 			failures++
 			continue
@@ -388,7 +406,7 @@ func runDumpCluster(args []string) {
 // dumpNode opens a fresh native connection to one host, introspects the
 // requested databases, and writes the whole schema (all databases + named
 // collections + the node block) to <out-dir>/<short-host>.hcl.
-func dumpNode(ctx context.Context, cfg config.ClickHouseConfig, databases []string, outDir string, allowRaw bool) error {
+func dumpNode(ctx context.Context, cfg config.ClickHouseConfig, databases []string, outDir string, allowRaw bool, exclude *hclload.ExcludeMatcher) error {
 	conn, err := config.NewConnection(cfg)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -396,7 +414,7 @@ func dumpNode(ctx context.Context, cfg config.ClickHouseConfig, databases []stri
 	defer conn.Close()
 
 	// Empty node name: let IntrospectNode use the server's own hostName().
-	schema, err := introspectSchema(ctx, conn, databases, "", allowRaw)
+	schema, err := introspectSchema(ctx, conn, databases, "", allowRaw, exclude)
 	if err != nil {
 		return err
 	}
