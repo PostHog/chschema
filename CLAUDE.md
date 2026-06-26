@@ -139,6 +139,11 @@ The `justfile` has the full recipe list.
 ### Introspection & Dumping
 - ✅ **Tables** — `hclexp introspect` round-trips tables (columns,
   indexes, constraints, engine, ORDER/PARTITION/SAMPLE/TTL/SETTINGS)
+- ✅ **Exclude patterns** — `introspect`/`dump-cluster` take `-exclude <file>`,
+  an HCL config with an `exclude { patterns = [...] }` glob list. Objects whose
+  name (or `db.name`) matches are skipped *before* their DDL is parsed, so
+  transient tables (`_tmp_replace_*`, migration `tmp_*`, `*_backup`, `*_staging`,
+  …) neither land in the dump nor abort introspection. See `examples/exclude.hcl`.
 - ✅ **Materialized Views** — TO-form only; inner-engine, refreshable,
   and window views are rejected with a clear error
 - ✅ **Views & Dictionaries** — round-tripped as HCL

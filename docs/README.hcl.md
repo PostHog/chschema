@@ -388,6 +388,32 @@ spans ingestion-events / -medium / -small; `data` spans online and offline
 nodes). `-group-by role` uses the deployment role from the node name and
 usually isolates genuine drift.
 
+## Excluding transient objects — `-exclude`
+
+A live cluster carries transient tables and dictionaries you don't want in a
+committed dump: ClickHouse's atomic-replace temporaries (`_tmp_replace_*`),
+migration/DAG scratch tables (`tmp_*`), backups, staging, and backfills. Their
+DDL also often can't be parsed, which would otherwise abort introspection.
+
+`introspect` and `dump-cluster` take `-exclude <file>`, an HCL config:
+
+```hcl
+exclude {
+  patterns = ["_tmp_replace_*", "tmp_*", "*_backup", "*_backup_*", "*_staging", "*_backfill"]
+}
+```
+
+```bash
+hclexp introspect   -database posthog -exclude exclude.hcl -out posthog.hcl
+hclexp dump-cluster -cluster ops -out-dir ./prod -exclude exclude.hcl
+```
+
+Patterns are globs (`*` `?` `[..]`), matched against both the bare object name
+and the `<database>.<name>` qualified form (so `posthog.*_staging` scopes to one
+database). Matching objects are **skipped before their DDL is parsed**, so they
+neither appear in the dump nor break introspection. A starter config is at
+[`examples/exclude.hcl`](../examples/exclude.hcl).
+
 ## SQL → HCL edits — `hclexp sql2hcl`
 
 You already know ClickHouse SQL; `sql2hcl` lets you change a schema with the
