@@ -233,6 +233,9 @@ func engineDetail(spec *hclload.EngineSpec) string {
 }
 
 func (s *webServer) handleFlows(w http.ResponseWriter, r *http.Request) {
+	s.maybeReload()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if r.URL.Path != "/flows" {
 		s.notFound(w)
 		return
