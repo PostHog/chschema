@@ -19,7 +19,7 @@ func runSQL2HCL(args []string) {
 	fs := flag.NewFlagSet("hclexp sql2hcl", flag.ExitOnError)
 	leftFlag := fs.String("left", "", "HCL schema to modify: a single file, or comma-separated layer directories")
 	inFlag := fs.String("in", "", "SQL file to apply (default: stdin; \"-\" also means stdin)")
-	outFlag := fs.String("out", "", "where to write updated HCL: empty=stdout, a directory=one <db>.hcl per database, else a single file")
+	outFlag := fs.String("out", "", "where to write updated HCL: empty or '-'=stdout, a directory=one <db>.hcl per database, else a single file")
 	dbFlag := fs.String("database", "", "default database for unqualified object names")
 	allowRaw := fs.Bool("allow-raw", false, "capture a CREATE the schema model can't express as a raw{} block instead of failing")
 	_ = fs.Parse(args)
