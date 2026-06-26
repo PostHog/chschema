@@ -193,6 +193,9 @@ The `justfile` has the full recipe list.
 - ✅ Serves a read-only web UI to browse a resolved HCL schema (databases,
   objects, columns/engine/settings, dependency cross-links); `-config`/`-layer`
   source, `-addr` to bind
+- ✅ Auto-reloads on source change: each request re-stats the source files at
+  most once per `-reload-interval` (default 2s; 0 disables) and reloads when a
+  file's mod time changes; a broken edit keeps the last good schema
 
 ### Supported Table Engines
 MergeTree, ReplicatedMergeTree, ReplacingMergeTree (with `version_column`),

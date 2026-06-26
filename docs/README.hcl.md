@@ -483,6 +483,12 @@ schema and serves a read-only web UI (default `-addr :8080`) to browse
 databases, objects, their columns/engine/settings, and dependency cross-links.
 No cluster connection.
 
+The server **auto-reloads** when you edit the source: on each request it
+re-stats the source files at most once per `-reload-interval` (default `2s`;
+set `0` to disable) and reloads the schema when a file's mod time changes — so
+you can edit HCL and refresh the browser. A syntactically broken edit is logged
+and the last good schema keeps serving.
+
 ## `view`
 
 A `view` block declares a ClickHouse **plain** (non-materialized) view — a

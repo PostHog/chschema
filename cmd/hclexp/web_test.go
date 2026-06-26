@@ -1,11 +1,16 @@
 package main
 
 import (
+	"fmt"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
+	"time"
 
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 	"github.com/stretchr/testify/assert"
@@ -57,6 +62,137 @@ func wideTable(n int) hclload.TableSpec {
 		Columns: cols,
 		Engine:  &hclload.EngineSpec{Kind: "merge_tree", Decoded: hclload.EngineMergeTree{}},
 	}
+}
+
+// TestWeb_Reload exercises the throttled source-reload: with an injected clock,
+// an edit to the source file is picked up only after the interval elapses.
+func TestWeb_Reload(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "schema.hcl")
+	tableHCL := func(name string) string {
+		return `database "posthog" {
+  table "` + name + `" {
+    engine "merge_tree" {}
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+  }
+}
+`
+	}
+	require.NoError(t, os.WriteFile(src, []byte(tableHCL("tbl_initial")), 0o600))
+
+	schema, err := load("", dir)
+	require.NoError(t, err)
+	require.NoError(t, hclload.Resolve(schema))
+	srv, err := newWebServer(schema)
+	require.NoError(t, err)
+
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	srv.now = func() time.Time { return clock }
+	srv.enableReload("", dir, time.Second)
+
+	_, body := getBody(t, srv, "/")
+	assert.Contains(t, body, "tbl_initial")
+	assert.NotContains(t, body, "tbl_reloaded")
+
+	// Edit the source and bump its mod time deterministically.
+	require.NoError(t, os.WriteFile(src, []byte(tableHCL("tbl_reloaded")), 0o600))
+	future := clock.Add(time.Hour)
+	require.NoError(t, os.Chtimes(src, future, future))
+
+	// Still within the throttle window: no reload yet.
+	_, body = getBody(t, srv, "/")
+	assert.Contains(t, body, "tbl_initial", "must not reload before the interval elapses")
+	assert.NotContains(t, body, "tbl_reloaded")
+
+	// Advance past the interval: the edit is picked up.
+	clock = clock.Add(2 * time.Second)
+	_, body = getBody(t, srv, "/")
+	assert.Contains(t, body, "tbl_reloaded", "reload should reflect the edited source")
+	assert.NotContains(t, body, "tbl_initial")
+}
+
+// TestWeb_ReloadKeepsSchemaOnBadEdit: a syntactically broken edit doesn't break
+// the server; it keeps serving the last good schema.
+func TestWeb_ReloadKeepsSchemaOnBadEdit(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "schema.hcl")
+	good := `database "posthog" {
+  table "tbl_good" {
+    engine "merge_tree" {}
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+  }
+}
+`
+	require.NoError(t, os.WriteFile(src, []byte(good), 0o600))
+
+	schema, err := load("", dir)
+	require.NoError(t, err)
+	require.NoError(t, hclload.Resolve(schema))
+	srv, err := newWebServer(schema)
+	require.NoError(t, err)
+
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	srv.now = func() time.Time { return clock }
+	srv.enableReload("", dir, time.Second)
+
+	require.NoError(t, os.WriteFile(src, []byte("this is not valid hcl {{{"), 0o600))
+	future := clock.Add(time.Hour)
+	require.NoError(t, os.Chtimes(src, future, future))
+	clock = clock.Add(2 * time.Second)
+
+	code, body := getBody(t, srv, "/")
+	assert.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "tbl_good", "a broken edit keeps the last good schema")
+}
+
+// TestWeb_ReloadConcurrent hammers the server with concurrent requests while the
+// source is rewritten and reloads fire (tiny interval, real clock). Run under
+// -race it validates the read/write lock discipline; every response must be 200.
+func TestWeb_ReloadConcurrent(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "schema.hcl")
+	write := func(name string) {
+		_ = os.WriteFile(src, []byte(`database "posthog" {
+  table "`+name+`" {
+    engine "merge_tree" {}
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+  }
+}
+`), 0o600)
+	}
+	write("t0")
+
+	schema, err := load("", dir)
+	require.NoError(t, err)
+	require.NoError(t, hclload.Resolve(schema))
+	srv, err := newWebServer(schema)
+	require.NoError(t, err)
+	srv.enableReload("", dir, time.Millisecond) // reload often, on the real clock
+
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 30; i++ {
+			write(fmt.Sprintf("t%d", i))
+			time.Sleep(time.Millisecond)
+		}
+	}()
+	for r := 0; r < 8; r++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 60; i++ {
+				if code, _ := getBody(t, srv, "/"); code != http.StatusOK {
+					t.Errorf("status %d during concurrent reload", code)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }
 
 func TestWeb_Index(t *testing.T) {

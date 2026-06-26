@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
+	"sync"
+	"time"
 
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
@@ -28,6 +31,7 @@ func runWeb(args []string) {
 	configFlag := flags.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
 	layersFlag := flags.String("layer", "", "comma-separated list of layer directories (loaded in order)")
 	addrFlag := flags.String("addr", ":8080", "address to listen on (host:port)")
+	reloadFlag := flags.Duration("reload-interval", 2*time.Second, "re-stat the source files at most this often and reload on change; 0 disables")
 	_ = flags.Parse(args)
 
 	schema, err := load(*configFlag, *layersFlag)
@@ -44,6 +48,10 @@ func runWeb(args []string) {
 	if err != nil {
 		slog.Error("failed to build web server", "err", err)
 		os.Exit(1)
+	}
+	if *reloadFlag > 0 {
+		srv.enableReload(*configFlag, *layersFlag, *reloadFlag)
+		slog.Info("auto-reload enabled", "interval", reloadFlag.String())
 	}
 
 	mux := http.NewServeMux()
@@ -62,11 +70,30 @@ func runWeb(args []string) {
 
 // webServer holds the resolved schema, parsed templates, and the precomputed
 // dependency graph + object kind index used for cross-linking.
+//
+// When reload is enabled (see enableReload), the schema-derived state below is
+// rebuilt in place when the source files change. Templates are static. The
+// schema-derived fields are guarded by mu; readers (handlers) take RLock for
+// their duration, a reload takes Lock only for the brief atomic swap.
 type webServer struct {
+	// Static (set once at construction).
+	tmplIndex  *template.Template
+	tmplObject *template.Template
+	tmplFlows  *template.Template
+
+	// Reload config + bookkeeping. now is injectable for tests.
+	configFlag string
+	layersFlag string
+	interval   time.Duration
+	now        func() time.Time
+
+	reloadMu  sync.Mutex       // serializes the throttled reload check (TryLock — never blocks a request)
+	lastCheck time.Time        // last time the source was stat'd
+	fp        map[string]int64 // source file path -> mod time (unix nanos); change triggers a reload
+
+	// Schema-derived state, guarded by mu.
+	mu             sync.RWMutex
 	schema         *hclload.Schema
-	tmplIndex      *template.Template
-	tmplObject     *template.Template
-	tmplFlows      *template.Template
 	deps           []hclload.Dependency
 	kindIndex      map[string]string // "db\x00name" -> object kind
 	flows          []flow
@@ -100,6 +127,21 @@ func newWebServer(schema *hclload.Schema) (*webServer, error) {
 		return nil, fmt.Errorf("parse flows template: %w", err)
 	}
 
+	s := &webServer{
+		tmplIndex:  tmplIndex,
+		tmplObject: tmplObject,
+		tmplFlows:  tmplFlows,
+		now:        time.Now,
+	}
+	s.rebuildState(schema)
+	return s, nil
+}
+
+// rebuildState recomputes every schema-derived field (dependency graph, kind
+// index, flows, validation problems) from schema. Callers that share the server
+// with live requests must hold s.mu; it is also called unlocked during
+// construction.
+func (s *webServer) rebuildState(schema *hclload.Schema) {
 	deps, err := hclload.CollectDependencies(schema.Databases)
 	if err != nil {
 		// A query that won't parse shouldn't take the whole UI down; browsing
@@ -108,35 +150,144 @@ func newWebServer(schema *hclload.Schema) (*webServer, error) {
 		deps = nil
 	}
 
-	s := &webServer{
-		schema:     schema,
-		tmplIndex:  tmplIndex,
-		tmplObject: tmplObject,
-		tmplFlows:  tmplFlows,
-		deps:       deps,
-		kindIndex:  map[string]string{},
-	}
+	kindIndex := map[string]string{}
 	for i := range schema.Databases {
 		db := &schema.Databases[i]
 		for _, t := range db.Tables {
-			s.kindIndex[indexKey(db.Name, t.Name)] = hclload.KindTable
+			kindIndex[indexKey(db.Name, t.Name)] = hclload.KindTable
 		}
 		for _, mv := range db.MaterializedViews {
-			s.kindIndex[indexKey(db.Name, mv.Name)] = hclload.KindMaterializedView
+			kindIndex[indexKey(db.Name, mv.Name)] = hclload.KindMaterializedView
 		}
 		for _, v := range db.Views {
-			s.kindIndex[indexKey(db.Name, v.Name)] = hclload.KindView
+			kindIndex[indexKey(db.Name, v.Name)] = hclload.KindView
 		}
 		for _, d := range db.Dictionaries {
-			s.kindIndex[indexKey(db.Name, d.Name)] = hclload.KindDictionary
+			kindIndex[indexKey(db.Name, d.Name)] = hclload.KindDictionary
 		}
 		for _, r := range db.Raws {
-			s.kindIndex[indexKey(db.Name, r.Name)] = hclload.KindRaw
+			kindIndex[indexKey(db.Name, r.Name)] = hclload.KindRaw
 		}
 	}
-	s.flows, s.flowAnchors = buildFlows(schema, s.deps, s.kindIndex)
+
+	s.schema = schema
+	s.deps = deps
+	s.kindIndex = kindIndex
+	s.flows, s.flowAnchors = buildFlows(schema, deps, kindIndex)
+	s.problems = nil
+	s.globalProblems = nil
 	s.buildProblems()
-	return s, nil
+}
+
+// enableReload arms the server to re-stat its source files at most once per
+// interval and reload the schema when they change. interval <= 0 leaves reload
+// disabled (the default for newWebServer / tests).
+func (s *webServer) enableReload(configFlag, layersFlag string, interval time.Duration) {
+	s.configFlag = configFlag
+	s.layersFlag = layersFlag
+	s.interval = interval
+	s.lastCheck = s.now()
+	if fp, err := sourceFingerprint(configFlag, layersFlag); err == nil {
+		s.fp = fp
+	}
+}
+
+// maybeReload re-stats the source files (throttled to once per interval) and, if
+// any changed, reloads + re-resolves the schema and swaps in fresh derived
+// state. It never blocks a request: if another goroutine is already checking, or
+// reload is disabled, it returns immediately. A failed load/resolve keeps the
+// current schema (the broken edit is retried on the next interval).
+func (s *webServer) maybeReload() {
+	if s.interval <= 0 {
+		return
+	}
+	if !s.reloadMu.TryLock() {
+		return
+	}
+	defer s.reloadMu.Unlock()
+
+	now := s.now()
+	if now.Sub(s.lastCheck) < s.interval {
+		return
+	}
+	s.lastCheck = now
+
+	fp, err := sourceFingerprint(s.configFlag, s.layersFlag)
+	if err != nil {
+		slog.Warn("reload: cannot stat source files; keeping current schema", "err", err)
+		return
+	}
+	if fingerprintEqual(fp, s.fp) {
+		return
+	}
+
+	schema, err := load(s.configFlag, s.layersFlag)
+	if err != nil {
+		slog.Warn("reload: load failed; keeping current schema", "err", err)
+		return // keep old fp so the next interval retries
+	}
+	if err := hclload.Resolve(schema); err != nil {
+		slog.Warn("reload: resolve failed; keeping current schema", "err", err)
+		return
+	}
+
+	s.mu.Lock()
+	s.rebuildState(schema)
+	s.mu.Unlock()
+	s.fp = fp
+	slog.Info("schema reloaded", "files", len(fp))
+}
+
+// sourceFiles returns the HCL files the loader reads: every *.hcl in the layer
+// dirs (re-globbed each call so added/removed files register), or the single
+// -config file.
+func sourceFiles(configFlag, layersFlag string) ([]string, error) {
+	if layersFlag != "" {
+		var files []string
+		for _, dir := range strings.Split(layersFlag, ",") {
+			entries, err := os.ReadDir(dir)
+			if err != nil {
+				return nil, err
+			}
+			for _, e := range entries {
+				if !e.IsDir() && filepath.Ext(e.Name()) == ".hcl" {
+					files = append(files, filepath.Join(dir, e.Name()))
+				}
+			}
+		}
+		return files, nil
+	}
+	return []string{configFlag}, nil
+}
+
+// sourceFingerprint maps each source file to its mod time. A changed mod time,
+// or an added/removed file, makes the fingerprint differ.
+func sourceFingerprint(configFlag, layersFlag string) (map[string]int64, error) {
+	files, err := sourceFiles(configFlag, layersFlag)
+	if err != nil {
+		return nil, err
+	}
+	fp := make(map[string]int64, len(files))
+	for _, f := range files {
+		info, err := os.Stat(f)
+		if err != nil {
+			return nil, err
+		}
+		fp[f] = info.ModTime().UnixNano()
+	}
+	return fp, nil
+}
+
+func fingerprintEqual(a, b map[string]int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, v := range a {
+		if b[k] != v {
+			return false
+		}
+	}
+	return true
 }
 
 // buildProblems runs the schema validator and indexes each issue by the object
@@ -269,6 +420,9 @@ const columnCollapseLimit = 10
 // ---- handlers ----
 
 func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
+	s.maybeReload()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	if r.URL.Path != "/" {
 		s.notFound(w)
 		return
@@ -307,6 +461,9 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *webServer) handleObject(w http.ResponseWriter, r *http.Request) {
+	s.maybeReload()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	// Path: /db/{database}/{kind}/{name}
 	rest := strings.TrimPrefix(r.URL.Path, "/db/")
 	parts := strings.SplitN(rest, "/", 3)
