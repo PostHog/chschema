@@ -31,6 +31,8 @@ type flow struct {
 
 type flowsData struct {
 	Title          string
+	Base           string // URL prefix for links (manifest mode); "" in single mode
+	Label          string // schema label shown in the nav (manifest mode); "" otherwise
 	Flows          []flow
 	GlobalProblems []problemView
 }
@@ -240,7 +242,7 @@ func (s *webServer) handleFlows(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w)
 		return
 	}
-	s.render(w, s.tmplFlows, flowsData{Title: "Data flows", Flows: s.flows, GlobalProblems: s.globalProblems})
+	s.render(w, s.tmplFlows, flowsData{Title: "Data flows", Base: s.basePath, Label: s.label, Flows: s.flows, GlobalProblems: s.globalProblems})
 }
 
 // refOfKey reverses indexKey for the root lookup.

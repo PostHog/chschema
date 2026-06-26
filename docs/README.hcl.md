@@ -489,6 +489,18 @@ set `0` to disable) and reloads the schema when a file's mod time changes — so
 you can edit HCL and refresh the browser. A syntactically broken edit is logged
 and the last good schema keeps serving.
 
+To browse a whole fleet at once, pass a **`-manifest`** (the same role/env/layers
+format as [`hclexp plan`](#cross-role-planning--hclexp-plan)):
+
+```bash
+hclexp web -manifest roles.hcl -layer-root . [-env prod-us]
+```
+
+Every `(env, role)` the manifest declares is composed and served in one process:
+a schema list at `/`, each schema under `/s/<env>/<role>/`. `-env` filters to a
+single environment; `-layer-root` prefixes the manifest's layer paths. Each
+composed schema auto-reloads from its own layers like the single-schema mode.
+
 ## `view`
 
 A `view` block declares a ClickHouse **plain** (non-materialized) view — a

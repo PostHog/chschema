@@ -20,7 +20,7 @@ import (
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
 
-//go:embed web/layout.html web/index.html web/object.html web/flows.html web/static/*
+//go:embed web/layout.html web/index.html web/object.html web/flows.html web/schemas.html web/static/*
 var webFS embed.FS
 
 // runWeb loads an HCL config (single file or layers), resolves it, and serves a
@@ -30,9 +30,17 @@ func runWeb(args []string) {
 	flags := flag.NewFlagSet("hclexp web", flag.ExitOnError)
 	configFlag := flags.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
 	layersFlag := flags.String("layer", "", "comma-separated list of layer directories (loaded in order)")
+	manifestFlag := flags.String("manifest", "", "HCL manifest (role/env/layers, like `plan`): browse every composed schema")
+	envFlag := flags.String("env", "", "with -manifest: only browse this env (default: all envs)")
+	layerRootFlag := flags.String("layer-root", ".", "with -manifest: root directory the manifest's layer paths resolve under")
 	addrFlag := flags.String("addr", ":8080", "address to listen on (host:port)")
 	reloadFlag := flags.Duration("reload-interval", 2*time.Second, "re-stat the source files at most this often and reload on change; 0 disables")
 	_ = flags.Parse(args)
+
+	if *manifestFlag != "" {
+		runWebManifest(*manifestFlag, *envFlag, *layerRootFlag, *addrFlag, *reloadFlag)
+		return
+	}
 
 	schema, err := load(*configFlag, *layersFlag)
 	if err != nil {
@@ -80,6 +88,12 @@ type webServer struct {
 	tmplIndex  *template.Template
 	tmplObject *template.Template
 	tmplFlows  *template.Template
+
+	// basePath is the URL prefix this server is mounted under in manifest mode
+	// (e.g. "/s/prod-us/ops"); empty in single-schema mode. Templates prepend it
+	// to generated links so a request reaches the right mounted server.
+	basePath string
+	label    string // human label for the nav in manifest mode (e.g. "prod-us / ops")
 
 	// Reload config + bookkeeping. now is injectable for tests.
 	configFlag string
@@ -387,6 +401,8 @@ type dbView struct {
 
 type indexData struct {
 	Title            string
+	Base             string // URL prefix for links (manifest mode); "" in single mode
+	Label            string // schema label shown in the nav (manifest mode); "" otherwise
 	Databases        []dbView
 	NamedCollections []string
 	Nodes            []string
@@ -394,6 +410,8 @@ type indexData struct {
 
 type objectData struct {
 	Title      string
+	Base       string // URL prefix for links (manifest mode); "" in single mode
+	Label      string // schema label shown in the nav (manifest mode); "" otherwise
 	Database   string
 	Kind       string
 	KindLabel  string
@@ -427,7 +445,7 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w)
 		return
 	}
-	data := indexData{Title: "Schema"}
+	data := indexData{Title: "Schema", Base: s.basePath, Label: s.label}
 	for i := range s.schema.Databases {
 		db := &s.schema.Databases[i]
 		dv := dbView{Name: db.Name}
@@ -488,6 +506,8 @@ func (s *webServer) handleObject(w http.ResponseWriter, r *http.Request) {
 
 	data := objectData{
 		Title:     name,
+		Base:      s.basePath,
+		Label:     s.label,
 		Database:  database,
 		Kind:      kind,
 		KindLabel: kindLabel(kind),
