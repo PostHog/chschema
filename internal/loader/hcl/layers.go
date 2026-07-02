@@ -138,5 +138,32 @@ func mergeIntoDatabase(target *DatabaseSpec, incoming DatabaseSpec) error {
 		viewByName[v.Name] = true
 		target.Views = append(target.Views, v)
 	}
+
+	dictByName := make(map[string]bool, len(target.Dictionaries))
+	for _, d := range target.Dictionaries {
+		dictByName[d.Name] = true
+	}
+	for _, d := range incoming.Dictionaries {
+		if dictByName[d.Name] {
+			return fmt.Errorf("dictionary %q redeclared across layers", d.Name)
+		}
+		dictByName[d.Name] = true
+		target.Dictionaries = append(target.Dictionaries, d)
+	}
+
+	// A raw object's identity is (kind, name), consistent with indexRaws in
+	// diff.go — two kinds may legitimately share a name.
+	rawKey := func(r RawSpec) string { return r.Kind + "\x00" + r.Name }
+	rawSeen := make(map[string]bool, len(target.Raws))
+	for _, r := range target.Raws {
+		rawSeen[rawKey(r)] = true
+	}
+	for _, r := range incoming.Raws {
+		if rawSeen[rawKey(r)] {
+			return fmt.Errorf("raw %q (%s) redeclared across layers", r.Name, r.Kind)
+		}
+		rawSeen[rawKey(r)] = true
+		target.Raws = append(target.Raws, r)
+	}
 	return nil
 }

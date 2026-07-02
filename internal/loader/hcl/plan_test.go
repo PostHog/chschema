@@ -23,6 +23,45 @@ func distTable(name, remoteTable string, cols ...ColumnSpec) TableSpec {
 	}
 }
 
+// TestMergeDesiredSchemas_IncludesRaws locks the cross-role analogue of issue
+// #80: mergeDesiredSchemas must carry raw{} blocks into the union (previously
+// omitted, so they never entered the keyspace and dropped out of the plan).
+// Dedup is by (database, kind, name) — a raw's identity includes its kind, so a
+// same-named raw of a different kind is a distinct object (mirrors indexRaws).
+func TestMergeDesiredSchemas_IncludesRaws(t *testing.T) {
+	raw := func(kind, name string) RawSpec {
+		return RawSpec{Kind: kind, Name: name, SQL: "CREATE " + kind + " posthog." + name}
+	}
+	merged := mergeDesiredSchemas([]RoleDiff{
+		{
+			Role: "ops",
+			Desired: &Schema{Databases: []DatabaseSpec{{
+				Name: "posthog",
+				Raws: []RawSpec{raw("dictionary", "dict_a")},
+			}}},
+		},
+		{
+			Role: "data",
+			Desired: &Schema{Databases: []DatabaseSpec{{
+				Name: "posthog",
+				Raws: []RawSpec{
+					raw("dictionary", "dict_a"), // dupe across roles -> deduped
+					raw("dictionary", "dict_b"), // new -> kept
+					raw("view", "dict_a"),       // same name, other kind -> kept
+				},
+			}}},
+		},
+	})
+
+	require.Len(t, merged.Databases, 1)
+	var got []string
+	for _, r := range merged.Databases[0].Raws {
+		got = append(got, r.Kind+"/"+r.Name)
+	}
+	assert.ElementsMatch(t, []string{"dictionary/dict_a", "dictionary/dict_b", "view/dict_a"}, got,
+		"raws from every role must enter the union, deduped by (kind,name)")
+}
+
 // TestBuildPlan_CrossRoleAlterOrdering encodes the regression a consumer-side
 // name sort can't catch: adding a column to the OPS storage table must be
 // ordered before the per-role Distributed write proxies, which must precede the
