@@ -1068,8 +1068,14 @@ func emitTimeSeriesTarget(b *strings.Builder, t *TimeSeriesTarget, keyword strin
 	}
 	fmt.Fprintf(b, " %s INNER COLUMNS (%s)", keyword, strings.Join(parts, ", "))
 	if t.Inner.Engine != nil && t.Inner.Engine.Decoded != nil {
-		innerClause, _ := engineSQL(t.Inner.Engine.Decoded)
+		innerClause, innerSettings := engineSQL(t.Inner.Engine.Decoded)
 		fmt.Fprintf(b, " %s INNER ENGINE = %s", keyword, innerClause)
+		// engineSQL returns settings only for inline Kafka, which is never a
+		// valid TimeSeries inner engine; fold any in rather than silently
+		// dropping them (issue #91).
+		if len(innerSettings) > 0 {
+			fmt.Fprintf(b, " SETTINGS %s", formatSettingsList(innerSettings))
+		}
 	}
 	if len(t.Inner.PrimaryKey) > 0 {
 		fmt.Fprintf(b, " PRIMARY KEY (%s)", strings.Join(t.Inner.PrimaryKey, ", "))

@@ -75,15 +75,24 @@ func buildDictionaryFromCreateDictionary(cd *chparser.CreateDictionary) (Diction
 		lt := &DictionaryLifetime{}
 		switch {
 		case eng.Lifetime.Value != nil:
-			n := parseInt64Literal(eng.Lifetime.Value)
+			n, err := parseInt64Literal(eng.Lifetime.Value)
+			if err != nil {
+				return DictionarySpec{}, fmt.Errorf("dictionary lifetime: %w", err)
+			}
 			lt.Min = &n
 		default:
 			if eng.Lifetime.Min != nil {
-				n := parseInt64Literal(eng.Lifetime.Min)
+				n, err := parseInt64Literal(eng.Lifetime.Min)
+				if err != nil {
+					return DictionarySpec{}, fmt.Errorf("dictionary lifetime min: %w", err)
+				}
 				lt.Min = &n
 			}
 			if eng.Lifetime.Max != nil {
-				n := parseInt64Literal(eng.Lifetime.Max)
+				n, err := parseInt64Literal(eng.Lifetime.Max)
+				if err != nil {
+					return DictionarySpec{}, fmt.Errorf("dictionary lifetime max: %w", err)
+				}
 				lt.Max = &n
 			}
 		}
@@ -196,12 +205,15 @@ func optBool(s string) *bool {
 	return nil
 }
 
-func parseInt64Literal(n *chparser.NumberLiteral) int64 {
+func parseInt64Literal(n *chparser.NumberLiteral) (int64, error) {
 	if n == nil {
-		return 0
+		return 0, nil
 	}
-	v, _ := strconv.ParseInt(n.Literal, 10, 64)
-	return v
+	v, err := strconv.ParseInt(n.Literal, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid integer literal %q: %w", n.Literal, err)
+	}
+	return v, nil
 }
 
 func buildDictionarySourceFromAST(dictName string, s *chparser.DictionarySourceClause) (*DictionarySourceSpec, error) {

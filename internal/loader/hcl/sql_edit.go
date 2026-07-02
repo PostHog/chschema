@@ -179,7 +179,10 @@ func applyAlterClause(t *TableSpec, clause chparser.AlterTableClause) error {
 		// than DROP + ADD when this schema is later compared against a live DB.
 		t.Columns[idx].RenamedFrom = strPtr(old)
 	case *chparser.AlterTableAddIndex:
-		idx := indexFromAST(c.Index)
+		idx, err := indexFromAST(c.Index)
+		if err != nil {
+			return err
+		}
 		if findIndex(t, idx.Name) >= 0 {
 			if c.IfNotExists {
 				return nil
