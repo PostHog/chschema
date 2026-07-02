@@ -9,8 +9,8 @@ import (
 	chparser "github.com/orian/clickhouse-sql-parser/parser"
 )
 
-// GeneratedSQL holds the result of GenerateSQL: the safe DDL statements ready
-// to execute, plus a list of unsafe changes (engine, order_by, partition_by,
+// GeneratedSQL holds the result of GenerateSQL: the DDL statements for the
+// migration, plus a list of unsafe changes (engine, order_by, partition_by,
 // sample_by) that ClickHouse cannot apply in place and require manual table
 // recreation.
 //
@@ -18,6 +18,10 @@ import (
 // Statements[i] (same order, same length), carrying the operation kind and the
 // target object's identity so consumers don't have to re-parse the SQL text or
 // re-derive the dependency order.
+//
+// A statement whose Ops[i].Manual is true (e.g. MATERIALIZE INDEX) is generated
+// for the operator, never for automatic execution: anything that executes
+// Statements must skip it, and text rendering comments it out.
 type GeneratedSQL struct {
 	Statements []string
 	Ops        []Operation
@@ -44,6 +48,7 @@ type Operation struct {
 	Database   string // empty for named collections (cluster-scoped)
 	Object     string
 	SQL        string // the statement, without a trailing ';'
+	Manual     bool   // operator-run only (heavy mutation, e.g. MATERIALIZE INDEX); never execute automatically
 }
 
 // UnsafeChange describes a diff entry that can't be expressed as an ALTER.
@@ -71,6 +76,12 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	emit := func(kind, objType, db, object, sql string) {
 		out.Statements = append(out.Statements, sql)
 		out.Ops = append(out.Ops, Operation{Kind: kind, ObjectType: objType, Database: db, Object: object, SQL: sql})
+	}
+	// emitManual records an operator-run statement: kept in the same ordered
+	// stream, but flagged so executors skip it and text output comments it out.
+	emitManual := func(kind, objType, db, object, sql string) {
+		out.Statements = append(out.Statements, sql)
+		out.Ops = append(out.Ops, Operation{Kind: kind, ObjectType: objType, Database: db, Object: object, SQL: sql, Manual: true})
 	}
 
 	// 1. Named-collection recreates (DROP+CREATE adjacent, at the FRONT
@@ -120,6 +131,13 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 			}
 			if stmt := alterTableSQL(dc.Database, td); stmt != "" {
 				emit(OpAlter, KindTable, dc.Database, td.Table, stmt)
+			}
+			// A newly added skip index only covers parts written after the
+			// ALTER; MATERIALIZE INDEX rebuilds it for existing parts. That
+			// mutation is heavy and unpredictable, so it is emitted as a
+			// manual statement for the operator, never executed automatically.
+			for _, idx := range td.AddIndexes {
+				emitManual(OpAlter, KindTable, dc.Database, td.Table, materializeIndexSQL(dc.Database, td.Table, idx.Name))
 			}
 		}
 	}
@@ -714,6 +732,13 @@ func dropRawSQL(kind, database, name string) string {
 		form = "VIEW"
 	}
 	return fmt.Sprintf("DROP %s IF EXISTS %s.%s", form, database, name)
+}
+
+// materializeIndexSQL renders the MATERIALIZE INDEX statement that rebuilds a
+// newly added skip index for existing parts. Always emitted as a manual
+// (operator-run) operation.
+func materializeIndexSQL(database, table, index string) string {
+	return fmt.Sprintf("ALTER TABLE %s.%s MATERIALIZE INDEX %s", database, table, index)
 }
 
 func alterTableSQL(database string, td TableDiff) string {

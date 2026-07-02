@@ -133,3 +133,28 @@ func TestBuildPlan_CrossRoleAlterOrdering(t *testing.T) {
 	assert.Equal(t, "ReplicatedMergeTree", sharded.Engine)
 	assert.True(t, sharded.Replicated)
 }
+
+// The Manual flag (operator-run statements like MATERIALIZE INDEX) must survive
+// the per-role merge into plan operations.
+func TestBuildPlan_ManualMaterializeIndexPropagates(t *testing.T) {
+	id := ColumnSpec{Name: "id", Type: "UInt64"}
+	current := mkTable("events", EngineMergeTree{}, id)
+	current.OrderBy = []string{"id"}
+	desired := mkTable("events", EngineMergeTree{}, id)
+	desired.OrderBy = []string{"id"}
+	desired.Indexes = []IndexSpec{{Name: "idx_id", Expr: "id", Type: "minmax", Granularity: 1}}
+
+	plan := BuildPlan([]RoleDiff{{
+		Role:    "data",
+		Desired: &Schema{Databases: []DatabaseSpec{mkDB("posthog", desired)}},
+		Current: &Schema{Databases: []DatabaseSpec{mkDB("posthog", current)}},
+	}})
+
+	require.Len(t, plan.Operations, 2)
+	byManual := map[bool]PlanOperation{}
+	for _, op := range plan.Operations {
+		byManual[op.Manual] = op
+	}
+	assert.Contains(t, byManual[false].SQL, "ADD INDEX idx_id")
+	assert.Equal(t, "ALTER TABLE posthog.events MATERIALIZE INDEX idx_id", byManual[true].SQL)
+}

@@ -203,8 +203,38 @@ func TestSQLGen_AlterIndexes(t *testing.T) {
 	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
 		{Database: "posthog", AlterTables: []TableDiff{td}},
 	}})
-	expected := "ALTER TABLE posthog.events DROP INDEX old_idx, ADD INDEX idx_ts ts TYPE minmax GRANULARITY 4"
-	assert.Equal(t, []string{expected}, out.Statements)
+	expected := []string{
+		"ALTER TABLE posthog.events DROP INDEX old_idx, ADD INDEX idx_ts ts TYPE minmax GRANULARITY 4",
+		"ALTER TABLE posthog.events MATERIALIZE INDEX idx_ts",
+	}
+	assert.Equal(t, expected, out.Statements)
+	assert.False(t, out.Ops[0].Manual)
+	assert.True(t, out.Ops[1].Manual, "MATERIALIZE INDEX must be operator-run, never auto-executed")
+}
+
+// A dropped index needs no materialization, and a brand-new table's indexes are
+// built as data arrives — only ADD INDEX on an existing table emits the manual
+// MATERIALIZE INDEX companion.
+func TestSQLGen_MaterializeIndexOnlyForAddedIndexes(t *testing.T) {
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", AlterTables: []TableDiff{{Table: "events", DropIndexes: []string{"old_idx"}}}},
+	}})
+	assert.Equal(t, []string{"ALTER TABLE posthog.events DROP INDEX old_idx"}, out.Statements)
+
+	tbl := TableSpec{
+		Name:    "fresh",
+		Columns: []ColumnSpec{{Name: "ts", Type: "DateTime"}},
+		Indexes: []IndexSpec{{Name: "idx_ts", Expr: "ts", Type: "minmax", Granularity: 4}},
+		Engine:  &EngineSpec{Decoded: EngineMergeTree{}},
+		OrderBy: []string{"ts"},
+	}
+	out = GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", AddTables: []TableSpec{tbl}},
+	}})
+	for _, op := range out.Ops {
+		assert.False(t, op.Manual)
+		assert.NotContains(t, op.SQL, "MATERIALIZE INDEX")
+	}
 }
 
 func TestSQLGen_UnsafeChangesReported(t *testing.T) {

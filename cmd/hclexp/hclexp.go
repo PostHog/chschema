@@ -486,7 +486,11 @@ func runDiff(args []string) {
 		for _, u := range gen.Unsafe {
 			fmt.Printf("-- UNSAFE: %s.%s: %s\n", u.Database, u.Table, u.Reason)
 		}
-		for _, stmt := range gen.Statements {
+		for i, stmt := range gen.Statements {
+			if gen.Ops[i].Manual {
+				fmt.Println("-- MANUAL: " + stmt + ";")
+				continue
+			}
 			fmt.Println(stmt + ";")
 		}
 		if len(gen.Statements) == 0 {

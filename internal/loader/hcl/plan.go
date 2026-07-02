@@ -29,6 +29,7 @@ type PlanOperation struct {
 	Engine       string   `json:"engine"`
 	Replicated   bool     `json:"replicated"`
 	SQL          string   `json:"sql"`
+	Manual       bool     `json:"manual"` // operator-run only (e.g. MATERIALIZE INDEX); executors must skip it
 	Roles        []string `json:"roles"`
 	Unsafe       bool     `json:"unsafe"`
 	UnsafeReason string   `json:"unsafe_reason"`
@@ -71,6 +72,7 @@ func BuildPlan(roles []RoleDiff) PlanResult {
 					Database:   op.Database,
 					Object:     op.Object,
 					SQL:        op.SQL,
+					Manual:     op.Manual,
 				}
 				byKey[k] = po
 				firstSeen = append(firstSeen, k)

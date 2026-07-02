@@ -101,6 +101,13 @@ index "idx_team" {
 }
 ```
 
+Adding an index to an existing table generates the `ALTER TABLE … ADD INDEX`
+plus a companion `ALTER TABLE … MATERIALIZE INDEX` that rebuilds the index for
+existing parts. The materialize is a heavy, unpredictable mutation, so it is
+**never executed automatically**: `diff -sql` prints it commented out as a
+`-- MANUAL:` line, and the JSON/plan output marks it `"manual": true` so
+executors skip it. An operator runs it deliberately.
+
 ## `engine`
 
 The engine is a labeled block; the label is the engine kind. The body's

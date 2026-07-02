@@ -19,6 +19,7 @@ type JSONOperation struct {
 	Engine       string `json:"engine"`     // ClickHouse engine family, tables only (e.g. ReplicatedMergeTree)
 	Replicated   bool   `json:"replicated"` // true when the engine family is a Replicated* variant
 	SQL          string `json:"sql"`        // statement without trailing ';'
+	Manual       bool   `json:"manual"`     // operator-run only (e.g. MATERIALIZE INDEX); executors must skip it
 	Unsafe       bool   `json:"unsafe"`     // this object has a change that can't be applied in place
 	UnsafeReason string `json:"unsafe_reason"`
 }
@@ -64,6 +65,7 @@ func RenderDiffJSON(gen GeneratedSQL, left, right *Schema) ([]byte, error) {
 			Engine:       engine,
 			Replicated:   strings.HasPrefix(engine, "Replicated"),
 			SQL:          op.SQL,
+			Manual:       op.Manual,
 			Unsafe:       unsafe,
 			UnsafeReason: reason,
 		})
