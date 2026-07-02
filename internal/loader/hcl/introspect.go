@@ -520,10 +520,15 @@ func constraintFromAST(c *chparser.ConstraintClause) *ConstraintSpec {
 		return nil
 	}
 	expr := formatNode(c.Expr)
-	// ClickHouse stores both CHECK and ASSUME under ConstraintClause; the
-	// upstream library doesn't preserve the kind in v0.5.1. Treat as CHECK
-	// by default — that's the common case.
-	return &ConstraintSpec{Name: c.Constraint.Name, Check: &expr}
+	// Type is the CHECK/ASSUME keyword (parser preserves it as of chparser#17).
+	// Default to CHECK when absent, for robustness against older DDL.
+	out := &ConstraintSpec{Name: c.Constraint.Name}
+	if c.Type != nil && strings.EqualFold(c.Type.Name, "ASSUME") {
+		out.Assume = &expr
+	} else {
+		out.Check = &expr
+	}
+	return out
 }
 
 // engineFromAST returns (engine, table-level settings) from an EngineExpr.
