@@ -253,7 +253,11 @@ func buildTableFromCreateTable(ct *chparser.CreateTable) (TableSpec, error) {
 			case *chparser.ColumnDef:
 				t.Columns = append(t.Columns, columnFromAST(n))
 			case *chparser.TableIndex:
-				t.Indexes = append(t.Indexes, indexFromAST(n))
+				idx, err := indexFromAST(n)
+				if err != nil {
+					return TableSpec{}, err
+				}
+				t.Indexes = append(t.Indexes, idx)
 			case *chparser.ConstraintClause:
 				if cs := constraintFromAST(n); cs != nil {
 					t.Constraints = append(t.Constraints, *cs)
@@ -491,7 +495,7 @@ func columnFromAST(c *chparser.ColumnDef) ColumnSpec {
 	return out
 }
 
-func indexFromAST(i *chparser.TableIndex) IndexSpec {
+func indexFromAST(i *chparser.TableIndex) (IndexSpec, error) {
 	out := IndexSpec{Name: identName(i.Name)}
 	if i.ColumnExpr != nil {
 		out.Expr = formatNode(i.ColumnExpr.Expr)
@@ -501,11 +505,14 @@ func indexFromAST(i *chparser.TableIndex) IndexSpec {
 	}
 	if i.Granularity != nil {
 		// Granularity is a NumberLiteral; convert via Format then parse.
-		var n int
-		_, _ = fmt.Sscanf(formatNode(i.Granularity), "%d", &n)
+		s := formatNode(i.Granularity)
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			return IndexSpec{}, fmt.Errorf("index %q: invalid GRANULARITY %q: %w", out.Name, s, err)
+		}
 		out.Granularity = n
 	}
-	return out
+	return out, nil
 }
 
 func constraintFromAST(c *chparser.ConstraintClause) *ConstraintSpec {
