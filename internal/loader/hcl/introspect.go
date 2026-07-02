@@ -520,13 +520,15 @@ func constraintFromAST(c *chparser.ConstraintClause) *ConstraintSpec {
 		return nil
 	}
 	expr := formatNode(c.Expr)
-	// The parser only accepts (and reaches here for) CHECK constraints: its
-	// CREATE TABLE constraint branch hard-requires the CHECK keyword, so an
-	// ASSUME constraint is a parse error upstream and never reaches this
-	// function. Every constraint we see is therefore a CHECK. Once the parser
-	// accepts ASSUME and records the kind, read it here and drop this note.
-	// Tracked: github.com/orian/clickhouse-sql-parser#17 (this repo's #83).
-	return &ConstraintSpec{Name: c.Constraint.Name, Check: &expr}
+	// Type is the CHECK/ASSUME keyword (parser preserves it as of chparser#17).
+	// Default to CHECK when absent, for robustness against older DDL.
+	out := &ConstraintSpec{Name: c.Constraint.Name}
+	if c.Type != nil && strings.EqualFold(c.Type.Name, "ASSUME") {
+		out.Assume = &expr
+	} else {
+		out.Check = &expr
+	}
+	return out
 }
 
 // engineFromAST returns (engine, table-level settings) from an EngineExpr.
