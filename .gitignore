@@ -27,5 +27,10 @@
 logs/
 prod/
 
+# Root-level scratch (anchored so testdata/examples fixtures are unaffected)
+/*.sql
+/posthog-schema.hcl
+/coverage.out
+
 # Test-run scratch output
 test/dump/dumper_test*/
