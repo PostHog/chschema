@@ -782,6 +782,24 @@ func alterTableSQL(database string, td TableDiff) string {
 			ops = append(ops, "REMOVE TTL")
 		}
 	}
+	for _, n := range td.DropConstraints {
+		ops = append(ops, fmt.Sprintf("DROP CONSTRAINT %s", n))
+	}
+	for _, c := range td.AddConstraints {
+		ops = append(ops, "ADD "+constraintClause(c))
+	}
+	for _, c := range td.ModifyConstraints {
+		// ClickHouse has no MODIFY CONSTRAINT; drop then re-add.
+		ops = append(ops, fmt.Sprintf("DROP CONSTRAINT %s", c.Name))
+		ops = append(ops, "ADD "+constraintClause(c.New))
+	}
+	if td.CommentChange != nil {
+		comment := ""
+		if td.CommentChange.New != nil {
+			comment = *td.CommentChange.New
+		}
+		ops = append(ops, fmt.Sprintf("MODIFY COMMENT %s", quoteString(comment)))
+	}
 	if len(ops) == 0 {
 		return ""
 	}
@@ -1160,6 +1178,12 @@ func unsafeReasons(database string, td TableDiff) []UnsafeChange {
 		out = append(out, UnsafeChange{
 			Database: database, Table: td.Table,
 			Reason: "SAMPLE BY change requires recreating the table",
+		})
+	}
+	if td.PrimaryKeyChange != nil {
+		out = append(out, UnsafeChange{
+			Database: database, Table: td.Table,
+			Reason: "PRIMARY KEY change requires recreating the table",
 		})
 	}
 	for _, c := range td.ModifyColumns {

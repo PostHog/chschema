@@ -125,6 +125,26 @@ type TableDiff struct {
 	SettingsAdded   map[string]string
 	SettingsRemoved []string
 	SettingsChanged []SettingChange
+
+	// Constraints keyed by name; a modify is emitted as DROP + ADD. All
+	// in-place ALTER-able.
+	AddConstraints    []ConstraintSpec
+	DropConstraints   []string
+	ModifyConstraints []ConstraintChange
+
+	// PrimaryKeyChange is in-place-impossible (surfaced via unsafeReasons,
+	// like ORDER BY). CommentChange is ALTER-able (MODIFY COMMENT).
+	PrimaryKeyChange *OrderByChange
+	CommentChange    *StringChange
+}
+
+// ConstraintChange is an in-name modification of a table constraint: its
+// CHECK/ASSUME predicate differs between Old and New. ClickHouse has no
+// MODIFY CONSTRAINT, so it is emitted as DROP CONSTRAINT + ADD CONSTRAINT.
+type ConstraintChange struct {
+	Name string
+	Old  ConstraintSpec
+	New  ConstraintSpec
 }
 
 // ColumnChange is an in-name modification of a column: its type and/or any
@@ -254,15 +274,18 @@ func (td TableDiff) IsEmpty() bool {
 		len(td.AddIndexes) == 0 && len(td.DropIndexes) == 0 &&
 		td.EngineChange == nil && td.OrderByChange == nil &&
 		td.PartitionByChange == nil && td.SampleByChange == nil && td.TTLChange == nil &&
-		len(td.SettingsAdded) == 0 && len(td.SettingsRemoved) == 0 && len(td.SettingsChanged) == 0
+		len(td.SettingsAdded) == 0 && len(td.SettingsRemoved) == 0 && len(td.SettingsChanged) == 0 &&
+		len(td.AddConstraints) == 0 && len(td.DropConstraints) == 0 && len(td.ModifyConstraints) == 0 &&
+		td.PrimaryKeyChange == nil && td.CommentChange == nil
 }
 
 // IsUnsafe reports whether the diff includes a change ClickHouse can't apply
-// in place (engine swap, order_by/partition_by change). Such changes require
-// table recreation.
+// in place (engine swap, order_by/partition_by/sample_by, primary_key). Such
+// changes require table recreation.
 func (td TableDiff) IsUnsafe() bool {
 	if td.EngineChange != nil || td.OrderByChange != nil ||
-		td.PartitionByChange != nil || td.SampleByChange != nil {
+		td.PartitionByChange != nil || td.SampleByChange != nil ||
+		td.PrimaryKeyChange != nil {
 		return true
 	}
 	for _, c := range td.ModifyColumns {
@@ -742,6 +765,30 @@ func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 		}
 	}
 
+	// Constraints, primary_key and comment. Computed before the TimeSeries
+	// branch below so both it and the normal path pick them up. (Cluster is
+	// intentionally not diffed: ON CLUSTER is not recoverable from a live
+	// table, so diffing it would report spurious drift on every table.)
+	fromCon := indexConstraints(from.Constraints)
+	toCon := indexConstraints(to.Constraints)
+	for _, n := range sortedKeys(toCon) {
+		f, ok := fromCon[n]
+		if !ok {
+			td.AddConstraints = append(td.AddConstraints, *toCon[n])
+			continue
+		}
+		if !reflect.DeepEqual(*f, *toCon[n]) {
+			td.ModifyConstraints = append(td.ModifyConstraints, ConstraintChange{Name: n, Old: *f, New: *toCon[n]})
+		}
+	}
+	for _, n := range sortedKeys(fromCon) {
+		if _, ok := toCon[n]; !ok {
+			td.DropConstraints = append(td.DropConstraints, n)
+		}
+	}
+	td.PrimaryKeyChange = diffStringSlice(from.PrimaryKey, to.PrimaryKey)
+	td.CommentChange = diffStringPtr(from.Comment, to.Comment)
+
 	// TimeSeries gets a smarter engine-diff path: changes to two specific
 	// SETTINGS (id_generator, filter_by_min_time_and_max_time) are
 	// ALTER-able in CH; everything else (other settings, target swaps,
@@ -854,6 +901,14 @@ func indexIndexes(idx []IndexSpec) map[string]*IndexSpec {
 	out := make(map[string]*IndexSpec, len(idx))
 	for i := range idx {
 		out[idx[i].Name] = &idx[i]
+	}
+	return out
+}
+
+func indexConstraints(cs []ConstraintSpec) map[string]*ConstraintSpec {
+	out := make(map[string]*ConstraintSpec, len(cs))
+	for i := range cs {
+		out[cs[i].Name] = &cs[i]
 	}
 	return out
 }
