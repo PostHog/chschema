@@ -11,6 +11,11 @@ desired state, and round-tripped against a live cluster via the `hclexp`
 binary. Terraform/Kubernetes-style state reconciliation; no sequential
 migrations.
 
+Execution model: generated DDL is run on each node of a cluster
+individually — never with `ON CLUSTER` (too fragile in operation). Heavy
+mutations (`MATERIALIZE INDEX`) are generated but marked manual and are
+only ever run deliberately by an operator.
+
 The single binary is `hclexp`. (A legacy YAML/protobuf `chschema` tool was
 removed; the Go module is still named `github.com/posthog/chschema` for
 import stability — do not rename it.)
@@ -101,7 +106,8 @@ The `justfile` has the full recipe list.
 - Tests automatically create/cleanup isolated test databases
 - Current test coverage:
   - ✅ Basic connectivity (ping, SELECT 1)
-  - ✅ End-to-end: YAML → Diff → Apply → Introspect → Compare
+  - ✅ End-to-end: HCL → Diff → apply DDL → Introspect → Compare
+    (round-trip fidelity, `test/roundtrip_fidelity_live_test.go`)
   - ✅ Table name, database, columns, ORDER BY validation
   - ✅ Engine validation (unconditional - fully implemented)
   - ⏳ Settings validation (conditional - needs introspection enhancement)
@@ -115,7 +121,10 @@ The `justfile` has the full recipe list.
 - ✅ `column` blocks: `nullable`, `default` / `materialized` /
   `ephemeral` / `alias` (mutually exclusive), `codec`, `ttl`,
   `comment`, `renamed_from` (drives `RENAME COLUMN` in the diff)
-- ✅ `index` blocks
+- ✅ `index` blocks; adding an index to an existing table also generates a
+  `MATERIALIZE INDEX` marked manual (`-- MANUAL:` in `diff -sql`,
+  `"manual": true` in JSON/plan) — heavy mutations are operator-run, never
+  executed automatically
 - ✅ `constraint` blocks with `check` or `assume` (exactly one)
 - ✅ `materialized_view` blocks (TO-form): `to_table`, `query`,
   explicit `column` list, `cluster`, `comment`
@@ -134,7 +143,6 @@ The `justfile` has the full recipe list.
   recreated (DROP+CREATE) on change; a `table`-kind change is flagged
   `-- UNSAFE`. `introspect`/`dump-cluster` are strict by default and capture
   raw blocks only with `-allow-raw`.
-- ❌ `view` and `dictionary` top-level blocks — planned, not implemented
 
 ### Introspection & Dumping
 - ✅ **Tables** — `hclexp introspect` round-trips tables (columns,

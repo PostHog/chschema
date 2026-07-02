@@ -198,6 +198,11 @@ hclexp diff -left ./schema/posthog.hcl \
   the left side into the right side, instead of the change summary.
   Changes ClickHouse can't apply in place (engine swap, `ORDER BY`,
   `PARTITION BY`, `SAMPLE BY`) are flagged with `-- UNSAFE` comments.
+  Heavy operator-run statements (currently `MATERIALIZE INDEX`, generated
+  alongside every `ADD INDEX` on an existing table) are printed commented
+  out as `-- MANUAL:` lines — run them deliberately, never as part of an
+  automated apply. In `-format json` output the same statements carry
+  `"manual": true`.
 
 The default output is an indented `+`/`-`/`~` summary:
 

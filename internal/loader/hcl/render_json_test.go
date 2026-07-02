@@ -90,3 +90,29 @@ func TestRenderDiffJSON(t *testing.T) {
 	assert.True(t, sessions.Unsafe)
 	assert.Contains(t, sessions.UnsafeReason, "ORDER BY")
 }
+
+// Adding an index to an existing table yields the ALTER (manual: false) plus
+// the operator-run MATERIALIZE INDEX companion (manual: true) in JSON output.
+func TestRenderDiffJSON_ManualMaterializeIndex(t *testing.T) {
+	idCol := ColumnSpec{Name: "id", Type: "UInt64"}
+	leftT := mkTable("events", EngineMergeTree{}, idCol)
+	leftT.OrderBy = []string{"id"}
+	rightT := mkTable("events", EngineMergeTree{}, idCol)
+	rightT.OrderBy = []string{"id"}
+	rightT.Indexes = []IndexSpec{{Name: "idx_id", Expr: "id", Type: "minmax", Granularity: 1}}
+
+	left := &Schema{Databases: []DatabaseSpec{mkDB("posthog", leftT)}}
+	right := &Schema{Databases: []DatabaseSpec{mkDB("posthog", rightT)}}
+	gen := GenerateSQL(Diff(left, right))
+	out, err := RenderDiffJSON(gen, left, right)
+	require.NoError(t, err)
+
+	var doc DiffJSON
+	require.NoError(t, json.Unmarshal(out, &doc))
+
+	require.Len(t, doc.Operations, 2)
+	assert.False(t, doc.Operations[0].Manual)
+	assert.Contains(t, doc.Operations[0].SQL, "ADD INDEX idx_id")
+	assert.True(t, doc.Operations[1].Manual)
+	assert.Equal(t, "ALTER TABLE posthog.events MATERIALIZE INDEX idx_id", doc.Operations[1].SQL)
+}

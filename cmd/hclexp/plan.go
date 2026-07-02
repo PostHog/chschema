@@ -206,6 +206,9 @@ func renderPlanText(w *os.File, plan hclload.PlanResult) {
 		if op.Unsafe {
 			flag = " (UNSAFE)"
 		}
+		if op.Manual {
+			flag += " (MANUAL)"
+		}
 		fmt.Fprintf(w, "%3d  %-7s %-18s %s.%s  [%s]%s\n",
 			op.Order, op.Kind, op.ObjectType, op.Database, op.Object, strings.Join(op.Roles, ","), flag)
 	}
