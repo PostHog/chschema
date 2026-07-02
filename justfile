@@ -6,6 +6,30 @@ setup-hooks:
     git config core.hooksPath .githooks
     @echo "pre-commit hook installed (.githooks/pre-commit)."
 
+# Format all Go code in place (gofmt -s), matching what CI checks
+fmt:
+    gofmt -s -w .
+
+# Run the same lint gate as CI: gofmt -s check + golangci-lint
+lint:
+    test -z "$(gofmt -s -l .)" || { echo "Not gofmt-formatted (run 'just fmt'):"; gofmt -s -l .; exit 1; }
+    golangci-lint run
+
+# Verify module deps and run go vet, matching CI's vet job
+vet:
+    go mod verify
+    go vet ./...
+
+# Build all packages and the hclexp binary, matching CI's build job
+build:
+    go build ./...
+    go build -o hclexp ./cmd/hclexp
+
+# Run unit tests with race + coverage, matching CI's test/coverage job
+coverage:
+    go test -race -coverprofile=coverage.out ./internal/... ./cmd/...
+    go tool cover -func=coverage.out
+
 # Run unit and snapshot tests
 test:
     go test ./internal/... -v
