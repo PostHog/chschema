@@ -235,6 +235,13 @@ func mergeDesiredSchemas(roles []RoleDiff) *Schema {
 					d.Dictionaries = append(d.Dictionaries, dct)
 				}
 			}
+			// A raw object's identity is (kind, name), so key it separately —
+			// two raw kinds may legally share a name (see indexRaws in diff.go).
+			for _, r := range db.Raws {
+				if mark(db.Name, r.Kind+"\x00"+r.Name) {
+					d.Raws = append(d.Raws, r)
+				}
+			}
 		}
 	}
 	return merged
