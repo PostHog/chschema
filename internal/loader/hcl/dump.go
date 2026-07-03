@@ -324,11 +324,17 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 		if v.VersionColumn != nil {
 			b.SetAttributeValue("version_column", cty.StringVal(*v.VersionColumn))
 		}
+		if v.IsDeletedColumn != nil {
+			b.SetAttributeValue("is_deleted_column", cty.StringVal(*v.IsDeletedColumn))
+		}
 	case EngineReplicatedReplacingMergeTree:
 		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
 		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
 		if v.VersionColumn != nil {
 			b.SetAttributeValue("version_column", cty.StringVal(*v.VersionColumn))
+		}
+		if v.IsDeletedColumn != nil {
+			b.SetAttributeValue("is_deleted_column", cty.StringVal(*v.IsDeletedColumn))
 		}
 	case EngineSummingMergeTree:
 		if len(v.SumColumns) > 0 {

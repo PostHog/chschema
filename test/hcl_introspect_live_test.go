@@ -37,6 +37,13 @@ func TestLive_HCLIntrospect(t *testing.T) {
 		PARTITION BY toYYYYMM(ts)
 		ORDER BY (id, ts)`,
 
+		`CREATE TABLE ` + dbName + `.soft_deleted (
+			id UInt64,
+			version UInt32,
+			is_deleted UInt8
+		) ENGINE = ReplacingMergeTree(version, is_deleted)
+		ORDER BY id`,
+
 		`CREATE TABLE ` + dbName + `.versioned (
 			id UInt64,
 			version UInt32,
@@ -74,6 +81,23 @@ func TestLive_HCLIntrospect(t *testing.T) {
 					{Name: "score", Type: "Nullable(Float64)"},
 				},
 				Engine: &hclload.EngineSpec{Kind: "merge_tree", Decoded: hclload.EngineMergeTree{}},
+			},
+			{
+				Name:     "soft_deleted",
+				OrderBy:  []string{"id"},
+				Settings: map[string]string{"index_granularity": "8192"},
+				Columns: []hclload.ColumnSpec{
+					{Name: "id", Type: "UInt64"},
+					{Name: "version", Type: "UInt32"},
+					{Name: "is_deleted", Type: "UInt8"},
+				},
+				Engine: &hclload.EngineSpec{
+					Kind: "replacing_merge_tree",
+					Decoded: hclload.EngineReplacingMergeTree{
+						VersionColumn:   utils.Ptr("version"),
+						IsDeletedColumn: utils.Ptr("is_deleted"),
+					},
+				},
 			},
 			{
 				Name:     "versioned",

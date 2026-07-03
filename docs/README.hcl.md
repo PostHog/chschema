@@ -117,8 +117,8 @@ attributes depend on the kind.
 | ------------------------------------- | -------------------------------------------------- | ---------------------- |
 | `merge_tree`                          | —                                                  | —                      |
 | `replicated_merge_tree`               | `zoo_path`, `replica_name`                         | —                      |
-| `replacing_merge_tree`                | —                                                  | `version_column`       |
-| `replicated_replacing_merge_tree`     | `zoo_path`, `replica_name`                         | `version_column`       |
+| `replacing_merge_tree`                | —                                                  | `version_column`, `is_deleted_column` |
+| `replicated_replacing_merge_tree`     | `zoo_path`, `replica_name`                         | `version_column`, `is_deleted_column` |
 | `summing_merge_tree`                  | —                                                  | `sum_columns = [...]`  |
 | `replicated_summing_merge_tree`       | `zoo_path`, `replica_name`                         | `sum_columns = [...]`  |
 | `collapsing_merge_tree`               | `sign_column`                                      | —                      |
@@ -134,6 +134,10 @@ attributes depend on the kind.
 | `memory`                              | —                                                  | —                      |
 | `merge`                               | `db_regex`, `table_regex`                          | —                      |
 | `buffer`                              | `database`, `table`, `num_layers`, `min_time`, `max_time`, `min_rows`, `max_rows`, `min_bytes`, `max_bytes` | `flush_time`, `flush_rows`, `flush_bytes` |
+
+`is_deleted_column` (ClickHouse's `is_deleted` ReplacingMergeTree parameter:
+rows with a `1` in that column are delete markers) requires `version_column`,
+matching ClickHouse's own rule that `is_deleted` can only be used with `ver`.
 
 Dictionary layouts supported via `layout "<kind>"` inside a `dictionary` block: `flat`, `hashed`, `sparse_hashed`, `complex_key_hashed` (optional `preallocate`), `complex_key_sparse_hashed`, `range_hashed` / `complex_key_range_hashed` (optional `range_lookup_strategy`), `cache` (required `size_in_cells`), `complex_key_cache` (required `size_in_cells`), `hashed_array` / `complex_key_hashed_array` (optional `shards`), `direct`, `complex_key_direct`, `ip_trie` (optional `access_to_key_from_attributes`).
 
