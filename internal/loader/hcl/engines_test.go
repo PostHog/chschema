@@ -38,6 +38,18 @@ func TestParseFile_AllEngineKinds(t *testing.T) {
 		VersionColumn: ptr("ver"),
 	}, byName["t_replicated_replacing_merge_tree"])
 
+	assert.Equal(t, EngineReplacingMergeTree{
+		VersionColumn:   ptr("ver"),
+		IsDeletedColumn: ptr("is_deleted"),
+	}, byName["t_replacing_merge_tree_is_deleted"])
+
+	assert.Equal(t, EngineReplicatedReplacingMergeTree{
+		ZooPath:         "/clickhouse/tables/{shard}/t_rrmt_del",
+		ReplicaName:     "{replica}",
+		VersionColumn:   ptr("ver"),
+		IsDeletedColumn: ptr("is_deleted"),
+	}, byName["t_replicated_replacing_merge_tree_is_deleted"])
+
 	assert.Equal(t, EngineSummingMergeTree{
 		SumColumns: []string{"a", "b"},
 	}, byName["t_summing_merge_tree"])

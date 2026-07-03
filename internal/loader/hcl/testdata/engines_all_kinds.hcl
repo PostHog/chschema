@@ -28,6 +28,24 @@ database "posthog" {
     }
   }
 
+  table "t_replacing_merge_tree_is_deleted" {
+    column "id" { type = "UUID" }
+    engine "replacing_merge_tree" {
+      version_column    = "ver"
+      is_deleted_column = "is_deleted"
+    }
+  }
+
+  table "t_replicated_replacing_merge_tree_is_deleted" {
+    column "id" { type = "UUID" }
+    engine "replicated_replacing_merge_tree" {
+      zoo_path          = "/clickhouse/tables/{shard}/t_rrmt_del"
+      replica_name      = "{replica}"
+      version_column    = "ver"
+      is_deleted_column = "is_deleted"
+    }
+  }
+
   table "t_summing_merge_tree" {
     column "id" { type = "UUID" }
     engine "summing_merge_tree" {

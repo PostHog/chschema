@@ -889,11 +889,17 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 	case EngineReplicatedMergeTree:
 		return fmt.Sprintf("ReplicatedMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
 	case EngineReplacingMergeTree:
+		if v.VersionColumn != nil && v.IsDeletedColumn != nil {
+			return fmt.Sprintf("ReplacingMergeTree(%s, %s)", *v.VersionColumn, *v.IsDeletedColumn), nil
+		}
 		if v.VersionColumn != nil {
 			return fmt.Sprintf("ReplacingMergeTree(%s)", *v.VersionColumn), nil
 		}
 		return "ReplacingMergeTree()", nil
 	case EngineReplicatedReplacingMergeTree:
+		if v.VersionColumn != nil && v.IsDeletedColumn != nil {
+			return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s', %s, %s)", v.ZooPath, v.ReplicaName, *v.VersionColumn, *v.IsDeletedColumn), nil
+		}
 		if v.VersionColumn != nil {
 			return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s', %s)", v.ZooPath, v.ReplicaName, *v.VersionColumn), nil
 		}

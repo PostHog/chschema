@@ -547,18 +547,32 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		}
 		return EngineReplicatedMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
 	case "ReplacingMergeTree":
+		// Unknown extra parameters must abort, not silently drop (#108): a
+		// dropped parameter round-trips as a false "no drift".
+		if len(params) > 2 {
+			return nil, nil, fmt.Errorf("ReplacingMergeTree takes at most (version_column, is_deleted_column); got %v", params)
+		}
 		e := EngineReplacingMergeTree{}
 		if len(params) > 0 && params[0] != "" {
 			e.VersionColumn = &params[0]
 		}
+		if len(params) > 1 && params[1] != "" {
+			e.IsDeletedColumn = &params[1]
+		}
 		return e, allSettings, nil
 	case "ReplicatedReplacingMergeTree":
 		if len(params) < 2 {
-			return nil, nil, fmt.Errorf("ReplicatedReplacingMergeTree needs (zoo_path, replica_name[, version_column])")
+			return nil, nil, fmt.Errorf("ReplicatedReplacingMergeTree needs (zoo_path, replica_name[, version_column[, is_deleted_column]])")
+		}
+		if len(params) > 4 {
+			return nil, nil, fmt.Errorf("ReplicatedReplacingMergeTree takes at most (zoo_path, replica_name, version_column, is_deleted_column); got %v", params)
 		}
 		ee := EngineReplicatedReplacingMergeTree{ZooPath: params[0], ReplicaName: params[1]}
 		if len(params) > 2 {
 			ee.VersionColumn = &params[2]
+		}
+		if len(params) > 3 {
+			ee.IsDeletedColumn = &params[3]
 		}
 		return ee, allSettings, nil
 	case "SummingMergeTree":
@@ -868,11 +882,17 @@ func ParseEngineString(engineFull string) (Engine, error) {
 			return nil, err
 		}
 		if len(p) < 2 {
-			return nil, fmt.Errorf("ReplicatedReplacingMergeTree needs (zoo_path, replica_name[, version_column]); got %v", p)
+			return nil, fmt.Errorf("ReplicatedReplacingMergeTree needs (zoo_path, replica_name[, version_column[, is_deleted_column]]); got %v", p)
+		}
+		if len(p) > 4 {
+			return nil, fmt.Errorf("ReplicatedReplacingMergeTree takes at most (zoo_path, replica_name, version_column, is_deleted_column); got %v", p)
 		}
 		e := EngineReplicatedReplacingMergeTree{ZooPath: p[0], ReplicaName: p[1]}
 		if len(p) > 2 {
 			e.VersionColumn = &p[2]
+		}
+		if len(p) > 3 {
+			e.IsDeletedColumn = &p[3]
 		}
 		return e, nil
 	case strings.HasPrefix(decl, "ReplicatedCollapsingMergeTree"):
@@ -911,9 +931,15 @@ func ParseEngineString(engineFull string) (Engine, error) {
 		if err != nil {
 			return nil, err
 		}
+		if len(p) > 2 {
+			return nil, fmt.Errorf("ReplacingMergeTree takes at most (version_column, is_deleted_column); got %v", p)
+		}
 		e := EngineReplacingMergeTree{}
 		if len(p) > 0 && p[0] != "" {
 			e.VersionColumn = &p[0]
+		}
+		if len(p) > 1 && p[1] != "" {
+			e.IsDeletedColumn = &p[1]
 		}
 		return e, nil
 	case strings.HasPrefix(decl, "SummingMergeTree"):

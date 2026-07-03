@@ -33,6 +33,36 @@ func Resolve(s *Schema) error {
 	if err := validateKafkaEngines(s); err != nil {
 		return err
 	}
+	if err := validateReplacingEngines(s); err != nil {
+		return err
+	}
+	return nil
+}
+
+// validateReplacingEngines enforces ClickHouse's rule that the ReplacingMergeTree
+// is_deleted parameter can only be used together with ver: is_deleted_column
+// requires version_column.
+func validateReplacingEngines(s *Schema) error {
+	for _, db := range s.Databases {
+		for _, t := range db.Tables {
+			if t.Engine == nil || t.Engine.Decoded == nil {
+				continue
+			}
+			var version, isDeleted *string
+			switch e := t.Engine.Decoded.(type) {
+			case EngineReplacingMergeTree:
+				version, isDeleted = e.VersionColumn, e.IsDeletedColumn
+			case EngineReplicatedReplacingMergeTree:
+				version, isDeleted = e.VersionColumn, e.IsDeletedColumn
+			default:
+				continue
+			}
+			if isDeleted != nil && version == nil {
+				return fmt.Errorf("%s.%s: %s engine: is_deleted_column requires version_column (ClickHouse only accepts is_deleted together with ver)",
+					db.Name, t.Name, t.Engine.Decoded.Kind())
+			}
+		}
+	}
 	return nil
 }
 

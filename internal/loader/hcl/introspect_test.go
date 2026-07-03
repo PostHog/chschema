@@ -43,6 +43,21 @@ func TestParseEngineString(t *testing.T) {
 			},
 		},
 		{
+			"replacing_merge_tree_with_is_deleted",
+			"ReplacingMergeTree(ver, is_deleted) ORDER BY id",
+			EngineReplacingMergeTree{VersionColumn: ptr("ver"), IsDeletedColumn: ptr("is_deleted")},
+		},
+		{
+			"replicated_replacing_merge_tree_with_is_deleted",
+			"ReplicatedReplacingMergeTree('/p', '{replica}', ver, is_deleted) ORDER BY id",
+			EngineReplicatedReplacingMergeTree{
+				ZooPath:         "/p",
+				ReplicaName:     "{replica}",
+				VersionColumn:   ptr("ver"),
+				IsDeletedColumn: ptr("is_deleted"),
+			},
+		},
+		{
 			"summing_merge_tree",
 			"SummingMergeTree((a, b)) ORDER BY id",
 			EngineSummingMergeTree{SumColumns: []string{"a", "b"}},

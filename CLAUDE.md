@@ -214,16 +214,18 @@ The `justfile` has the full recipe list.
   `-env` filters to one env, `-layer-root` prefixes the manifest's layer paths
 
 ### Supported Table Engines
-MergeTree, ReplicatedMergeTree, ReplacingMergeTree (with `version_column`),
-ReplicatedReplacingMergeTree, SummingMergeTree (with `sum_columns`),
+MergeTree, ReplicatedMergeTree, ReplacingMergeTree (with `version_column`
+and `is_deleted_column`; the latter requires the former, matching
+ClickHouse), ReplicatedReplacingMergeTree, SummingMergeTree (with
+`sum_columns`),
 CollapsingMergeTree, ReplicatedCollapsingMergeTree, AggregatingMergeTree,
 ReplicatedAggregatingMergeTree, Distributed (with optional
 `sharding_key`), Log, Kafka. See `docs/README.hcl.md` for the
 attribute table.
 
 ### Not Yet Supported
-- ❌ ReplacingMergeTree `is_deleted_column` parameter
 - ❌ Inner-engine MVs, `REFRESH` MVs, window views
+- ❌ Distributed `policy_name` parameter (silently dropped on introspect)
 
 ## Configuration
 

@@ -27,14 +27,19 @@ func (EngineReplicatedMergeTree) Kind() string { return "replicated_merge_tree" 
 
 type EngineReplacingMergeTree struct {
 	VersionColumn *string `hcl:"version_column,optional"`
+	// IsDeletedColumn is ClickHouse's optional is_deleted parameter (1 = the
+	// row is a delete marker). ClickHouse only accepts it together with ver,
+	// so version_column must be set too (enforced at resolve time).
+	IsDeletedColumn *string `hcl:"is_deleted_column,optional"`
 }
 
 func (EngineReplacingMergeTree) Kind() string { return "replacing_merge_tree" }
 
 type EngineReplicatedReplacingMergeTree struct {
-	ZooPath       string  `hcl:"zoo_path"`
-	ReplicaName   string  `hcl:"replica_name"`
-	VersionColumn *string `hcl:"version_column,optional"`
+	ZooPath         string  `hcl:"zoo_path"`
+	ReplicaName     string  `hcl:"replica_name"`
+	VersionColumn   *string `hcl:"version_column,optional"`
+	IsDeletedColumn *string `hcl:"is_deleted_column,optional"`
 }
 
 func (EngineReplicatedReplacingMergeTree) Kind() string { return "replicated_replacing_merge_tree" }
