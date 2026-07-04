@@ -15,7 +15,7 @@ func TestUsage(t *testing.T) {
 	var buf bytes.Buffer
 	usage(&buf)
 	out := buf.String()
-	for _, cmd := range []string{"introspect", "diff", "validate", "drift", "load"} {
+	for _, cmd := range []string{"introspect", "diff", "validate", "drift", "load", "version"} {
 		require.Contains(t, out, cmd)
 	}
 }

@@ -10,10 +10,16 @@ RUN go mod download
 
 COPY . .
 
+# Version metadata injected by publish.yml; empty defaults let a bare
+# `docker build .` degrade to the binary's "dev" report.
+ARG VERSION
+ARG COMMIT
+ARG BUILD_TIME
+
 # Static binary (no CGO) so it runs on distroless without a libc.
 RUN CGO_ENABLED=0 GOOS=linux go build \
     -trimpath \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildTime=${BUILD_TIME}" \
     -o /out/hclexp ./cmd/hclexp
 
 # ---- Ops runtime (shell-capable: sh + git + curl) ----

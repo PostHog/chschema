@@ -15,6 +15,14 @@ jobs:
     steps:
     - name: Checkout
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        fetch-depth: 0   # git describe needs tag history
+
+    - name: Version metadata
+      id: ver
+      run: |
+        echo "version=$(git describe --tags --always --dirty)" >> "$GITHUB_OUTPUT"
+        echo "build_time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
 
     - name: Set up QEMU (for arm64 cross-build)
       uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
@@ -50,6 +58,10 @@ jobs:
         push: true
         tags: ${{ steps.meta.outputs.tags }}
         labels: ${{ steps.meta.outputs.labels }}
+        build-args: |
+          VERSION=${{ steps.ver.outputs.version }}
+          COMMIT=${{ github.sha }}
+          BUILD_TIME=${{ steps.ver.outputs.build_time }}
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
@@ -79,5 +91,9 @@ jobs:
         push: true
         tags: ${{ steps.meta-ops.outputs.tags }}
         labels: ${{ steps.meta-ops.outputs.labels }}
+        build-args: |
+          VERSION=${{ steps.ver.outputs.version }}
+          COMMIT=${{ github.sha }}
+          BUILD_TIME=${{ steps.ver.outputs.build_time }}
         cache-from: type=gha,scope=ops
         cache-to: type=gha,mode=max,scope=ops
