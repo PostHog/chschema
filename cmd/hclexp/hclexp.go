@@ -61,6 +61,9 @@ func main() {
 	case "github-token":
 		runGitHubToken(os.Args[2:])
 		return
+	case "version", "-version", "--version":
+		runVersion(os.Stdout)
+		return
 	}
 
 	// A flag as the first argument (e.g. -config, -layer) is the
@@ -96,6 +99,7 @@ Commands:
   load         parse and resolve an HCL config (default when flags are given)
   web          serve a read-only web UI to browse the resolved schema
   github-token mint a short-lived GitHub App installation token (prints to stdout)
+  version      print the hclexp build version, commit and build time
   help         print this help
 
 Run "hclexp <command> -h" for command-specific flags.
