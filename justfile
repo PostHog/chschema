@@ -23,7 +23,7 @@ vet:
 # Build all packages and the hclexp binary, matching CI's build job
 build:
     go build ./...
-    go build -o hclexp ./cmd/hclexp
+    go build -ldflags "-X main.version=$(git describe --tags --always --dirty) -X main.commit=$(git rev-parse HEAD) -X main.buildTime=$(date -u +%Y-%m-%dT%H:%M:%SZ)" -o hclexp ./cmd/hclexp
 
 # Run unit tests with race + coverage, matching CI's test/coverage job
 coverage:
