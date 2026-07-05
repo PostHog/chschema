@@ -524,11 +524,12 @@ func indexFromAST(i *chparser.TableIndex) (IndexSpec, error) {
 
 // projectionFromAST converts a CREATE-level PROJECTION clause. The
 // SELECT body is canonicalized through normalizeQuery — the same
-// pipeline the loader applies to authored projection queries — so both
-// sides render identically. It is re-parsed from the printed form
-// because BeautifyVisitor cannot render a ProjectionSelectStmt directly
-// (no VisitProjectionSelect override; see orian/clickhouse-sql-parser
-// issue). The optional WITH SETTINGS clause maps to Settings.
+// pipeline the loader applies to authored projection queries — so the
+// two sides are identical by construction. Beautifying p.Select
+// directly is NOT equivalent: the visitor indents clauses nested inside
+// the projection parens ("SELECT *\n  ORDER BY x") while the top-level
+// canonical form does not, which would read as permanent drift. The
+// optional WITH SETTINGS clause maps to Settings.
 func projectionFromAST(p *chparser.TableProjection) ProjectionSpec {
 	out := ProjectionSpec{Name: formatNode(p.Identifier)}
 	q := strings.TrimSpace(formatNode(p.Select))

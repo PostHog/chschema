@@ -1,5 +1,7 @@
+# The fork is required directly (no AfterShip replace); its integration
+# branch is main.
 update-sql-parser:
-    go mod edit -replace github.com/AfterShip/clickhouse-sql-parser=github.com/orian/clickhouse-sql-parser@refactor-visitor && go mod tidy
+    go get github.com/orian/clickhouse-sql-parser@main && go mod tidy
 
 # Install the repo's pre-commit hook (gofmt + go vet). One-time per checkout.
 setup-hooks:
