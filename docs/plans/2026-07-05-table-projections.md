@@ -42,7 +42,14 @@ diff/sqlgen have no add/drop/materialize handling.
   `normalizeQuery`/`beautifyNode` pipeline (load + introspect + dump),
   so formatting never diffs as drift.
 - Introspect: `*chparser.TableProjection` case in the create walker →
-  `projectionFromAST` (query = beautified SELECT, settings map).
+  `projectionFromAST`. Deviation from the original sketch: the SELECT is
+  printed via `formatNode` and re-canonicalized through `normalizeQuery`
+  (not `beautifyNode` directly) because BeautifyVisitor lacks a
+  `VisitProjectionSelect` override — filed as
+  orian/clickhouse-sql-parser#19. Load and introspect thereby share one
+  canonical pipeline. The walker also gains a loud `default:` — the
+  parser's column-list grammar is a closed 4-kind set, so any future
+  node kind aborts instead of silently dropping.
 - Dump: `projection` blocks after `index` blocks via `setQueryAttribute`.
 - Diff: `TableDiff.AddProjections []ProjectionSpec` /
   `DropProjections []string`; changed = drop+add (no MODIFY exists).
