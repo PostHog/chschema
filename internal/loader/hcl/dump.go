@@ -362,6 +362,9 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 		if v.ShardingKey != nil {
 			b.SetAttributeValue("sharding_key", cty.StringVal(*v.ShardingKey))
 		}
+		if v.PolicyName != nil {
+			b.SetAttributeValue("policy_name", cty.StringVal(*v.PolicyName))
+		}
 	case EngineKafka:
 		if v.Collection != nil {
 			b.SetAttributeValue("collection", cty.StringVal(*v.Collection))

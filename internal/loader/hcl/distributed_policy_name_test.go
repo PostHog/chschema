@@ -29,6 +29,18 @@ func TestIntrospect_Distributed_PolicyName(t *testing.T) {
 	}, db.Tables[0].Engine.Decoded)
 }
 
+func TestSQLGen_Engine_DistributedPolicyName(t *testing.T) {
+	clause, extra := engineSQL(EngineDistributed{
+		ClusterName:    "posthog",
+		RemoteDatabase: "default",
+		RemoteTable:    "events",
+		ShardingKey:    strPtr("sipHash64(id)"),
+		PolicyName:     strPtr("tiered"),
+	})
+	assert.Equal(t, "Distributed('posthog', 'default', 'events', sipHash64(id), 'tiered')", clause)
+	assert.Nil(t, extra)
+}
+
 // A parameter beyond policy_name must abort introspection loudly (#109).
 func TestIntrospect_Distributed_TooManyParamsErrors(t *testing.T) {
 	rows := &fakeRows{rows: []fakeRow{{
