@@ -116,6 +116,12 @@ type TableDiff struct {
 	AddIndexes  []IndexSpec
 	DropIndexes []string
 
+	// Projections keyed by name; a modify is emitted as DROP + ADD (there
+	// is no ALTER MODIFY PROJECTION). Adding one to an existing table also
+	// generates a manual MATERIALIZE PROJECTION.
+	AddProjections  []ProjectionSpec
+	DropProjections []string
+
 	EngineChange      *EngineChange
 	OrderByChange     *OrderByChange
 	PartitionByChange *StringChange
@@ -272,6 +278,7 @@ func (td TableDiff) IsEmpty() bool {
 	return len(td.RenameColumns) == 0 &&
 		len(td.AddColumns) == 0 && len(td.DropColumns) == 0 && len(td.ModifyColumns) == 0 &&
 		len(td.AddIndexes) == 0 && len(td.DropIndexes) == 0 &&
+		len(td.AddProjections) == 0 && len(td.DropProjections) == 0 &&
 		td.EngineChange == nil && td.OrderByChange == nil &&
 		td.PartitionByChange == nil && td.SampleByChange == nil && td.TTLChange == nil &&
 		len(td.SettingsAdded) == 0 && len(td.SettingsRemoved) == 0 && len(td.SettingsChanged) == 0 &&
@@ -765,6 +772,25 @@ func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 		}
 	}
 
+	fromProj := indexProjections(from.Projections)
+	toProj := indexProjections(to.Projections)
+	for _, n := range sortedKeys(toProj) {
+		f, ok := fromProj[n]
+		if !ok {
+			td.AddProjections = append(td.AddProjections, *toProj[n])
+			continue
+		}
+		if !reflect.DeepEqual(*f, *toProj[n]) {
+			td.DropProjections = append(td.DropProjections, n)
+			td.AddProjections = append(td.AddProjections, *toProj[n])
+		}
+	}
+	for _, n := range sortedKeys(fromProj) {
+		if _, ok := toProj[n]; !ok {
+			td.DropProjections = append(td.DropProjections, n)
+		}
+	}
+
 	// Constraints, primary_key and comment. Computed before the TimeSeries
 	// branch below so both it and the normal path pick them up. (Cluster is
 	// intentionally not diffed: ON CLUSTER is not recoverable from a live
@@ -901,6 +927,14 @@ func indexIndexes(idx []IndexSpec) map[string]*IndexSpec {
 	out := make(map[string]*IndexSpec, len(idx))
 	for i := range idx {
 		out[idx[i].Name] = &idx[i]
+	}
+	return out
+}
+
+func indexProjections(ps []ProjectionSpec) map[string]*ProjectionSpec {
+	out := make(map[string]*ProjectionSpec, len(ps))
+	for i := range ps {
+		out[ps[i].Name] = &ps[i]
 	}
 	return out
 }
