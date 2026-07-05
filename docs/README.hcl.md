@@ -125,7 +125,7 @@ attributes depend on the kind.
 | `replicated_collapsing_merge_tree`    | `zoo_path`, `replica_name`, `sign_column`          | —                      |
 | `aggregating_merge_tree`              | —                                                  | —                      |
 | `replicated_aggregating_merge_tree`   | `zoo_path`, `replica_name`                         | —                      |
-| `distributed`                         | `cluster_name`, `remote_database`, `remote_table`  | `sharding_key`         |
+| `distributed`                         | `cluster_name`, `remote_database`, `remote_table`  | `sharding_key`, `policy_name` (requires `sharding_key`) |
 | `log`                                 | —                                                  | —                      |
 | `kafka`                               | `broker_list = [...]`, `topic`, `consumer_group`, `format` | —              |
 | `time_series` (experimental)          | —                                                  | `settings`, `tags_to_columns`, nested `samples`/`tags`/`metrics` blocks |

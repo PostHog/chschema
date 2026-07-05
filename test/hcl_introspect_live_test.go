@@ -37,6 +37,10 @@ func TestLive_HCLIntrospect(t *testing.T) {
 		PARTITION BY toYYYYMM(ts)
 		ORDER BY (id, ts)`,
 
+		`CREATE TABLE ` + dbName + `.dist_policy (
+			id UInt64
+		) ENGINE = Distributed('posthog', '` + dbName + `', 'events', sipHash64(id), 'default')`,
+
 		`CREATE TABLE ` + dbName + `.soft_deleted (
 			id UInt64,
 			version UInt32,
@@ -68,6 +72,20 @@ func TestLive_HCLIntrospect(t *testing.T) {
 	want := &hclload.DatabaseSpec{
 		Name: dbName,
 		Tables: []hclload.TableSpec{
+			{
+				Name:    "dist_policy",
+				Columns: []hclload.ColumnSpec{{Name: "id", Type: "UInt64"}},
+				Engine: &hclload.EngineSpec{
+					Kind: "distributed",
+					Decoded: hclload.EngineDistributed{
+						ClusterName:    "posthog",
+						RemoteDatabase: dbName,
+						RemoteTable:    "events",
+						ShardingKey:    utils.Ptr("sipHash64(id)"),
+						PolicyName:     utils.Ptr("default"),
+					},
+				},
+			},
 			{
 				Name:        "events",
 				OrderBy:     []string{"id", "ts"},
