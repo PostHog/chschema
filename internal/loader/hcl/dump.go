@@ -236,6 +236,14 @@ func writeTable(body *hclwrite.Body, t TableSpec) {
 		}
 	}
 
+	for _, p := range t.Projections {
+		pb := body.AppendNewBlock("projection", []string{p.Name}).Body()
+		setQueryAttribute(pb, p.Query)
+		if len(p.Settings) > 0 {
+			pb.SetAttributeValue("settings", stringMap(p.Settings))
+		}
+	}
+
 	for _, c := range t.Constraints {
 		cb := body.AppendNewBlock("constraint", []string{c.Name}).Body()
 		if c.Check != nil {

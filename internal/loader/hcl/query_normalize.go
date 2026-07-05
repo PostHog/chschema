@@ -29,6 +29,17 @@ func normalizeQueries(db *DatabaseSpec) {
 				"database", db.Name, "materialized_view", db.MaterializedViews[i].Name)
 		}
 	}
+	for ti := range db.Tables {
+		for pi := range db.Tables[ti].Projections {
+			p := &db.Tables[ti].Projections[pi]
+			if q, ok := normalizeQuery(p.Query); ok {
+				p.Query = q
+			} else if strings.TrimSpace(p.Query) != "" {
+				slog.Warn("projection query could not be parsed for normalization; keeping raw (may diff as drift)",
+					"database", db.Name, "table", db.Tables[ti].Name, "projection", p.Name)
+			}
+		}
+	}
 }
 
 // beautifyNode renders an AST node as indented, multi-line SQL via the parser's

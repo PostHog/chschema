@@ -139,6 +139,11 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 			for _, idx := range td.AddIndexes {
 				emitManual(OpAlter, KindTable, dc.Database, td.Table, materializeIndexSQL(dc.Database, td.Table, idx.Name))
 			}
+			// Same policy for projections: ADD PROJECTION covers only parts
+			// written afterwards; the MATERIALIZE rebuild is operator-run.
+			for _, p := range td.AddProjections {
+				emitManual(OpAlter, KindTable, dc.Database, td.Table, materializeProjectionSQL(dc.Database, td.Table, p.Name))
+			}
 		}
 	}
 	for _, dc := range cs.Databases {
@@ -658,6 +663,9 @@ func createTableSQL(database string, t TableSpec) string {
 	for _, idx := range t.Indexes {
 		parts = append(parts, fmt.Sprintf("  INDEX %s", indexClause(idx)))
 	}
+	for _, p := range t.Projections {
+		parts = append(parts, fmt.Sprintf("  PROJECTION %s", projectionClause(p)))
+	}
 	b.WriteString(strings.Join(parts, ",\n"))
 	b.WriteString("\n)")
 
@@ -734,6 +742,34 @@ func dropRawSQL(kind, database, name string) string {
 	return fmt.Sprintf("DROP %s IF EXISTS %s.%s", form, database, name)
 }
 
+// projectionClause renders the keyword-less body of one projection (the
+// caller prefixes PROJECTION / ADD PROJECTION, matching indexClause). The
+// query embeds verbatim (canonical form); settings render as the newer
+// WITH SETTINGS clause, keys sorted for determinism.
+func projectionClause(p ProjectionSpec) string {
+	s := fmt.Sprintf("%s (%s)", p.Name, p.Query)
+	if len(p.Settings) > 0 {
+		keys := make([]string, 0, len(p.Settings))
+		for k := range p.Settings {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		pairs := make([]string, 0, len(keys))
+		for _, k := range keys {
+			pairs = append(pairs, fmt.Sprintf("%s = %s", k, p.Settings[k]))
+		}
+		s += fmt.Sprintf(" WITH SETTINGS (%s)", strings.Join(pairs, ", "))
+	}
+	return s
+}
+
+// materializeProjectionSQL renders the MATERIALIZE PROJECTION statement that
+// rebuilds a newly added projection for existing parts. Always emitted as a
+// manual (operator-run) operation, like MATERIALIZE INDEX.
+func materializeProjectionSQL(database, table, projection string) string {
+	return fmt.Sprintf("ALTER TABLE %s.%s MATERIALIZE PROJECTION %s", database, table, projection)
+}
+
 // materializeIndexSQL renders the MATERIALIZE INDEX statement that rebuilds a
 // newly added skip index for existing parts. Always emitted as a manual
 // (operator-run) operation.
@@ -765,6 +801,12 @@ func alterTableSQL(database string, td TableDiff) string {
 	}
 	for _, idx := range td.AddIndexes {
 		ops = append(ops, fmt.Sprintf("ADD INDEX %s", indexClause(idx)))
+	}
+	for _, n := range td.DropProjections {
+		ops = append(ops, fmt.Sprintf("DROP PROJECTION %s", n))
+	}
+	for _, p := range td.AddProjections {
+		ops = append(ops, fmt.Sprintf("ADD PROJECTION %s", projectionClause(p)))
 	}
 	for _, k := range sortedKeys(td.SettingsAdded) {
 		ops = append(ops, fmt.Sprintf("MODIFY SETTING %s = %s", k, formatSettingValue(td.SettingsAdded[k])))

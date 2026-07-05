@@ -41,6 +41,12 @@ func TestLive_HCLIntrospect(t *testing.T) {
 			id UInt64
 		) ENGINE = Distributed('posthog', '` + dbName + `', 'events', sipHash64(id), 'default')`,
 
+		`CREATE TABLE ` + dbName + `.projected (
+			id UInt64,
+			user_id UInt64,
+			PROJECTION by_user (SELECT * ORDER BY user_id)
+		) ENGINE = MergeTree ORDER BY id`,
+
 		`CREATE TABLE ` + dbName + `.soft_deleted (
 			id UInt64,
 			version UInt32,
@@ -97,6 +103,19 @@ func TestLive_HCLIntrospect(t *testing.T) {
 					{Name: "name", Type: "String", Default: utils.Ptr("'anon'"), Comment: utils.Ptr("display name")},
 					{Name: "payload", Type: "String", Codec: utils.Ptr("ZSTD(3)")},
 					{Name: "score", Type: "Nullable(Float64)"},
+				},
+				Engine: &hclload.EngineSpec{Kind: "merge_tree", Decoded: hclload.EngineMergeTree{}},
+			},
+			{
+				Name:     "projected",
+				OrderBy:  []string{"id"},
+				Settings: map[string]string{"index_granularity": "8192"},
+				Columns: []hclload.ColumnSpec{
+					{Name: "id", Type: "UInt64"},
+					{Name: "user_id", Type: "UInt64"},
+				},
+				Projections: []hclload.ProjectionSpec{
+					{Name: "by_user", Query: "SELECT *\nORDER BY user_id"},
 				},
 				Engine: &hclload.EngineSpec{Kind: "merge_tree", Decoded: hclload.EngineMergeTree{}},
 			},

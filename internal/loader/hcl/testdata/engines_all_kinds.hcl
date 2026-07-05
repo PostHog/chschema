@@ -112,6 +112,16 @@ database "posthog" {
     }
   }
 
+  table "t_projected" {
+    column "id" { type = "UInt64" }
+    column "region" { type = "String" }
+    projection "by_region" {
+      query = "SELECT id, region ORDER BY region"
+    }
+    engine "merge_tree" {}
+    order_by = ["id"]
+  }
+
   table "t_log" {
     column "id" { type = "UUID" }
     engine "log" {}

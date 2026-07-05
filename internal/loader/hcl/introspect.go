@@ -258,10 +258,17 @@ func buildTableFromCreateTable(ct *chparser.CreateTable) (TableSpec, error) {
 					return TableSpec{}, err
 				}
 				t.Indexes = append(t.Indexes, idx)
+			case *chparser.TableProjection:
+				t.Projections = append(t.Projections, projectionFromAST(n))
 			case *chparser.ConstraintClause:
 				if cs := constraintFromAST(n); cs != nil {
 					t.Constraints = append(t.Constraints, *cs)
 				}
+			default:
+				// The parser's column-list grammar produces exactly the kinds
+				// above. Anything new must abort, not silently drop (#87/#108):
+				// a dropped clause round-trips as a false "no drift".
+				return TableSpec{}, fmt.Errorf("unhandled table schema item %T", col)
 			}
 		}
 	}
@@ -513,6 +520,30 @@ func indexFromAST(i *chparser.TableIndex) (IndexSpec, error) {
 		out.Granularity = n
 	}
 	return out, nil
+}
+
+// projectionFromAST converts a CREATE-level PROJECTION clause. The
+// SELECT body is canonicalized through normalizeQuery — the same
+// pipeline the loader applies to authored projection queries — so the
+// two sides are identical by construction. Beautifying p.Select
+// directly is NOT equivalent: the visitor indents clauses nested inside
+// the projection parens ("SELECT *\n  ORDER BY x") while the top-level
+// canonical form does not, which would read as permanent drift. The
+// optional WITH SETTINGS clause maps to Settings.
+func projectionFromAST(p *chparser.TableProjection) ProjectionSpec {
+	out := ProjectionSpec{Name: formatNode(p.Identifier)}
+	q := strings.TrimSpace(formatNode(p.Select))
+	if strings.HasPrefix(q, "(") && strings.HasSuffix(q, ")") {
+		q = strings.TrimSpace(q[1 : len(q)-1])
+	}
+	if nq, ok := normalizeQuery(q); ok {
+		q = nq
+	}
+	out.Query = q
+	if p.Settings != nil {
+		out.Settings = engineSettingsMap(p.Settings)
+	}
+	return out
 }
 
 func constraintFromAST(c *chparser.ConstraintClause) *ConstraintSpec {
