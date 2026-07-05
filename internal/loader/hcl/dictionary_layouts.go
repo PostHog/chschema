@@ -6,15 +6,26 @@ import (
 	"github.com/hashicorp/hcl/v2/gohcl"
 )
 
-type LayoutFlat struct{}
+type LayoutFlat struct {
+	InitialArraySize *int64 `hcl:"initial_array_size,optional"`
+	MaxArraySize     *int64 `hcl:"max_array_size,optional"`
+}
 
 func (LayoutFlat) Kind() string { return "flat" }
 
-type LayoutHashed struct{}
+type LayoutHashed struct {
+	Shards                *int64   `hcl:"shards,optional"`
+	ShardLoadQueueBacklog *int64   `hcl:"shard_load_queue_backlog,optional"`
+	MaxLoadFactor         *float64 `hcl:"max_load_factor,optional"`
+}
 
 func (LayoutHashed) Kind() string { return "hashed" }
 
-type LayoutSparseHashed struct{}
+type LayoutSparseHashed struct {
+	Shards                *int64   `hcl:"shards,optional"`
+	ShardLoadQueueBacklog *int64   `hcl:"shard_load_queue_backlog,optional"`
+	MaxLoadFactor         *float64 `hcl:"max_load_factor,optional"`
+}
 
 func (LayoutSparseHashed) Kind() string { return "sparse_hashed" }
 
@@ -25,12 +36,21 @@ type LayoutRegexpTree struct{}
 func (LayoutRegexpTree) Kind() string { return "regexp_tree" }
 
 type LayoutComplexKeyHashed struct {
-	Preallocate *int64 `hcl:"preallocate,optional"`
+	// Preallocate is accepted by ClickHouse for backwards compatibility
+	// but no longer documented; kept so old DDL introspects faithfully.
+	Preallocate           *int64   `hcl:"preallocate,optional"`
+	Shards                *int64   `hcl:"shards,optional"`
+	ShardLoadQueueBacklog *int64   `hcl:"shard_load_queue_backlog,optional"`
+	MaxLoadFactor         *float64 `hcl:"max_load_factor,optional"`
 }
 
 func (LayoutComplexKeyHashed) Kind() string { return "complex_key_hashed" }
 
-type LayoutComplexKeySparseHashed struct{}
+type LayoutComplexKeySparseHashed struct {
+	Shards                *int64   `hcl:"shards,optional"`
+	ShardLoadQueueBacklog *int64   `hcl:"shard_load_queue_backlog,optional"`
+	MaxLoadFactor         *float64 `hcl:"max_load_factor,optional"`
+}
 
 func (LayoutComplexKeySparseHashed) Kind() string { return "complex_key_sparse_hashed" }
 
@@ -102,15 +122,31 @@ func DecodeDictionaryLayout(spec *DictionaryLayoutSpec) (DictionaryLayout, error
 	}
 	switch spec.Kind {
 	case "flat":
-		return LayoutFlat{}, nil
+		var l LayoutFlat
+		if d := gohcl.DecodeBody(spec.Body, nil, &l); d.HasErrors() {
+			return nil, fmt.Errorf("layout flat: %s", d.Error())
+		}
+		return l, nil
 	case "hashed":
-		return LayoutHashed{}, nil
+		var l LayoutHashed
+		if d := gohcl.DecodeBody(spec.Body, nil, &l); d.HasErrors() {
+			return nil, fmt.Errorf("layout hashed: %s", d.Error())
+		}
+		return l, nil
 	case "sparse_hashed":
-		return LayoutSparseHashed{}, nil
+		var l LayoutSparseHashed
+		if d := gohcl.DecodeBody(spec.Body, nil, &l); d.HasErrors() {
+			return nil, fmt.Errorf("layout sparse_hashed: %s", d.Error())
+		}
+		return l, nil
 	case "regexp_tree":
 		return LayoutRegexpTree{}, nil
 	case "complex_key_sparse_hashed":
-		return LayoutComplexKeySparseHashed{}, nil
+		var l LayoutComplexKeySparseHashed
+		if d := gohcl.DecodeBody(spec.Body, nil, &l); d.HasErrors() {
+			return nil, fmt.Errorf("layout complex_key_sparse_hashed: %s", d.Error())
+		}
+		return l, nil
 	case "direct":
 		return LayoutDirect{}, nil
 	case "complex_key_direct":

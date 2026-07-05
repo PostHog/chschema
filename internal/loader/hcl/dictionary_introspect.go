@@ -216,6 +216,41 @@ func parseInt64Literal(n *chparser.NumberLiteral) (int64, error) {
 	return v, nil
 }
 
+// takeArg reads and removes one arg so that, after a builder consumed
+// everything it models, leftovers can be rejected loudly — a dropped
+// parameter is symmetric between a golden and a fresh dump, so diff
+// cannot see the loss (#115, the #108 failure mode).
+func takeArg(args map[string]string, key string) string {
+	v, ok := args[key]
+	if ok {
+		delete(args, key)
+	}
+	return v
+}
+
+func takeStr(args map[string]string, key string) *string  { return optStr(takeArg(args, key)) }
+func takeInt64(args map[string]string, key string) *int64 { return optInt64(takeArg(args, key)) }
+func takeBool(args map[string]string, key string) *bool   { return optBool(takeArg(args, key)) }
+
+func takeFloat64(args map[string]string, key string) *float64 {
+	s := takeArg(args, key)
+	if s == "" {
+		return nil
+	}
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return nil
+	}
+	return &f
+}
+
+func unknownArgsError(clause, kind string, args map[string]string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%s %s: unknown parameter(s) %v (unmodeled — refusing to drop)", clause, kind, sortedKeys(args))
+}
+
 func buildDictionarySourceFromAST(dictName string, s *chparser.DictionarySourceClause) (*DictionarySourceSpec, error) {
 	if s == nil || s.Source == nil {
 		return nil, errors.New("dictionary has no source")
@@ -229,7 +264,7 @@ func buildDictionarySourceFromAST(dictName string, s *chparser.DictionarySourceC
 	// values, grant displaySecretsInShowAndSelect and set
 	// display_secrets_in_show_and_select = 1.
 	optSecret := func(field string) *string {
-		v := args[field]
+		v := takeArg(args, field)
 		if v == RedactedValue {
 			slog.Warn("dictionary source secret is redacted; dropping it to avoid overwriting the real value on apply",
 				"dictionary", dictName, "source", kind, "field", field,
@@ -243,52 +278,55 @@ func buildDictionarySourceFromAST(dictName string, s *chparser.DictionarySourceC
 	switch kind {
 	case "clickhouse":
 		decoded = SourceClickHouse{
-			Host: optStr(args["host"]), Port: optInt64(args["port"]),
-			User: optStr(args["user"]), Password: optSecret("password"),
-			DB: optStr(args["db"]), Table: optStr(args["table"]),
-			Query:           optStr(args["query"]),
-			InvalidateQuery: optStr(args["invalidate_query"]),
-			UpdateField:     optStr(args["update_field"]),
-			UpdateLag:       optInt64(args["update_lag"]),
+			Host: takeStr(args, "host"), Port: takeInt64(args, "port"),
+			User: takeStr(args, "user"), Password: optSecret("password"),
+			DB: takeStr(args, "db"), Table: takeStr(args, "table"),
+			Query:           takeStr(args, "query"),
+			InvalidateQuery: takeStr(args, "invalidate_query"),
+			UpdateField:     takeStr(args, "update_field"),
+			UpdateLag:       takeInt64(args, "update_lag"),
 		}
 	case "mysql":
 		decoded = SourceMySQL{
-			Host: optStr(args["host"]), Port: optInt64(args["port"]),
-			User: optStr(args["user"]), Password: optSecret("password"),
-			DB: optStr(args["db"]), Table: optStr(args["table"]),
-			Query:           optStr(args["query"]),
-			InvalidateQuery: optStr(args["invalidate_query"]),
-			UpdateField:     optStr(args["update_field"]),
-			UpdateLag:       optInt64(args["update_lag"]),
+			Host: takeStr(args, "host"), Port: takeInt64(args, "port"),
+			User: takeStr(args, "user"), Password: optSecret("password"),
+			DB: takeStr(args, "db"), Table: takeStr(args, "table"),
+			Query:           takeStr(args, "query"),
+			InvalidateQuery: takeStr(args, "invalidate_query"),
+			UpdateField:     takeStr(args, "update_field"),
+			UpdateLag:       takeInt64(args, "update_lag"),
 		}
 	case "postgresql":
 		decoded = SourcePostgreSQL{
-			Host: optStr(args["host"]), Port: optInt64(args["port"]),
-			User: optStr(args["user"]), Password: optSecret("password"),
-			DB: optStr(args["db"]), Table: optStr(args["table"]),
-			Query:           optStr(args["query"]),
-			InvalidateQuery: optStr(args["invalidate_query"]),
-			UpdateField:     optStr(args["update_field"]),
-			UpdateLag:       optInt64(args["update_lag"]),
+			Host: takeStr(args, "host"), Port: takeInt64(args, "port"),
+			User: takeStr(args, "user"), Password: optSecret("password"),
+			DB: takeStr(args, "db"), Table: takeStr(args, "table"),
+			Query:           takeStr(args, "query"),
+			InvalidateQuery: takeStr(args, "invalidate_query"),
+			UpdateField:     takeStr(args, "update_field"),
+			UpdateLag:       takeInt64(args, "update_lag"),
 		}
 	case "http":
 		decoded = SourceHTTP{
-			URL: args["url"], Format: args["format"],
-			CredentialsUser:     optStr(args["credentials_user"]),
+			URL: takeArg(args, "url"), Format: takeArg(args, "format"),
+			CredentialsUser:     takeStr(args, "credentials_user"),
 			CredentialsPassword: optSecret("credentials_password"),
 		}
 	case "file":
-		decoded = SourceFile{Path: args["path"], Format: args["format"]}
+		decoded = SourceFile{Path: takeArg(args, "path"), Format: takeArg(args, "format")}
 	case "executable":
 		decoded = SourceExecutable{
-			Command:     args["command"],
-			Format:      args["format"],
-			ImplicitKey: optBool(args["implicit_key"]),
+			Command:     takeArg(args, "command"),
+			Format:      takeArg(args, "format"),
+			ImplicitKey: takeBool(args, "implicit_key"),
 		}
 	case "null":
 		decoded = SourceNull{}
 	default:
 		return nil, fmt.Errorf("unsupported dictionary source kind %q", kind)
+	}
+	if err := unknownArgsError("source", kind, args); err != nil {
+		return nil, err
 	}
 	return &DictionarySourceSpec{Kind: kind, Decoded: decoded}, nil
 }
@@ -303,31 +341,51 @@ func buildDictionaryLayoutFromAST(l *chparser.DictionaryLayoutClause) (*Dictiona
 	var decoded DictionaryLayout
 	switch kind {
 	case "flat":
-		decoded = LayoutFlat{}
+		decoded = LayoutFlat{
+			InitialArraySize: takeInt64(args, "initial_array_size"),
+			MaxArraySize:     takeInt64(args, "max_array_size"),
+		}
 	case "hashed":
-		decoded = LayoutHashed{}
+		decoded = LayoutHashed{
+			Shards:                takeInt64(args, "shards"),
+			ShardLoadQueueBacklog: takeInt64(args, "shard_load_queue_backlog"),
+			MaxLoadFactor:         takeFloat64(args, "max_load_factor"),
+		}
 	case "sparse_hashed":
-		decoded = LayoutSparseHashed{}
+		decoded = LayoutSparseHashed{
+			Shards:                takeInt64(args, "shards"),
+			ShardLoadQueueBacklog: takeInt64(args, "shard_load_queue_backlog"),
+			MaxLoadFactor:         takeFloat64(args, "max_load_factor"),
+		}
 	case "regexp_tree":
 		decoded = LayoutRegexpTree{}
 	case "complex_key_sparse_hashed":
-		decoded = LayoutComplexKeySparseHashed{}
+		decoded = LayoutComplexKeySparseHashed{
+			Shards:                takeInt64(args, "shards"),
+			ShardLoadQueueBacklog: takeInt64(args, "shard_load_queue_backlog"),
+			MaxLoadFactor:         takeFloat64(args, "max_load_factor"),
+		}
 	case "direct":
 		decoded = LayoutDirect{}
 	case "complex_key_hashed":
-		decoded = LayoutComplexKeyHashed{Preallocate: optInt64(args["preallocate"])}
+		decoded = LayoutComplexKeyHashed{
+			Preallocate:           takeInt64(args, "preallocate"),
+			Shards:                takeInt64(args, "shards"),
+			ShardLoadQueueBacklog: takeInt64(args, "shard_load_queue_backlog"),
+			MaxLoadFactor:         takeFloat64(args, "max_load_factor"),
+		}
 	case "range_hashed":
-		decoded = LayoutRangeHashed{RangeLookupStrategy: optStr(args["range_lookup_strategy"])}
+		decoded = LayoutRangeHashed{RangeLookupStrategy: takeStr(args, "range_lookup_strategy")}
 	case "complex_key_range_hashed":
-		decoded = LayoutComplexKeyRangeHashed{RangeLookupStrategy: optStr(args["range_lookup_strategy"])}
+		decoded = LayoutComplexKeyRangeHashed{RangeLookupStrategy: takeStr(args, "range_lookup_strategy")}
 	case "cache":
-		n := optInt64(args["size_in_cells"])
+		n := takeInt64(args, "size_in_cells")
 		if n == nil {
 			return nil, errors.New("layout cache: missing size_in_cells")
 		}
 		decoded = LayoutCache{SizeInCells: *n}
 	case "complex_key_cache":
-		n := optInt64(args["size_in_cells"])
+		n := takeInt64(args, "size_in_cells")
 		if n == nil {
 			return nil, errors.New("layout complex_key_cache: missing size_in_cells")
 		}
@@ -335,13 +393,16 @@ func buildDictionaryLayoutFromAST(l *chparser.DictionaryLayoutClause) (*Dictiona
 	case "complex_key_direct":
 		decoded = LayoutComplexKeyDirect{}
 	case "hashed_array":
-		decoded = LayoutHashedArray{Shards: optInt64(args["shards"])}
+		decoded = LayoutHashedArray{Shards: takeInt64(args, "shards")}
 	case "complex_key_hashed_array":
-		decoded = LayoutComplexKeyHashedArray{Shards: optInt64(args["shards"])}
+		decoded = LayoutComplexKeyHashedArray{Shards: takeInt64(args, "shards")}
 	case "ip_trie":
-		decoded = LayoutIPTrie{AccessToKeyFromAttributes: optBool(args["access_to_key_from_attributes"])}
+		decoded = LayoutIPTrie{AccessToKeyFromAttributes: takeBool(args, "access_to_key_from_attributes")}
 	default:
 		return nil, fmt.Errorf("unsupported dictionary layout kind %q", kind)
+	}
+	if err := unknownArgsError("layout", kind, args); err != nil {
+		return nil, err
 	}
 	return &DictionaryLayoutSpec{Kind: kind, Decoded: decoded}, nil
 }
