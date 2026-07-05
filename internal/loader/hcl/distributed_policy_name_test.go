@@ -61,6 +61,21 @@ func TestSQLGen_Engine_DistributedPolicyName(t *testing.T) {
 	assert.Nil(t, extra)
 }
 
+// storage_policy is a table SETTING, not an engine parameter; the
+// generic settings round-trip must preserve it (docs sweep for #109 —
+// the only other place ClickHouse expresses a storage policy in table DDL).
+func TestIntrospect_StoragePolicySettingPreserved(t *testing.T) {
+	rows := &fakeRows{rows: []fakeRow{{
+		name: "hot_cold",
+		sql: "CREATE TABLE db.hot_cold (`id` UInt64) ENGINE = MergeTree ORDER BY id " +
+			"SETTINGS index_granularity = 8192, storage_policy = 'tiered'",
+	}}}
+	db := &DatabaseSpec{Name: "db"}
+	require.NoError(t, processIntrospectRows(db, "db", rows))
+	require.Len(t, db.Tables, 1)
+	assert.Equal(t, "tiered", db.Tables[0].Settings["storage_policy"])
+}
+
 // A parameter beyond policy_name must abort introspection loudly (#109).
 func TestIntrospect_Distributed_TooManyParamsErrors(t *testing.T) {
 	rows := &fakeRows{rows: []fakeRow{{
