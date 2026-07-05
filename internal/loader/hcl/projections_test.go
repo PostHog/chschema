@@ -130,6 +130,31 @@ func TestSQLGen_CreateTableWithProjection(t *testing.T) {
 	}
 }
 
+func TestApplySQL_AddDropProjection(t *testing.T) {
+	s := baseSchema()
+	_, err := ApplySQL(s, `ALTER TABLE db.events ADD PROJECTION by_user (SELECT * ORDER BY user_id)`, "", false)
+	require.NoError(t, err)
+	require.Len(t, s.Databases[0].Tables[0].Projections, 1)
+	p := s.Databases[0].Tables[0].Projections[0]
+	assert.Equal(t, "by_user", p.Name)
+	assert.Contains(t, p.Query, "ORDER BY user_id")
+
+	// Duplicate without IF NOT EXISTS errors; with it, no-op.
+	_, err = ApplySQL(s, `ALTER TABLE db.events ADD PROJECTION by_user (SELECT * ORDER BY user_id)`, "", false)
+	require.Error(t, err)
+	_, err = ApplySQL(s, `ALTER TABLE db.events ADD PROJECTION IF NOT EXISTS by_user (SELECT * ORDER BY user_id)`, "", false)
+	require.NoError(t, err)
+	require.Len(t, s.Databases[0].Tables[0].Projections, 1)
+
+	_, err = ApplySQL(s, `ALTER TABLE db.events DROP PROJECTION by_user`, "", false)
+	require.NoError(t, err)
+	assert.Empty(t, s.Databases[0].Tables[0].Projections)
+
+	// MATERIALIZE PROJECTION is a data op, not schema DDL — rejected.
+	_, err = ApplySQL(s, `ALTER TABLE db.events MATERIALIZE PROJECTION by_user`, "", false)
+	require.Error(t, err)
+}
+
 // The live probe that exposed #87's silent drop, as a regression test:
 // both projection forms must be captured, not skipped.
 func TestIntrospect_Projections(t *testing.T) {
