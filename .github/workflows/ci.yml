@@ -88,10 +88,17 @@ jobs:
       run: go test -v ./test/...
 
     - name: Check test coverage
+      env:
+        # Floor, not target: raise it as coverage grows, never lower it (#99).
+        COVERAGE_FLOOR: "73"
       run: |
         go tool cover -func=coverage.out
         COVERAGE=$(go tool cover -func=coverage.out | grep total | awk '{print substr($3, 1, length($3)-1)}')
-        echo "Total test coverage: ${COVERAGE}%"
+        echo "Total test coverage: ${COVERAGE}% (floor: ${COVERAGE_FLOOR}%)"
+        if awk -v c="$COVERAGE" -v f="$COVERAGE_FLOOR" 'BEGIN { exit !(c < f) }'; then
+          echo "::error::Coverage ${COVERAGE}% is below the ${COVERAGE_FLOOR}% floor"
+          exit 1
+        fi
 
   test-live:
     runs-on: depot-ubuntu-24.04
