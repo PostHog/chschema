@@ -3,6 +3,7 @@ package hcl
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -130,25 +131,50 @@ func sourceSQL(s DictionarySource) string {
 	return ""
 }
 
+func appendOptIntArg(args *[]string, name string, v *int64) {
+	if v != nil {
+		*args = append(*args, fmt.Sprintf("%s %d", name, *v))
+	}
+}
+
+func appendOptFloatArg(args *[]string, name string, v *float64) {
+	if v != nil {
+		*args = append(*args, fmt.Sprintf("%s %s", name, strconv.FormatFloat(*v, 'g', -1, 64)))
+	}
+}
+
+// hashedFamilyArgs renders the parameter triple shared by HASHED,
+// SPARSE_HASHED and their COMPLEX_KEY_ counterparts.
+func hashedFamilyArgs(shards, backlog *int64, maxLoadFactor *float64) []string {
+	var a []string
+	appendOptIntArg(&a, "SHARDS", shards)
+	appendOptIntArg(&a, "SHARD_LOAD_QUEUE_BACKLOG", backlog)
+	appendOptFloatArg(&a, "MAX_LOAD_FACTOR", maxLoadFactor)
+	return a
+}
+
 func layoutSQL(l DictionaryLayout) string {
 	switch v := l.(type) {
 	case LayoutFlat:
-		return "FLAT()"
+		var a []string
+		appendOptIntArg(&a, "INITIAL_ARRAY_SIZE", v.InitialArraySize)
+		appendOptIntArg(&a, "MAX_ARRAY_SIZE", v.MaxArraySize)
+		return "FLAT(" + strings.Join(a, " ") + ")"
 	case LayoutHashed:
-		return "HASHED()"
+		return "HASHED(" + strings.Join(hashedFamilyArgs(v.Shards, v.ShardLoadQueueBacklog, v.MaxLoadFactor), " ") + ")"
 	case LayoutSparseHashed:
-		return "SPARSE_HASHED()"
+		return "SPARSE_HASHED(" + strings.Join(hashedFamilyArgs(v.Shards, v.ShardLoadQueueBacklog, v.MaxLoadFactor), " ") + ")"
 	case LayoutRegexpTree:
 		return "REGEXP_TREE()"
 	case LayoutComplexKeySparseHashed:
-		return "COMPLEX_KEY_SPARSE_HASHED()"
+		return "COMPLEX_KEY_SPARSE_HASHED(" + strings.Join(hashedFamilyArgs(v.Shards, v.ShardLoadQueueBacklog, v.MaxLoadFactor), " ") + ")"
 	case LayoutDirect:
 		return "DIRECT()"
 	case LayoutComplexKeyHashed:
-		if v.Preallocate != nil {
-			return fmt.Sprintf("COMPLEX_KEY_HASHED(PREALLOCATE %d)", *v.Preallocate)
-		}
-		return "COMPLEX_KEY_HASHED()"
+		var a []string
+		appendOptIntArg(&a, "PREALLOCATE", v.Preallocate)
+		a = append(a, hashedFamilyArgs(v.Shards, v.ShardLoadQueueBacklog, v.MaxLoadFactor)...)
+		return "COMPLEX_KEY_HASHED(" + strings.Join(a, " ") + ")"
 	case LayoutRangeHashed:
 		if v.RangeLookupStrategy != nil {
 			return fmt.Sprintf("RANGE_HASHED(RANGE_LOOKUP_STRATEGY '%s')", *v.RangeLookupStrategy)

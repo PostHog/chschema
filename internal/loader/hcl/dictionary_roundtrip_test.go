@@ -42,6 +42,24 @@ func rtFlatWS(s string) string {
 	return strings.Join(strings.Fields(s), " ")
 }
 
+// Unknown layout/source args must abort, not silently drop (#115) — the
+// #108 failure mode: symmetric loss is invisible to diff.
+func TestDictionaryRT_UnknownArgsError(t *testing.T) {
+	_, err := buildDictionaryFromCreateSQL(
+		"CREATE DICTIONARY db.d (id UInt64) PRIMARY KEY id " +
+			"SOURCE(CLICKHOUSE(TABLE 't')) LIFETIME(MIN 0 MAX 300) " +
+			"LAYOUT(FLAT(INITIAL_ARRAY_SIZE 1024 BOGUS_KNOB 7))")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bogus_knob")
+
+	_, err = buildDictionaryFromCreateSQL(
+		"CREATE DICTIONARY db.d (id UInt64) PRIMARY KEY id " +
+			"SOURCE(CLICKHOUSE(TABLE 't' FANCY_OPTION 'x')) LIFETIME(MIN 0 MAX 300) " +
+			"LAYOUT(FLAT())")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "fancy_option")
+}
+
 func TestDictionaryRT_Layouts(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -104,6 +122,31 @@ func TestDictionaryRT_Layouts(t *testing.T) {
 			"ip_trie_access_false", "IP_TRIE(ACCESS_TO_KEY_FROM_ATTRIBUTES 0)",
 			LayoutIPTrie{AccessToKeyFromAttributes: ptr(false)},
 			[]string{`access_to_key_from_attributes = false`},
+		},
+		{
+			"flat_sizes", "FLAT(INITIAL_ARRAY_SIZE 50000 MAX_ARRAY_SIZE 5000000)",
+			LayoutFlat{InitialArraySize: ptr(int64(50000)), MaxArraySize: ptr(int64(5000000))},
+			[]string{`initial_array_size = 50000`, `max_array_size = 5000000`},
+		},
+		{
+			"hashed_full", "HASHED(SHARDS 16 SHARD_LOAD_QUEUE_BACKLOG 10000 MAX_LOAD_FACTOR 0.5)",
+			LayoutHashed{Shards: ptr(int64(16)), ShardLoadQueueBacklog: ptr(int64(10000)), MaxLoadFactor: ptr(0.5)},
+			[]string{`shards = 16`, `shard_load_queue_backlog = 10000`, `max_load_factor = 0.5`},
+		},
+		{
+			"sparse_hashed_shards", "SPARSE_HASHED(SHARDS 2)",
+			LayoutSparseHashed{Shards: ptr(int64(2))},
+			[]string{`shards = 2`},
+		},
+		{
+			"complex_key_hashed_full", "COMPLEX_KEY_HASHED(SHARDS 4 MAX_LOAD_FACTOR 0.75 PREALLOCATE 1)",
+			LayoutComplexKeyHashed{Preallocate: ptr(int64(1)), Shards: ptr(int64(4)), MaxLoadFactor: ptr(0.75)},
+			[]string{`shards = 4`, `max_load_factor = 0.75`, `preallocate = 1`},
+		},
+		{
+			"complex_key_sparse_hashed_full", "COMPLEX_KEY_SPARSE_HASHED(SHARDS 8 SHARD_LOAD_QUEUE_BACKLOG 500)",
+			LayoutComplexKeySparseHashed{Shards: ptr(int64(8)), ShardLoadQueueBacklog: ptr(int64(500))},
+			[]string{`shards = 8`, `shard_load_queue_backlog = 500`},
 		},
 	}
 	for _, tc := range cases {

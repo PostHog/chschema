@@ -117,11 +117,28 @@ func writeDictionaryLayout(parent *hclwrite.Body, l DictionaryLayout) {
 	block := parent.AppendNewBlock("layout", []string{l.Kind()})
 	b := block.Body()
 	switch v := l.(type) {
-	case LayoutFlat, LayoutHashed, LayoutSparseHashed, LayoutComplexKeySparseHashed,
-		LayoutDirect, LayoutComplexKeyDirect, LayoutRegexpTree:
+	case LayoutDirect, LayoutComplexKeyDirect, LayoutRegexpTree:
 		// no fields
+	case LayoutFlat:
+		writeOptInt(b, "initial_array_size", v.InitialArraySize)
+		writeOptInt(b, "max_array_size", v.MaxArraySize)
+	case LayoutHashed:
+		writeOptInt(b, "shards", v.Shards)
+		writeOptInt(b, "shard_load_queue_backlog", v.ShardLoadQueueBacklog)
+		writeOptFloat(b, "max_load_factor", v.MaxLoadFactor)
+	case LayoutSparseHashed:
+		writeOptInt(b, "shards", v.Shards)
+		writeOptInt(b, "shard_load_queue_backlog", v.ShardLoadQueueBacklog)
+		writeOptFloat(b, "max_load_factor", v.MaxLoadFactor)
+	case LayoutComplexKeySparseHashed:
+		writeOptInt(b, "shards", v.Shards)
+		writeOptInt(b, "shard_load_queue_backlog", v.ShardLoadQueueBacklog)
+		writeOptFloat(b, "max_load_factor", v.MaxLoadFactor)
 	case LayoutComplexKeyHashed:
 		writeOptInt(b, "preallocate", v.Preallocate)
+		writeOptInt(b, "shards", v.Shards)
+		writeOptInt(b, "shard_load_queue_backlog", v.ShardLoadQueueBacklog)
+		writeOptFloat(b, "max_load_factor", v.MaxLoadFactor)
 	case LayoutRangeHashed:
 		writeOptStr(b, "range_lookup_strategy", v.RangeLookupStrategy)
 	case LayoutComplexKeyRangeHashed:
@@ -148,6 +165,12 @@ func writeOptStr(b *hclwrite.Body, key string, v *string) {
 func writeOptInt(b *hclwrite.Body, key string, v *int64) {
 	if v != nil {
 		b.SetAttributeValue(key, cty.NumberIntVal(*v))
+	}
+}
+
+func writeOptFloat(b *hclwrite.Body, key string, v *float64) {
+	if v != nil {
+		b.SetAttributeValue(key, cty.NumberFloatVal(*v))
 	}
 }
 
