@@ -108,6 +108,39 @@ existing parts. The materialize is a heavy, unpredictable mutation, so it is
 `-- MANUAL:` line, and the JSON/plan output marks it `"manual": true` so
 executors skip it. An operator runs it deliberately.
 
+## `projection`
+
+```hcl
+projection "by_user" {
+  query = "SELECT * ORDER BY user_id"      # one-liner, heredoc, or file()
+}
+
+projection "daily_agg" {
+  query    = <<-SQL
+    SELECT user_id, toDate(ts) AS d, count()
+    GROUP BY user_id, d
+  SQL
+  settings = { index_granularity = "4096" }  # optional; ClickHouse ≥ 26.5
+}
+```
+
+The `query` is the projection's SELECT (implicit `FROM` the parent table,
+optional `GROUP BY` / `ORDER BY`). Like view and MV queries it normalizes to
+the parser's beautified canonical form on load, introspect, and dump, so
+formatting never diffs as drift. The optional `settings` map renders as the
+`WITH SETTINGS (…)` clause (projection-level MergeTree settings; servers
+older than 26.5 reject it).
+
+Changing a projection has no in-place ALTER: the diff emits
+`DROP PROJECTION` + `ADD PROJECTION`. Adding one to an existing table also
+generates a companion `ALTER TABLE … MATERIALIZE PROJECTION` which — exactly
+like `MATERIALIZE INDEX` above — is a manual, operator-run statement
+(`-- MANUAL:` / `"manual": true`), never executed automatically.
+
+The newer index-form projection (`PROJECTION p INDEX expr TYPE basic`) is not
+supported; introspecting a table that uses it fails loudly at parse
+(capture it with `-allow-raw` if needed).
+
 ## `engine`
 
 The engine is a labeled block; the label is the engine kind. The body's

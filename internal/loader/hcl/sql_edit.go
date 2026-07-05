@@ -200,6 +200,25 @@ func applyAlterClause(t *TableSpec, clause chparser.AlterTableClause) error {
 			return fmt.Errorf("DROP INDEX %q: no such index", name)
 		}
 		t.Indexes = append(t.Indexes[:i], t.Indexes[i+1:]...)
+	case *chparser.AlterTableAddProjection:
+		p := projectionFromAST(c.TableProjection)
+		if findProjection(t, p.Name) >= 0 {
+			if c.IfNotExists {
+				return nil
+			}
+			return fmt.Errorf("ADD PROJECTION %q: projection already exists", p.Name)
+		}
+		t.Projections = append(t.Projections, p)
+	case *chparser.AlterTableDropProjection:
+		name := identName(c.ProjectionName)
+		i := findProjection(t, name)
+		if i < 0 {
+			if c.IfExists {
+				return nil
+			}
+			return fmt.Errorf("DROP PROJECTION %q: no such projection", name)
+		}
+		t.Projections = append(t.Projections[:i], t.Projections[i+1:]...)
 	case *chparser.AlterTableModifyTTL:
 		if c.TTL != nil && len(c.TTL.Items) > 0 {
 			t.TTL = strPtr(formatNode(c.TTL.Items[0].Expr))
@@ -524,6 +543,15 @@ func findColumn(t *TableSpec, name string) int {
 func findIndex(t *TableSpec, name string) int {
 	for i := range t.Indexes {
 		if t.Indexes[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func findProjection(t *TableSpec, name string) int {
+	for i := range t.Projections {
+		if t.Projections[i].Name == name {
 			return i
 		}
 	}

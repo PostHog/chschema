@@ -126,6 +126,11 @@ The `justfile` has the full recipe list.
   `"manual": true` in JSON/plan) — heavy mutations are operator-run, never
   executed automatically
 - ✅ `constraint` blocks with `check` or `assume` (exactly one)
+- ✅ `projection` blocks (`query`, optional `settings` → `WITH SETTINGS`);
+  modify diffs as DROP+ADD, and adding to an existing table generates a
+  manual `MATERIALIZE PROJECTION` (operator-run, like `MATERIALIZE INDEX`);
+  index-form projections (`PROJECTION p INDEX …`) are unsupported and fail
+  loudly at parse
 - ✅ `materialized_view` blocks (TO-form): `to_table`, `query`,
   explicit `column` list, `cluster`, `comment`
 - ✅ `view` and `dictionary` top-level blocks (parsed, resolved, diffed,
