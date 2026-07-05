@@ -29,6 +29,26 @@ func TestIntrospect_Distributed_PolicyName(t *testing.T) {
 	}, db.Tables[0].Engine.Decoded)
 }
 
+// The Distributed signature is positional: policy_name can only be sent
+// when sharding_key occupies the 4th slot.
+func TestValidateDistributedEngines_PolicyRequiresShardingKey(t *testing.T) {
+	s := &Schema{Databases: []DatabaseSpec{{
+		Name: "db",
+		Tables: []TableSpec{{
+			Name: "t",
+			Engine: &EngineSpec{Decoded: EngineDistributed{
+				ClusterName:    "c",
+				RemoteDatabase: "db",
+				RemoteTable:    "r",
+				PolicyName:     strPtr("tiered"),
+			}},
+		}},
+	}}}
+	err := validateDistributedEngines(s)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "policy_name requires sharding_key")
+}
+
 func TestSQLGen_Engine_DistributedPolicyName(t *testing.T) {
 	clause, extra := engineSQL(EngineDistributed{
 		ClusterName:    "posthog",
