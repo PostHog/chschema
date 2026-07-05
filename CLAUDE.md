@@ -220,7 +220,8 @@ ClickHouse), ReplicatedReplacingMergeTree, SummingMergeTree (with
 `sum_columns`),
 CollapsingMergeTree, ReplicatedCollapsingMergeTree, AggregatingMergeTree,
 ReplicatedAggregatingMergeTree, Distributed (with optional
-`sharding_key`), Log, Kafka. See `docs/README.hcl.md` for the
+`sharding_key` and `policy_name`; the latter requires the former),
+Log, Kafka. See `docs/README.hcl.md` for the
 attribute table.
 
 ### Not Yet Supported

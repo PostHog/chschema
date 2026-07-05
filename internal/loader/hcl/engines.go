@@ -90,6 +90,7 @@ type EngineDistributed struct {
 	RemoteDatabase string  `hcl:"remote_database"`
 	RemoteTable    string  `hcl:"remote_table"`
 	ShardingKey    *string `hcl:"sharding_key,optional"`
+	PolicyName     *string `hcl:"policy_name,optional"`
 }
 
 func (EngineDistributed) Kind() string { return "distributed" }

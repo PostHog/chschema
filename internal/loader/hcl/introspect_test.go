@@ -99,6 +99,15 @@ func TestParseEngineString(t *testing.T) {
 			EngineDistributed{ClusterName: "clstr", RemoteDatabase: "db", RemoteTable: "t"},
 		},
 		{
+			"distributed_with_policy",
+			"Distributed('posthog', 'default', 'events', rand(), 'tiered')",
+			EngineDistributed{
+				ClusterName: "posthog", RemoteDatabase: "default", RemoteTable: "events",
+				ShardingKey: ptr("rand()"),
+				PolicyName:  ptr("tiered"),
+			},
+		},
+		{
 			"distributed_with_sharding_key",
 			"Distributed('clstr', 'db', 't', sipHash64(id))",
 			EngineDistributed{

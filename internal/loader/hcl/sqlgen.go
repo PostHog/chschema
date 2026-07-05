@@ -924,6 +924,12 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 		return fmt.Sprintf("ReplicatedAggregatingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
 	case EngineDistributed:
 		if v.ShardingKey != nil {
+			if v.PolicyName != nil {
+				// policy_name is a string literal in DDL; sharding_key stays a
+				// bare expression. PolicyName without ShardingKey cannot reach
+				// here — the resolver rejects it (positional signature).
+				return fmt.Sprintf("Distributed('%s', '%s', '%s', %s, '%s')", v.ClusterName, v.RemoteDatabase, v.RemoteTable, *v.ShardingKey, *v.PolicyName), nil
+			}
 			return fmt.Sprintf("Distributed('%s', '%s', '%s', %s)", v.ClusterName, v.RemoteDatabase, v.RemoteTable, *v.ShardingKey), nil
 		}
 		return fmt.Sprintf("Distributed('%s', '%s', '%s')", v.ClusterName, v.RemoteDatabase, v.RemoteTable), nil

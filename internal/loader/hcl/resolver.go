@@ -36,6 +36,9 @@ func Resolve(s *Schema) error {
 	if err := validateReplacingEngines(s); err != nil {
 		return err
 	}
+	if err := validateDistributedEngines(s); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -60,6 +63,29 @@ func validateReplacingEngines(s *Schema) error {
 			if isDeleted != nil && version == nil {
 				return fmt.Errorf("%s.%s: %s engine: is_deleted_column requires version_column (ClickHouse only accepts is_deleted together with ver)",
 					db.Name, t.Name, t.Engine.Decoded.Kind())
+			}
+		}
+	}
+	return nil
+}
+
+// validateDistributedEngines enforces the positional Distributed
+// signature (cluster, db, table[, sharding_key[, policy_name]]): a
+// policy_name can only be sent to ClickHouse when a sharding_key
+// occupies the 4th slot.
+func validateDistributedEngines(s *Schema) error {
+	for _, db := range s.Databases {
+		for _, t := range db.Tables {
+			if t.Engine == nil || t.Engine.Decoded == nil {
+				continue
+			}
+			e, ok := t.Engine.Decoded.(EngineDistributed)
+			if !ok {
+				continue
+			}
+			if e.PolicyName != nil && e.ShardingKey == nil {
+				return fmt.Errorf("%s.%s: distributed engine: policy_name requires sharding_key (positional engine parameters)",
+					db.Name, t.Name)
 			}
 		}
 	}

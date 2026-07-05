@@ -101,6 +101,17 @@ database "posthog" {
     }
   }
 
+  table "t_distributed_policy" {
+    column "id" { type = "UUID" }
+    engine "distributed" {
+      cluster_name    = "posthog"
+      remote_database = "default"
+      remote_table    = "t_merge_tree"
+      sharding_key    = "sipHash64(id)"
+      policy_name     = "default"
+    }
+  }
+
   table "t_log" {
     column "id" { type = "UUID" }
     engine "log" {}
