@@ -605,11 +605,18 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		return EngineReplicatedAggregatingMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
 	case "Distributed":
 		if len(params) < 3 {
-			return nil, nil, fmt.Errorf("engine Distributed needs (cluster, db, table[, sharding_key])")
+			return nil, nil, fmt.Errorf("engine Distributed needs (cluster, db, table[, sharding_key[, policy_name]])")
+		}
+		// Unknown extra parameters must abort, not silently drop (#109).
+		if len(params) > 5 {
+			return nil, nil, fmt.Errorf("engine Distributed takes at most (cluster, db, table, sharding_key, policy_name); got %v", params)
 		}
 		ee := EngineDistributed{ClusterName: params[0], RemoteDatabase: params[1], RemoteTable: params[2]}
 		if len(params) > 3 {
 			ee.ShardingKey = &params[3]
+		}
+		if len(params) > 4 {
+			ee.PolicyName = &params[4]
 		}
 		return ee, allSettings, nil
 	case "Log":
@@ -963,11 +970,18 @@ func ParseEngineString(engineFull string) (Engine, error) {
 			return nil, err
 		}
 		if len(p) < 3 {
-			return nil, fmt.Errorf("engine Distributed needs (cluster, db, table[, sharding_key]); got %v", p)
+			return nil, fmt.Errorf("engine Distributed needs (cluster, db, table[, sharding_key[, policy_name]]); got %v", p)
+		}
+		// Unknown extra parameters must abort, not silently drop (#109).
+		if len(p) > 5 {
+			return nil, fmt.Errorf("engine Distributed takes at most (cluster, db, table, sharding_key, policy_name); got %v", p)
 		}
 		e := EngineDistributed{ClusterName: p[0], RemoteDatabase: p[1], RemoteTable: p[2]}
 		if len(p) > 3 {
 			e.ShardingKey = &p[3]
+		}
+		if len(p) > 4 {
+			e.PolicyName = &p[4]
 		}
 		return e, nil
 	case strings.HasPrefix(decl, "Log"):
