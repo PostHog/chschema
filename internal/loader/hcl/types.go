@@ -140,6 +140,7 @@ type TableSpec struct {
 
 	Columns     []ColumnSpec     `hcl:"column,block"`
 	Indexes     []IndexSpec      `hcl:"index,block"`
+	Projections []ProjectionSpec `hcl:"projection,block"`
 	Constraints []ConstraintSpec `hcl:"constraint,block"`
 	Engine      *EngineSpec      `hcl:"engine,block"`
 }
@@ -187,6 +188,16 @@ type IndexSpec struct {
 	Expr        string `hcl:"expr"`
 	Type        string `hcl:"type"`
 	Granularity int    `hcl:"granularity,optional"`
+}
+
+// ProjectionSpec is a table PROJECTION: a named SELECT (implicit FROM
+// the parent table) materialized per part. Settings maps to the newer
+// `WITH SETTINGS (…)` clause (projection-level MergeTree settings);
+// ClickHouse before 26.5 neither emits nor accepts it.
+type ProjectionSpec struct {
+	Name     string            `hcl:"name,label"`
+	Query    string            `hcl:"query"`
+	Settings map[string]string `hcl:"settings,optional"`
 }
 
 // EngineSpec holds both the raw HCL representation (Kind label + Body) and
