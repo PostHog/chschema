@@ -308,7 +308,7 @@ func fingerprintEqual(a, b map[string]int64) bool {
 // it is attributed to, then tags the flow stages whose object has problems.
 func (s *webServer) buildProblems() {
 	s.problems = map[string][]problemView{}
-	for _, e := range hclload.Validate(s.schema.Databases, hclload.ParseSkipSet("")) {
+	for _, e := range hclload.Validate(s.schema.Databases, hclload.ParseSkipSet(""), hclload.ClusterSet{}) {
 		pv := problemView{
 			Kind:    problemKind(e.Kind),
 			Reason:  e.Reason,

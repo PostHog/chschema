@@ -106,17 +106,82 @@ Run "hclexp <command> -h" for command-specific flags.
 `)
 }
 
+// clusterFlag collects repeatable -cluster NAME=STACK mappings. STACK is a
+// list of layer directories joined by the OS list separator (':' on unix), so
+// it never clashes with the comma that separates -layer dirs. The sentinel
+// STACK == "@absent" declares a cluster with no composition in this env.
+type clusterFlag struct {
+	entries []clusterEntry
+}
+
+type clusterEntry struct {
+	name  string
+	stack string // OS-list-separated dirs, or "@absent"
+}
+
+func (c *clusterFlag) String() string {
+	parts := make([]string, 0, len(c.entries))
+	for _, e := range c.entries {
+		parts = append(parts, e.name+"="+e.stack)
+	}
+	return strings.Join(parts, ",")
+}
+
+func (c *clusterFlag) Set(v string) error {
+	i := strings.IndexByte(v, '=')
+	if i <= 0 {
+		return fmt.Errorf("invalid -cluster %q: want NAME=STACK", v)
+	}
+	c.entries = append(c.entries, clusterEntry{name: v[:i], stack: v[i+1:]})
+	return nil
+}
+
+// absentStack is the sentinel STACK value marking a cluster with no local
+// composition; references into it validate as satisfied.
+const absentStack = "@absent"
+
+// buildClusterSet loads and resolves each -cluster mapping into its own schema
+// and assembles a ClusterSet. An @absent stack registers the cluster without a
+// composition.
+func buildClusterSet(entries []clusterEntry) (hclload.ClusterSet, error) {
+	cs := hclload.NewClusterSet()
+	for _, e := range entries {
+		if e.stack == absentStack {
+			cs.AddAbsent(e.name)
+			continue
+		}
+		dirs := filepath.SplitList(e.stack)
+		schema, err := hclload.LoadLayers(dirs)
+		if err != nil {
+			return cs, fmt.Errorf("cluster %q: loading %v: %w", e.name, dirs, err)
+		}
+		if err := hclload.Resolve(schema); err != nil {
+			return cs, fmt.Errorf("cluster %q: resolving %v: %w", e.name, dirs, err)
+		}
+		cs.Add(e.name, schema.Databases)
+	}
+	return cs, nil
+}
+
 // runValidate loads an HCL config (single file or layers), resolves it, and
 // checks that every materialized view's source/destination tables and every
 // Distributed table's remote table are declared in the loaded schema. It
 // exits non-zero when any dependency is unsatisfied. The -skip-validation
 // flag takes a comma-separated list of dependent object names (or "*" for
 // all) whose dependency checks should be skipped.
+//
+// A Distributed proxy often forwards to a storage table on another cluster's
+// composition. Map those clusters with repeatable -cluster NAME=STACK flags so
+// their remotes resolve against the mapped schema; use NAME=@absent for a
+// cluster with no local composition. With no -cluster mapping, an off-node
+// remote errors (add a mapping, mark it @absent, or -skip-validation it).
 func runValidate(args []string) {
 	fs := flag.NewFlagSet("hclexp validate", flag.ExitOnError)
 	configFlag := fs.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
 	layersFlag := fs.String("layer", "", "comma-separated list of layer directories (loaded in order)")
 	skipFlag := fs.String("skip-validation", "", "comma-separated dependent object names to skip, or \"*\" for all")
+	var clusters clusterFlag
+	fs.Var(&clusters, "cluster", "repeatable NAME=STACK external cluster mapping for Distributed remotes; STACK is OS-list-separated (':') layer dirs, or @absent")
 	_ = fs.Parse(args)
 
 	schema, err := load(*configFlag, *layersFlag)
@@ -129,7 +194,13 @@ func runValidate(args []string) {
 		os.Exit(1)
 	}
 
-	errs := hclload.Validate(schema.Databases, hclload.ParseSkipSet(*skipFlag))
+	clusterSet, err := buildClusterSet(clusters.entries)
+	if err != nil {
+		slog.Error("failed to load cluster mapping", "err", err)
+		os.Exit(1)
+	}
+
+	errs := hclload.Validate(schema.Databases, hclload.ParseSkipSet(*skipFlag), clusterSet)
 	if len(errs) > 0 {
 		for _, e := range errs {
 			fmt.Fprintf(os.Stderr, "validation error: %s\n", e.Error())

@@ -16,14 +16,19 @@ func TestValidate_RawObjectSatisfiesReference(t *testing.T) {
 			{Kind: "table", Name: "raw_local", SQL: "CREATE TABLE db.raw_local (a UInt64) ENGINE = MergeTree ORDER BY a\n"},
 		},
 	}}
-	errs := Validate(dbs, ParseSkipSet(""))
+	errs := Validate(dbs, ParseSkipSet(""), ClusterSet{})
 	require.Empty(t, errs, "a declared raw block satisfies a Distributed remote_table reference")
 }
 
 // mkDistTable builds a Distributed-engine table forwarding to remoteDB.remoteTable.
 func mkDistTable(name, remoteDB, remoteTable string) TableSpec {
+	return mkDistTableOn(name, "posthog", remoteDB, remoteTable)
+}
+
+// mkDistTableOn builds a Distributed-engine table on an explicit cluster.
+func mkDistTableOn(name, cluster, remoteDB, remoteTable string) TableSpec {
 	return mkTable(name, EngineDistributed{
-		ClusterName:    "posthog",
+		ClusterName:    cluster,
 		RemoteDatabase: remoteDB,
 		RemoteTable:    remoteTable,
 	})
@@ -107,7 +112,7 @@ func TestValidate_ValidSchema(t *testing.T) {
 			},
 		),
 	}
-	assert.Empty(t, Validate(dbs, ParseSkipSet("")))
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), ClusterSet{}))
 }
 
 func TestValidate_MissingMVSource(t *testing.T) {
@@ -119,7 +124,7 @@ func TestValidate_MissingMVSource(t *testing.T) {
 			},
 		),
 	}
-	errs := Validate(dbs, ParseSkipSet(""))
+	errs := Validate(dbs, ParseSkipSet(""), ClusterSet{})
 	require.Len(t, errs, 1)
 	assert.Equal(t, ObjectRef{Database: "posthog", Name: "metrics_mv"}, errs[0].Object)
 	assert.Equal(t, ObjectRef{Database: "posthog", Name: "events_local"}, errs[0].Missing)
@@ -135,7 +140,7 @@ func TestValidate_MissingMVDest(t *testing.T) {
 			},
 		),
 	}
-	errs := Validate(dbs, ParseSkipSet(""))
+	errs := Validate(dbs, ParseSkipSet(""), ClusterSet{})
 	require.Len(t, errs, 1)
 	assert.Equal(t, ObjectRef{Database: "posthog", Name: "metrics"}, errs[0].Missing)
 	assert.Equal(t, DepMVDest, errs[0].Kind)
@@ -149,7 +154,7 @@ func TestValidate_ViewSourceTableMustExist(t *testing.T) {
 			{Name: "v", Query: "SELECT team_id FROM posthog.nonexistent"},
 		},
 	}}
-	errs := Validate(dbs, ParseSkipSet(""))
+	errs := Validate(dbs, ParseSkipSet(""), ClusterSet{})
 	require.Len(t, errs, 1)
 	assert.Equal(t, ObjectRef{Database: "posthog", Name: "v"}, errs[0].Object)
 	assert.Equal(t, ObjectRef{Database: "posthog", Name: "nonexistent"}, errs[0].Missing)
@@ -164,7 +169,7 @@ func TestValidate_ViewSourceTableInSameSchema(t *testing.T) {
 			{Name: "v", Query: "SELECT team_id FROM posthog.events_local"},
 		},
 	}}
-	assert.Empty(t, Validate(dbs, ParseSkipSet("")))
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), ClusterSet{}))
 }
 
 func TestValidate_ViewSkipByName(t *testing.T) {
@@ -174,7 +179,7 @@ func TestValidate_ViewSkipByName(t *testing.T) {
 			{Name: "v", Query: "SELECT 1 FROM posthog.missing"},
 		},
 	}}
-	assert.Empty(t, Validate(dbs, ParseSkipSet("v")))
+	assert.Empty(t, Validate(dbs, ParseSkipSet("v"), ClusterSet{}))
 }
 
 func TestValidate_ViewCTENameNotASource(t *testing.T) {
@@ -185,7 +190,7 @@ func TestValidate_ViewCTENameNotASource(t *testing.T) {
 			{Name: "v", Query: "WITH stats AS (SELECT team_id FROM posthog.events_local) SELECT * FROM stats"},
 		},
 	}}
-	assert.Empty(t, Validate(dbs, ParseSkipSet("")))
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), ClusterSet{}))
 }
 
 func TestValidate_MissingDistributedRemote(t *testing.T) {
@@ -195,7 +200,7 @@ func TestValidate_MissingDistributedRemote(t *testing.T) {
 			nil,
 		),
 	}
-	errs := Validate(dbs, ParseSkipSet(""))
+	errs := Validate(dbs, ParseSkipSet(""), ClusterSet{})
 	require.Len(t, errs, 1)
 	assert.Equal(t, ObjectRef{Database: "posthog", Name: "events_dist"}, errs[0].Object)
 	assert.Equal(t, ObjectRef{Database: "posthog", Name: "events_local"}, errs[0].Missing)
@@ -203,15 +208,19 @@ func TestValidate_MissingDistributedRemote(t *testing.T) {
 }
 
 func TestValidate_UnloadedDatabase(t *testing.T) {
+	// A materialized view writing into a database that isn't loaded cannot be
+	// checked, so the reference itself is an error. Distributed remotes route
+	// through the cluster-aware algorithm instead (see the DistributedRemote
+	// tests), so this exercises the non-Distributed "database not loaded" path.
 	dbs := []DatabaseSpec{
 		mkDBMixed("posthog",
-			[]TableSpec{mkDistTable("events_dist", "warehouse", "events_local")},
-			nil,
+			[]TableSpec{mkTable("events_local", EngineMergeTree{})},
+			[]MaterializedViewSpec{mkMV("events_mv", "warehouse.events_dest", "SELECT x FROM posthog.events_local")},
 		),
 	}
-	errs := Validate(dbs, ParseSkipSet(""))
+	errs := Validate(dbs, ParseSkipSet(""), ClusterSet{})
 	require.Len(t, errs, 1)
-	assert.Equal(t, ObjectRef{Database: "warehouse", Name: "events_local"}, errs[0].Missing)
+	assert.Equal(t, ObjectRef{Database: "warehouse", Name: "events_dest"}, errs[0].Missing)
 	assert.Contains(t, errs[0].Reason, "is not loaded")
 }
 
@@ -225,10 +234,10 @@ func TestValidate_SkipByName(t *testing.T) {
 		),
 	}
 	// Without skipping: events_dist (1 missing remote) + metrics_mv (missing dest + source).
-	assert.Len(t, Validate(dbs, ParseSkipSet("")), 3)
+	assert.Len(t, Validate(dbs, ParseSkipSet(""), ClusterSet{}), 3)
 
 	// Skipping the MV by name leaves only the Distributed table's error.
-	errs := Validate(dbs, ParseSkipSet("metrics_mv"))
+	errs := Validate(dbs, ParseSkipSet("metrics_mv"), ClusterSet{})
 	require.Len(t, errs, 1)
 	assert.Equal(t, "events_dist", errs[0].Object.Name)
 }
@@ -242,7 +251,106 @@ func TestValidate_SkipAll(t *testing.T) {
 			},
 		),
 	}
-	assert.Empty(t, Validate(dbs, ParseSkipSet("*")))
+	assert.Empty(t, Validate(dbs, ParseSkipSet("*"), ClusterSet{}))
+}
+
+// auxCluster is a small external "aux" composition: it declares
+// posthog.sharded_web_stats_preaggregated, the storage table an off-node
+// Distributed proxy forwards to.
+func auxCluster() ClusterSet {
+	cs := NewClusterSet()
+	cs.Add("aux", []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("sharded_web_stats_preaggregated", EngineMergeTree{})},
+		nil,
+	)})
+	return cs
+}
+
+// A cross-cluster proxy resolves against its mapped cluster's composition.
+func TestValidate_DistributedRemote_ResolvesViaMappedCluster(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("web_stats_preaggregated", "aux", "posthog", "sharded_web_stats_preaggregated")},
+		nil,
+	)}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), auxCluster()),
+		"remote declared in the mapped aux cluster resolves")
+}
+
+// A remote missing from its mapped cluster is real cross-cluster drift.
+func TestValidate_DistributedRemote_MissingInMappedCluster(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("web_stats_preaggregated", "aux", "posthog", "sharded_gone")},
+		nil,
+	)}
+	errs := Validate(dbs, ParseSkipSet(""), auxCluster())
+	require.Len(t, errs, 1)
+	assert.Equal(t, ObjectRef{Database: "posthog", Name: "sharded_gone"}, errs[0].Missing)
+	assert.Equal(t, DepDistributedRemote, errs[0].Kind)
+	assert.Contains(t, errs[0].Reason, `cluster "aux"`)
+}
+
+// An off-node remote with no cluster mapping errors — the anti-staleness guard.
+func TestValidate_DistributedRemote_UnknownClusterNoMapping(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("web_stats_preaggregated", "aux", "posthog", "sharded_web_stats_preaggregated")},
+		nil,
+	)}
+	errs := Validate(dbs, ParseSkipSet(""), ClusterSet{})
+	require.Len(t, errs, 1)
+	assert.Equal(t, DepDistributedRemote, errs[0].Kind)
+	assert.Contains(t, errs[0].Reason, "no -cluster mapping")
+}
+
+// A cluster marked @absent has no local composition; references into it are
+// structurally unresolvable and count as satisfied.
+func TestValidate_DistributedRemote_AbsentCluster(t *testing.T) {
+	cs := NewClusterSet()
+	cs.AddAbsent("batch_exports")
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("exports_proxy", "batch_exports", "posthog", "sharded_exports")},
+		nil,
+	)}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), cs))
+}
+
+// References into the built-in system database are satisfied for every
+// dependency kind, not just Distributed remotes: a view or MV reading a
+// system.* table needs no skip entry.
+func TestValidate_SystemDatabaseSourceSatisfied(t *testing.T) {
+	dbs := []DatabaseSpec{{
+		Name:  "posthog",
+		Views: []ViewSpec{mkView("custom_metrics", "SELECT count() FROM system.parts")},
+		MaterializedViews: []MaterializedViewSpec{
+			mkMV("ops_query_log_archive_mv", "posthog.query_log_archive", "SELECT event_time FROM system.query_log"),
+		},
+		Tables: []TableSpec{mkTable("query_log_archive", EngineMergeTree{})},
+	}}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), ClusterSet{}),
+		"view/MV sources into system.* are satisfied without a skip or mapping")
+}
+
+// A system.* remote is a built-in and needs no cluster mapping.
+func TestValidate_DistributedRemote_SystemDB(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("query_log_proxy", "aux", "system", "query_log")},
+		nil,
+	)}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), ClusterSet{}),
+		"system.* remote is satisfied without any mapping")
+}
+
+// A remote declared on the node's own schema resolves locally regardless of
+// the (unmapped) cluster name it carries.
+func TestValidate_DistributedRemote_LocalWins(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{
+			mkDistTableOn("events", "some_cluster", "posthog", "sharded_events"),
+			mkTable("sharded_events", EngineMergeTree{}),
+		},
+		nil,
+	)}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), ClusterSet{}),
+		"a locally declared remote resolves even with an unmapped cluster name")
 }
 
 func TestCollectDependencies_DefaultsSourceDatabase(t *testing.T) {
@@ -377,7 +485,7 @@ func TestValidate_MVColumn_VirtualRefAccepted(t *testing.T) {
 		"SELECT _offset, team_id FROM events_kafka",
 		ColumnSpec{Name: "team_id", Type: "UInt32"},
 	)
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	for _, e := range errs {
 		assert.NotEqual(t, KindMVColumn, e.Kind, "real Kafka virtual must not be flagged: %s", e.Reason)
 	}
@@ -388,7 +496,7 @@ func TestValidate_MVColumn_BogusVirtualRefFlagged(t *testing.T) {
 		"SELECT _offsett, team_id FROM events_kafka",
 		ColumnSpec{Name: "team_id", Type: "UInt32"},
 	)
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	var mvErr *ValidationError
 	for i := range errs {
 		if errs[i].Kind == KindMVColumn {
@@ -405,7 +513,7 @@ func TestValidate_MVColumn_HeadersDottedRefAccepted(t *testing.T) {
 		"SELECT _headers.name, team_id FROM events_kafka",
 		ColumnSpec{Name: "team_id", Type: "UInt32"},
 	)
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	for _, e := range errs {
 		assert.NotEqual(t, KindMVColumn, e.Kind, "_headers.name is a real Kafka virtual: %s", e.Reason)
 	}
@@ -419,7 +527,7 @@ func TestValidate_MVColumn_DeclaredColumnNotFlagged(t *testing.T) {
 		ColumnSpec{Name: "team_id", Type: "UInt32"},
 		ColumnSpec{Name: "_meta", Type: "String"},
 	)
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	for _, e := range errs {
 		assert.NotEqual(t, KindMVColumn, e.Kind, "declared column must not be flagged: %s", e.Reason)
 	}
@@ -430,7 +538,7 @@ func TestValidate_MVColumn_SelectStarSkipped(t *testing.T) {
 		"SELECT * FROM events_kafka",
 		ColumnSpec{Name: "team_id", Type: "UInt32"},
 	)
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	for _, e := range errs {
 		assert.NotEqual(t, KindMVColumn, e.Kind, "SELECT * must skip the column check: %s", e.Reason)
 	}
@@ -442,7 +550,7 @@ func TestValidate_MVColumn_JoinSkipped(t *testing.T) {
 		"SELECT _offsett, team_id FROM events_kafka JOIN events_local USING team_id",
 		ColumnSpec{Name: "team_id", Type: "UInt32"},
 	)
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	for _, e := range errs {
 		assert.NotEqual(t, KindMVColumn, e.Kind, "JOIN must skip the column check: %s", e.Reason)
 	}
@@ -455,7 +563,7 @@ func TestValidate_MVColumn_AliasNotFlagged(t *testing.T) {
 		"SELECT countState() AS _agg_count, team_id FROM events_kafka GROUP BY team_id",
 		ColumnSpec{Name: "team_id", Type: "UInt32"},
 	)
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	for _, e := range errs {
 		assert.NotEqual(t, KindMVColumn, e.Kind, "alias name must not be flagged as a source ref: %s", e.Reason)
 	}
@@ -467,7 +575,7 @@ func TestValidate_MVColumn_SkipSetWorks(t *testing.T) {
 		ColumnSpec{Name: "team_id", Type: "UInt32"},
 	)
 	skip := ParseSkipSet("events_mv")
-	errs := Validate(dbs, skip)
+	errs := Validate(dbs, skip, ClusterSet{})
 	for _, e := range errs {
 		assert.NotEqual(t, KindMVColumn, e.Kind, "skip should suppress mv_column: %s", e.Reason)
 	}
@@ -483,7 +591,7 @@ func TestValidate_TimeSeries_ExternalTargetMustExist(t *testing.T) {
 			}},
 		}},
 	}}
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	var ferr *ValidationError
 	for i := range errs {
 		if errs[i].Kind == DepTimeSeriesTarget {
@@ -507,7 +615,7 @@ func TestValidate_TimeSeries_InnerTargetNoDependency(t *testing.T) {
 			}},
 		}},
 	}}
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	for _, e := range errs {
 		assert.NotEqual(t, DepTimeSeriesTarget, e.Kind, "inner-form target should create no dep")
 	}
@@ -532,7 +640,7 @@ func TestValidate_TimeSeries_AllTargetsExist_OK(t *testing.T) {
 			{Name: "m_metrics", Engine: &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}}},
 		},
 	}}
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	for _, e := range errs {
 		assert.NotEqual(t, DepTimeSeriesTarget, e.Kind, "all targets exist; no errors expected: %s", e.Reason)
 	}
@@ -549,7 +657,7 @@ func TestValidate_Buffer_DestMustExist(t *testing.T) {
 			}},
 		}},
 	}}
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	var ferr *ValidationError
 	for i := range errs {
 		if errs[i].Kind == DepBufferDestination {
@@ -576,7 +684,7 @@ func TestValidate_Buffer_DestExists_OK(t *testing.T) {
 			},
 		},
 	}}
-	errs := Validate(dbs, SkipSet{})
+	errs := Validate(dbs, SkipSet{}, ClusterSet{})
 	for _, e := range errs {
 		assert.NotEqual(t, DepBufferDestination, e.Kind, "dest exists; no error: %s", e.Reason)
 	}

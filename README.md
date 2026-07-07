@@ -226,12 +226,15 @@ It's the static guard the diff/apply path relies on:
 - A **`materialized_view`** reads from source tables (named in its `query`)
   and writes into `to_table`. Both must be declared somewhere in the
   loaded schema.
-- A **`distributed`-engine table** forwards to the table named by
-  `remote_database` / `remote_table`, which must also be declared.
+- A **`distributed`-engine table** forwards to the table named by its
+  `cluster_name` / `remote_database` / `remote_table`. The remote must be
+  declared on the node itself, on a mapped cluster (see below), or in the
+  built-in `system` database.
 
 Missing references — or references into a database that wasn't loaded —
 fail with a non-zero exit code. The MV `query` is parsed to discover its
 source tables; `WITH ... AS` CTE names are not treated as table references.
+References into the built-in `system` database are always satisfied.
 
 ```sh
 # Validate a single-file schema
@@ -244,6 +247,32 @@ hclexp validate -layer ./schema/base,./schema/env_us
 hclexp validate -config ./schema/posthog.hcl -skip-validation=events_mv,events_dist
 hclexp validate -config ./schema/posthog.hcl -skip-validation='*'
 ```
+
+### Cross-cluster Distributed remotes
+
+A `Distributed` proxy routinely forwards to a storage table that lives on
+**another cluster's** composition — the remote database is `posthog` on
+every cluster, so `cluster_name` is the only discriminator. Map each such
+cluster to the layer stack that composes it with the repeatable
+`-cluster NAME=STACK` flag, and the proxy's remote is resolved against that
+cluster's schema. `STACK` is a list of layer directories joined by the OS
+list separator (`:`), so it never clashes with the comma that separates
+`-layer` dirs. Use the sentinel `NAME=@absent` for a cluster that has no
+composition in this env — references into it are structurally unresolvable
+and count as satisfied.
+
+```sh
+hclexp validate -layer ./nodes/data \
+  -cluster aux=./nodes/aux \
+  -cluster ai_events=./base:./nodes/ai_events \
+  -cluster events_recent=@absent
+```
+
+With **no** `-cluster` mapping an off-node remote is an error — a new
+cross-cluster proxy can't be silently accepted: map its cluster, mark it
+`@absent`, or `-skip-validation` the proxy. This lets a caller replace a
+hand-maintained skip list with a generated cluster mapping that actually
+checks the remotes exist.
 
 `hclexp diff -sql` applies the same dependency knowledge to DDL ordering:
 within the generated migration, a table is created before any

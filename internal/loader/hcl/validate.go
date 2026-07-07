@@ -45,6 +45,12 @@ type Dependency struct {
 	From ObjectRef // the dependent object (a materialized view or Distributed table)
 	To   ObjectRef // the object it requires
 	Kind string    // one of the Dep* constants
+
+	// Cluster is the ClickHouse cluster the remote is expected on. It is set
+	// only for DepDistributedRemote (from EngineDistributed.ClusterName) and
+	// is the discriminator for cross-cluster resolution: the remote database
+	// is almost always "posthog" on every cluster. Empty for all other kinds.
+	Cluster string
 }
 
 // ValidationError describes a dependency that could not be satisfied.
@@ -139,9 +145,10 @@ func CollectDependencies(dbs []DatabaseSpec) ([]Dependency, error) {
 			switch eng := t.Engine.Decoded.(type) {
 			case EngineDistributed:
 				deps = append(deps, Dependency{
-					From: ObjectRef{Database: db.Name, Name: t.Name},
-					To:   ObjectRef{Database: eng.RemoteDatabase, Name: eng.RemoteTable},
-					Kind: DepDistributedRemote,
+					From:    ObjectRef{Database: db.Name, Name: t.Name},
+					To:      ObjectRef{Database: eng.RemoteDatabase, Name: eng.RemoteTable},
+					Kind:    DepDistributedRemote,
+					Cluster: eng.ClusterName,
 				})
 			case EngineTimeSeries:
 				from := ObjectRef{Database: db.Name, Name: t.Name}
@@ -445,27 +452,17 @@ func dedupeRefs(refs []ObjectRef) []ObjectRef {
 // one of the loaded databases. A reference into a database that is not loaded
 // is itself an error, since it cannot be checked. Dependent objects matched
 // by skip are not validated. All errors are collected and returned together.
-func Validate(dbs []DatabaseSpec, skip SkipSet) []ValidationError {
-	declared := map[ObjectRef]bool{}
+//
+// Distributed remotes are resolved cluster-aware against clusters: a proxy
+// routinely forwards to a storage table that lives on another cluster's
+// composition (same database name, different cluster). See
+// resolveDistributedRemote for the routing rules. Pass ClusterSet{} when no
+// external cluster mappings are available.
+func Validate(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet) []ValidationError {
+	declared := declaredObjects(dbs)
 	loadedDBs := map[string]bool{}
 	for _, db := range dbs {
 		loadedDBs[db.Name] = true
-		for _, t := range db.Tables {
-			declared[ObjectRef{Database: db.Name, Name: t.Name}] = true
-		}
-		for _, mv := range db.MaterializedViews {
-			declared[ObjectRef{Database: db.Name, Name: mv.Name}] = true
-		}
-		for _, v := range db.Views {
-			declared[ObjectRef{Database: db.Name, Name: v.Name}] = true
-		}
-		// Raw objects are opaque (no outgoing dependency checks), but a
-		// declared raw block still registers its name so a real MV's
-		// to_table or a Distributed table's remote_table that points at it
-		// resolves instead of reporting a missing dependency.
-		for _, r := range db.Raws {
-			declared[ObjectRef{Database: db.Name, Name: r.Name}] = true
-		}
 	}
 
 	deps, err := CollectDependencies(dbs)
@@ -476,6 +473,21 @@ func Validate(dbs []DatabaseSpec, skip SkipSet) []ValidationError {
 	var errs []ValidationError
 	for _, dep := range deps {
 		if skip.Skips(dep.From) {
+			continue
+		}
+		// Built-in system database: system.* tables are always present in a
+		// live server and cannot be validated offline, so any reference into
+		// them (view/MV source or Distributed remote) is satisfied.
+		if dep.To.Database == "system" {
+			continue
+		}
+		// Distributed remotes route through the cluster-aware algorithm; the
+		// cluster name (not the database, which is uniform across clusters) is
+		// the discriminator.
+		if dep.Kind == DepDistributedRemote {
+			if e := resolveDistributedRemote(dep, declared, clusters); e != nil {
+				errs = append(errs, *e)
+			}
 			continue
 		}
 		if !loadedDBs[dep.To.Database] {
@@ -525,6 +537,56 @@ func Validate(dbs []DatabaseSpec, skip SkipSet) []ValidationError {
 		return errs[i].Missing.String() < errs[j].Missing.String()
 	})
 	return errs
+}
+
+// resolveDistributedRemote resolves a Distributed table's remote reference
+// (dep.To on cluster dep.Cluster) and returns a ValidationError when it cannot
+// be satisfied. A "system" remote is handled by the caller before this runs.
+// The routing, in order:
+//
+//  1. Local: the remote is declared in the node's own schema (own-cluster
+//     proxies and same-node aliases) → satisfied.
+//  2. Mapped external: the cluster has a loaded composition → the remote must
+//     be declared there, else it is real cross-cluster drift (error).
+//  3. Absent: the cluster was declared @absent → structurally unresolvable,
+//     counts as satisfied.
+//  4. Unknown: the remote is neither local nor in a mapped/absent cluster →
+//     error. This is the anti-staleness guarantee: a new cross-cluster proxy
+//     cannot be silently accepted; the caller must map the cluster or mark it
+//     @absent (or -skip-validation the proxy).
+func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, clusters ClusterSet) *ValidationError {
+	remote := dep.To
+	cluster := dep.Cluster
+
+	// 1. Local to the node's own schema.
+	if declared[remote] {
+		return nil
+	}
+	// 2. Mapped external cluster.
+	if clusters.mapped(cluster) {
+		if clusters.declares(cluster, remote) {
+			return nil
+		}
+		return &ValidationError{
+			Object:  dep.From,
+			Missing: remote,
+			Kind:    dep.Kind,
+			Reason: fmt.Sprintf("%s references remote %q on cluster %q, which is not declared in that cluster's schema",
+				depPhrase(dep.Kind), remote, cluster),
+		}
+	}
+	// 3. Cluster declared absent.
+	if clusters.isAbsent(cluster) {
+		return nil
+	}
+	// 4. Unknown cluster, no mapping.
+	return &ValidationError{
+		Object:  dep.From,
+		Missing: remote,
+		Kind:    dep.Kind,
+		Reason: fmt.Sprintf("%s references remote %q on cluster %q, which is not declared locally and cluster %q has no -cluster mapping (add it or mark @absent)",
+			depPhrase(dep.Kind), remote, cluster, cluster),
+	}
 }
 
 // validateMVColumns runs the heuristic virtual-column reference check on
