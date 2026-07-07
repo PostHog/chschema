@@ -301,6 +301,44 @@ func TestValidate_DistributedRemote_UnknownClusterNoMapping(t *testing.T) {
 	assert.Contains(t, errs[0].Reason, "no -cluster mapping")
 }
 
+// An alias cluster resolves against its base cluster's composition.
+func TestValidate_DistributedRemote_AliasResolvesViaBase(t *testing.T) {
+	cs := auxCluster() // maps "aux"
+	cs.AddAlias("aux_writable", "aux")
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("web_stats_writable", "aux_writable", "posthog", "sharded_web_stats_preaggregated")},
+		nil,
+	)}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), cs),
+		"alias resolves against the base cluster's composition")
+}
+
+// An alias whose base is @absent inherits the base's satisfied status.
+func TestValidate_DistributedRemote_AliasToAbsentBase(t *testing.T) {
+	cs := NewClusterSet()
+	cs.AddAbsent("batch_exports")
+	cs.AddAlias("batch_exports_writable", "batch_exports")
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("exports_proxy", "batch_exports_writable", "posthog", "sharded_exports")},
+		nil,
+	)}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), cs))
+}
+
+// An alias whose base has no mapping errors, naming both the alias and base.
+func TestValidate_DistributedRemote_AliasToUnmappedBase(t *testing.T) {
+	cs := NewClusterSet()
+	cs.AddAlias("aux_writable", "aux")
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("web_stats_writable", "aux_writable", "posthog", "sharded_web_stats_preaggregated")},
+		nil,
+	)}
+	errs := Validate(dbs, ParseSkipSet(""), cs)
+	require.Len(t, errs, 1)
+	assert.Contains(t, errs[0].Reason, `"aux_writable" (alias of "aux")`)
+	assert.Contains(t, errs[0].Reason, "no -cluster mapping")
+}
+
 // A cluster marked @absent has no local composition; references into it are
 // structurally unresolvable and count as satisfied.
 func TestValidate_DistributedRemote_AbsentCluster(t *testing.T) {

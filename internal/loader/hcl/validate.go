@@ -554,14 +554,25 @@ func Validate(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet) []Validatio
 //     error. This is the anti-staleness guarantee: a new cross-cluster proxy
 //     cannot be silently accepted; the caller must map the cluster or mark it
 //     @absent (or -skip-validation the proxy).
+//
+// A remote_servers alias (e.g. "posthog_writable") is resolved to its base
+// cluster before steps 2–4, so it shares that base's composition and @absent
+// status. Error messages name the alias and the base it resolves to.
 func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, clusters ClusterSet) *ValidationError {
 	remote := dep.To
-	cluster := dep.Cluster
 
-	// 1. Local to the node's own schema.
+	// 1. Local to the node's own schema (alias-independent).
 	if declared[remote] {
 		return nil
 	}
+
+	// Follow alias links to the base cluster for the mapped/absent checks.
+	cluster := clusters.resolveCluster(dep.Cluster)
+	clusterDesc := fmt.Sprintf("%q", dep.Cluster)
+	if cluster != dep.Cluster {
+		clusterDesc = fmt.Sprintf("%q (alias of %q)", dep.Cluster, cluster)
+	}
+
 	// 2. Mapped external cluster.
 	if clusters.mapped(cluster) {
 		if clusters.declares(cluster, remote) {
@@ -571,8 +582,8 @@ func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, clust
 			Object:  dep.From,
 			Missing: remote,
 			Kind:    dep.Kind,
-			Reason: fmt.Sprintf("%s references remote %q on cluster %q, which is not declared in that cluster's schema",
-				depPhrase(dep.Kind), remote, cluster),
+			Reason: fmt.Sprintf("%s references remote %q on cluster %s, which is not declared in that cluster's schema",
+				depPhrase(dep.Kind), remote, clusterDesc),
 		}
 	}
 	// 3. Cluster declared absent.
@@ -584,8 +595,8 @@ func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, clust
 		Object:  dep.From,
 		Missing: remote,
 		Kind:    dep.Kind,
-		Reason: fmt.Sprintf("%s references remote %q on cluster %q, which is not declared locally and cluster %q has no -cluster mapping (add it or mark @absent)",
-			depPhrase(dep.Kind), remote, cluster, cluster),
+		Reason: fmt.Sprintf("%s references remote %q on cluster %s, which is not declared locally and has no -cluster mapping (add it or mark @absent)",
+			depPhrase(dep.Kind), remote, clusterDesc),
 	}
 }
 

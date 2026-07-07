@@ -179,13 +179,17 @@ collapses to the `system.*` set (or empty, once step 1 lands). After B: the flee
 proxy/remote column drift surfaces as CI failures, fixed as normal HCL edits.
 Mirror in `posthog-cloud-infra` for the prod `data` goldens.
 
-## Open questions
+## Open questions — resolved
 
-- Default subset vs. strict exact-mirror for Issue B (proposed: subset default).
-- Alias clusters (`posthog_writable`, `posthog_primary_replica`, single-shard
-  writer endpoints) — map each alias to the same stack as its base, or teach
-  `ClusterSet` an alias table? Proposed: caller maps each name explicitly (simplest,
-  keeps chschema dumb).
-- Whether `-cluster` should also gate MV/View cross-cluster sources (rare today);
-  the `DepDistributedRemote` case is the immediate need — MV/View can reuse the
-  same `ClusterSet` routing later without CLI changes.
+- **Issue B column comparison — subset vs. strict.** RESOLVED: default
+  **subset** (proxy ⊆ remote, type + nullability only), strict exact-mirror
+  behind `-strict-proxy-columns`. To implement in #119.
+- **Alias clusters** (`posthog_writable`, `posthog_single_shard`,
+  `batch_exports_writable`, `batch_exports_primary_replica` — 384+ Distributed
+  tables across the fleet). RESOLVED: added a `-cluster NAME=@alias=BASE` form
+  — the alias shares `BASE`'s composition (or `BASE`'s `@absent` status).
+  Shipped alongside #118 follow-up.
+- **`-cluster` gating MV/View cross-cluster sources.** Must be solved, but out
+  of scope for the Distributed work — tracked as its own issue. The routing
+  extends to `DepMVSource`/`DepViewSource` reusing the same `ClusterSet`, no
+  CLI change needed.

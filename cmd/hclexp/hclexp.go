@@ -137,17 +137,29 @@ func (c *clusterFlag) Set(v string) error {
 }
 
 // absentStack is the sentinel STACK value marking a cluster with no local
-// composition; references into it validate as satisfied.
-const absentStack = "@absent"
+// composition; references into it validate as satisfied. aliasPrefix marks an
+// alias mapping (@alias=BASE): the cluster shares BASE's composition.
+const (
+	absentStack = "@absent"
+	aliasPrefix = "@alias="
+)
 
 // buildClusterSet loads and resolves each -cluster mapping into its own schema
 // and assembles a ClusterSet. An @absent stack registers the cluster without a
-// composition.
+// composition; an @alias=BASE stack points the cluster at BASE's composition.
 func buildClusterSet(entries []clusterEntry) (hclload.ClusterSet, error) {
 	cs := hclload.NewClusterSet()
 	for _, e := range entries {
-		if e.stack == absentStack {
+		switch {
+		case e.stack == absentStack:
 			cs.AddAbsent(e.name)
+			continue
+		case strings.HasPrefix(e.stack, aliasPrefix):
+			base := strings.TrimPrefix(e.stack, aliasPrefix)
+			if base == "" {
+				return cs, fmt.Errorf("cluster %q: %s requires a base cluster name", e.name, aliasPrefix)
+			}
+			cs.AddAlias(e.name, base)
 			continue
 		}
 		dirs := filepath.SplitList(e.stack)
@@ -173,7 +185,8 @@ func buildClusterSet(entries []clusterEntry) (hclload.ClusterSet, error) {
 // A Distributed proxy often forwards to a storage table on another cluster's
 // composition. Map those clusters with repeatable -cluster NAME=STACK flags so
 // their remotes resolve against the mapped schema; use NAME=@absent for a
-// cluster with no local composition. With no -cluster mapping, an off-node
+// cluster with no local composition, or NAME=@alias=BASE for a remote_servers
+// alias that shares BASE's composition. With no -cluster mapping, an off-node
 // remote errors (add a mapping, mark it @absent, or -skip-validation it).
 func runValidate(args []string) {
 	fs := flag.NewFlagSet("hclexp validate", flag.ExitOnError)
@@ -181,7 +194,7 @@ func runValidate(args []string) {
 	layersFlag := fs.String("layer", "", "comma-separated list of layer directories (loaded in order)")
 	skipFlag := fs.String("skip-validation", "", "comma-separated dependent object names to skip, or \"*\" for all")
 	var clusters clusterFlag
-	fs.Var(&clusters, "cluster", "repeatable NAME=STACK external cluster mapping for Distributed remotes; STACK is OS-list-separated (':') layer dirs, or @absent")
+	fs.Var(&clusters, "cluster", "repeatable NAME=STACK external cluster mapping for Distributed remotes; STACK is OS-list-separated (':') layer dirs, @absent, or @alias=BASE")
 	_ = fs.Parse(args)
 
 	schema, err := load(*configFlag, *layersFlag)
