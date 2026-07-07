@@ -449,3 +449,44 @@ func TestBuildClusterSet_LoadError(t *testing.T) {
 	_, err := buildClusterSet([]clusterEntry{{name: "aux", stack: "/no/such/layer/dir"}})
 	require.Error(t, err)
 }
+
+// An @alias=BASE mapping resolves a proxy on the alias cluster against BASE's
+// composition, without loading a second stack.
+func TestBuildClusterSet_Alias(t *testing.T) {
+	auxPath := writeTemp(t, "aux.hcl", `
+database "posthog" {
+  table "sharded_web_stats_preaggregated" {
+    order_by = ["day"]
+    column "day" { type = "Date" }
+    engine "merge_tree" {}
+  }
+}`)
+
+	cs, err := buildClusterSet([]clusterEntry{
+		{name: "aux", stack: filepath.Dir(auxPath)},
+		{name: "aux_writable", stack: aliasPrefix + "aux"},
+	})
+	require.NoError(t, err)
+
+	proxy := []hclload.DatabaseSpec{{
+		Name: "posthog",
+		Tables: []hclload.TableSpec{{
+			Name: "proxy",
+			Engine: &hclload.EngineSpec{
+				Kind: "distributed",
+				Decoded: hclload.EngineDistributed{
+					ClusterName:    "aux_writable",
+					RemoteDatabase: "posthog",
+					RemoteTable:    "sharded_web_stats_preaggregated",
+				},
+			},
+		}},
+	}}
+	require.Empty(t, hclload.Validate(proxy, hclload.ParseSkipSet(""), cs),
+		"proxy on the alias cluster resolves against the base composition")
+}
+
+func TestBuildClusterSet_AliasMissingBaseName(t *testing.T) {
+	_, err := buildClusterSet([]clusterEntry{{name: "aux_writable", stack: aliasPrefix}})
+	require.Error(t, err)
+}

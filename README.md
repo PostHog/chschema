@@ -257,14 +257,20 @@ cluster to the layer stack that composes it with the repeatable
 `-cluster NAME=STACK` flag, and the proxy's remote is resolved against that
 cluster's schema. `STACK` is a list of layer directories joined by the OS
 list separator (`:`), so it never clashes with the comma that separates
-`-layer` dirs. Use the sentinel `NAME=@absent` for a cluster that has no
-composition in this env — references into it are structurally unresolvable
-and count as satisfied.
+`-layer` dirs. Two sentinel forms stand in for a stack:
+
+- `NAME=@absent` — a cluster with no composition in this env; references into
+  it are structurally unresolvable and count as satisfied.
+- `NAME=@alias=BASE` — a ClickHouse `remote_servers` alias (e.g.
+  `posthog_writable`, `batch_exports_primary_replica`) that shares `BASE`'s
+  composition; the remote resolves against `BASE` (which may itself be mapped
+  or `@absent`). This avoids re-listing the same stack under every alias.
 
 ```sh
 hclexp validate -layer ./nodes/data \
   -cluster aux=./nodes/aux \
   -cluster ai_events=./base:./nodes/ai_events \
+  -cluster aux_writable=@alias=aux \
   -cluster events_recent=@absent
 ```
 

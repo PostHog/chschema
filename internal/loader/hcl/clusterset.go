@@ -5,14 +5,17 @@ package hcl
 // composition of *another* cluster: the remote database is almost always
 // "posthog" on every cluster, so the cluster name is the only discriminator.
 //
-// A cluster is either mapped (a composition was loaded for it) or absent (the
-// env has no local composition for it, e.g. a node type with no instance here).
-// References into an absent cluster are structurally unresolvable and count as
-// satisfied. The zero value is a valid empty set: no mappings, no absent names.
+// A cluster is either mapped (a composition was loaded for it), absent (the
+// env has no local composition for it, e.g. a node type with no instance here),
+// or an alias of another cluster. References into an absent cluster are
+// structurally unresolvable and count as satisfied; a ClickHouse remote_servers
+// alias (e.g. "posthog_writable") shares the composition of its base cluster,
+// so it resolves through that base. The zero value is a valid empty set.
 type ClusterSet struct {
 	declared map[string]map[ObjectRef]bool // name → declared object set
 	resolver map[string]TableResolver      // name → resolver (used by the column check in #119)
 	absent   map[string]bool               // name → declared @absent
+	alias    map[string]string             // alias name → base cluster name
 }
 
 // NewClusterSet returns an empty, initialized ClusterSet.
@@ -21,6 +24,7 @@ func NewClusterSet() ClusterSet {
 		declared: map[string]map[ObjectRef]bool{},
 		resolver: map[string]TableResolver{},
 		absent:   map[string]bool{},
+		alias:    map[string]string{},
 	}
 }
 
@@ -42,6 +46,31 @@ func (cs *ClusterSet) AddAbsent(name string) {
 		*cs = NewClusterSet()
 	}
 	cs.absent[name] = true
+}
+
+// AddAlias records that alias resolves to base: a Distributed remote on the
+// alias cluster is resolved against base's composition (or base's @absent
+// status). base itself may be another alias; resolveCluster follows the chain.
+func (cs *ClusterSet) AddAlias(alias, base string) {
+	if cs.alias == nil {
+		*cs = NewClusterSet()
+	}
+	cs.alias[alias] = base
+}
+
+// resolveCluster follows alias links to the terminal (base) cluster name. A
+// name that is not an alias returns unchanged. A cycle stops at the first
+// repeated name (defensive; the CLI does not create cycles).
+func (cs ClusterSet) resolveCluster(name string) string {
+	seen := map[string]bool{}
+	for {
+		base, ok := cs.alias[name]
+		if !ok || seen[name] {
+			return name
+		}
+		seen[name] = true
+		name = base
+	}
 }
 
 // mapped reports whether a composition was loaded for the named cluster.
