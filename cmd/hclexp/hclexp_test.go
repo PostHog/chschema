@@ -386,3 +386,66 @@ func TestRenderChangeSet_NamedCollections(t *testing.T) {
 `
 	require.Equal(t, want, buf.String())
 }
+
+func TestClusterFlag_Set(t *testing.T) {
+	var c clusterFlag
+	require.NoError(t, c.Set("aux=dir1:dir2"))
+	require.NoError(t, c.Set("events_recent=@absent"))
+	require.Equal(t, []clusterEntry{
+		{name: "aux", stack: "dir1:dir2"},
+		{name: "events_recent", stack: "@absent"},
+	}, c.entries)
+	require.Equal(t, "aux=dir1:dir2,events_recent=@absent", c.String())
+
+	require.Error(t, c.Set("nostack"), "missing '=' is rejected")
+	require.Error(t, c.Set("=stack"), "empty name is rejected")
+}
+
+// buildClusterSet loads a mapped stack into a resolvable ClusterSet and marks
+// @absent clusters; a proxy resolves against the mapped cluster, is satisfied
+// for an absent cluster, and errors for a table missing from the mapped stack.
+func TestBuildClusterSet_ResolvesAndAbsent(t *testing.T) {
+	auxPath := writeTemp(t, "aux.hcl", `
+database "posthog" {
+  table "sharded_web_stats_preaggregated" {
+    order_by = ["day"]
+    column "day" { type = "Date" }
+    engine "merge_tree" {}
+  }
+}`)
+
+	cs, err := buildClusterSet([]clusterEntry{
+		{name: "aux", stack: filepath.Dir(auxPath)},
+		{name: "batch_exports", stack: absentStack},
+	})
+	require.NoError(t, err)
+
+	proxy := func(cluster, remoteTable string) []hclload.DatabaseSpec {
+		return []hclload.DatabaseSpec{{
+			Name: "posthog",
+			Tables: []hclload.TableSpec{{
+				Name: "proxy",
+				Engine: &hclload.EngineSpec{
+					Kind: "distributed",
+					Decoded: hclload.EngineDistributed{
+						ClusterName:    cluster,
+						RemoteDatabase: "posthog",
+						RemoteTable:    remoteTable,
+					},
+				},
+			}},
+		}}
+	}
+
+	require.Empty(t, hclload.Validate(proxy("aux", "sharded_web_stats_preaggregated"), hclload.ParseSkipSet(""), cs),
+		"remote in the mapped aux stack resolves")
+	require.Empty(t, hclload.Validate(proxy("batch_exports", "anything"), hclload.ParseSkipSet(""), cs),
+		"@absent cluster is satisfied")
+	require.Len(t, hclload.Validate(proxy("aux", "missing"), hclload.ParseSkipSet(""), cs), 1,
+		"remote missing from the mapped aux stack errors")
+}
+
+func TestBuildClusterSet_LoadError(t *testing.T) {
+	_, err := buildClusterSet([]clusterEntry{{name: "aux", stack: "/no/such/layer/dir"}})
+	require.Error(t, err)
+}
