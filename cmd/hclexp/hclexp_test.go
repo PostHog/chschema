@@ -734,6 +734,87 @@ cluster "aux" { roles = ["aux"] }`)
 	}
 }
 
+// -cluster NAME=@absent narrowly satisfies references into that one missing
+// cluster: a proxy into it passes, while every OTHER problem (a remote missing
+// from a mapped cluster, a broken view) is still reported. @absent is not a
+// blanket skip.
+func TestValidateManifest_AbsentSkipsOnlyMissingCluster(t *testing.T) {
+	root := t.TempDir()
+	// aux role: declares sharded_web_stats but NOT sharded_gone.
+	writeLayer(t, root, "layers/aux/aux.hcl", `
+database "posthog" {
+  table "sharded_web_stats" {
+    order_by = ["day"]
+    column "day" { type = "Date" }
+    engine "merge_tree" {}
+  }
+}`)
+	// data role: four objects — one resolves via aux, one via the @absent
+	// cluster, one is a real cross-cluster miss, one is a broken view.
+	writeLayer(t, root, "layers/data/data.hcl", `
+database "posthog" {
+  table "web_stats" {
+    engine "distributed" {
+      cluster_name    = "aux"
+      remote_database = "posthog"
+      remote_table    = "sharded_web_stats"
+    }
+    column "day" { type = "Date" }
+  }
+  table "events_recent" {
+    engine "distributed" {
+      cluster_name    = "events_recent"
+      remote_database = "posthog"
+      remote_table    = "sharded_events_recent"
+    }
+    column "id" { type = "UInt64" }
+  }
+  table "web_stats_gone" {
+    engine "distributed" {
+      cluster_name    = "aux"
+      remote_database = "posthog"
+      remote_table    = "sharded_gone"
+    }
+    column "id" { type = "UInt64" }
+  }
+  view "broken" {
+    query = "SELECT day FROM posthog.nonexistent"
+  }
+}`)
+	manifest := writeTemp(t, "roles.hcl", `
+role "data" {
+  env "prod-us" { layers = ["layers/data"] }
+}
+role "aux" {
+  env "prod-us" { layers = ["layers/aux"] }
+}
+cluster "aux"     { roles = ["aux"] }
+cluster "posthog" { roles = ["data"] }`)
+
+	// events_recent has no composing role; declare it @absent via a flag.
+	flags := []clusterEntry{{name: "events_recent", stack: absentStack}}
+	results, err := validateManifest(manifest, "prod-us", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, flags)
+	require.NoError(t, err)
+
+	byRole := map[string][]hclload.ValidationError{}
+	for _, r := range results {
+		byRole[r.Role] = r.Errs
+	}
+	require.Empty(t, byRole["aux"], "aux role is clean")
+
+	missing := map[string]bool{}
+	for _, e := range byRole["data"] {
+		missing[e.Missing.Name] = true
+	}
+	// The two real problems are found...
+	require.True(t, missing["sharded_gone"], "a remote missing from the mapped aux cluster is still reported")
+	require.True(t, missing["nonexistent"], "the broken view source is still reported")
+	// ...but the @absent cluster's proxy (and the valid aux proxy) are not.
+	require.False(t, missing["sharded_events_recent"], "the @absent cluster's proxy is satisfied, not flagged")
+	require.False(t, missing["sharded_web_stats"], "the valid aux proxy resolves")
+	require.Len(t, byRole["data"], 2, "exactly the two real problems, nothing more")
+}
+
 // writeLayer writes content to root/rel, creating parent dirs.
 func writeLayer(t *testing.T, root, rel, content string) {
 	t.Helper()
