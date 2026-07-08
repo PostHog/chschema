@@ -230,7 +230,8 @@ It's the static guard the diff/apply path relies on:
 - A **`distributed`-engine table** forwards to the table named by its
   `cluster_name` / `remote_database` / `remote_table`. The remote must be
   declared on the node itself, on a mapped cluster (see below), or in the
-  built-in `system` database.
+  built-in `system` database. Once the remote resolves, the proxy's columns
+  are checked against it (see [Distributed proxy columns](#distributed-proxy-columns)).
 
 Missing references — or references into a database that wasn't loaded —
 fail with a non-zero exit code. The MV `query` is parsed to discover its
@@ -288,6 +289,31 @@ cross-cluster proxy can't be silently accepted: map its cluster, mark it
 `@absent`, or `-skip-validation` the proxy. This lets a caller replace a
 hand-maintained skip list with a generated cluster mapping that actually
 checks the remotes exist.
+
+### Distributed proxy columns
+
+Once a `Distributed` remote resolves to an inspectable table (locally or via a
+`-cluster` mapping), the proxy's columns are checked against the remote storage
+table. By default the proxy's columns must be a **subset** of the remote's:
+every forwarded proxy column must exist on the remote with the same type and
+nullability. The comparison is type-only — a proxy legitimately drops the
+remote's `CODEC` / `DEFAULT` / `TTL` / `COMMENT`. `ALIAS` and `EPHEMERAL`
+columns are computed or insert-only, not forwarded, and are ignored on both
+sides.
+
+A proxy column absent from the remote, or with a differing type, is an error —
+this catches drift where the storage table renamed, retyped, or dropped a
+column the proxy still exposes. Pass `-strict-proxy-columns` to also require the
+reverse (the remote's columns must all exist on the proxy), i.e. an exact
+mirror.
+
+```sh
+# default: proxy columns must be a subset of the remote's, types must match
+hclexp validate -layer ./nodes/data -cluster aux=./nodes/aux
+
+# strict: proxy and remote must have exactly the same forwarded columns
+hclexp validate -layer ./nodes/data -cluster aux=./nodes/aux -strict-proxy-columns
+```
 
 `hclexp diff -sql` applies the same dependency knowledge to DDL ordering:
 within the generated migration, a table is created before any

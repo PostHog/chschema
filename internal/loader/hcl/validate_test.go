@@ -417,6 +417,139 @@ func TestValidate_MVDest_NotResolvedCrossCluster(t *testing.T) {
 	assert.Equal(t, DepMVDest, errs[0].Kind)
 }
 
+// --- #119: Distributed proxy column consistency ---
+
+// mkProxy builds a local Distributed proxy (on the local "posthog" cluster)
+// forwarding to posthog.<remoteTable>, with the given columns.
+func mkProxy(name, remoteTable string, cols ...ColumnSpec) TableSpec {
+	return mkTable(name, EngineDistributed{
+		ClusterName:    "posthog",
+		RemoteDatabase: "posthog",
+		RemoteTable:    remoteTable,
+	}, cols...)
+}
+
+// A proxy whose columns are a subset of the remote's, with matching types,
+// passes — including when the proxy drops the remote's CODEC/DEFAULT and omits
+// a column entirely.
+func TestValidate_ProxyColumns_SubsetOK(t *testing.T) {
+	codec := "ZSTD(1)"
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{
+			mkProxy("events", "sharded_events",
+				ColumnSpec{Name: "id", Type: "UInt64"},
+				ColumnSpec{Name: "name", Type: "String"}),
+			mkTable("sharded_events", EngineMergeTree{},
+				ColumnSpec{Name: "id", Type: "UInt64", Codec: &codec},
+				ColumnSpec{Name: "name", Type: "String"},
+				ColumnSpec{Name: "extra", Type: "DateTime"}), // remote-only, fine under subset
+		}, nil)}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), ClusterSet{}),
+		"proxy subset with matching types (ignoring codec) is valid")
+}
+
+// A proxy column absent from the remote is an error.
+func TestValidate_ProxyColumns_AbsentOnRemote(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{
+			mkProxy("events", "sharded_events",
+				ColumnSpec{Name: "id", Type: "UInt64"},
+				ColumnSpec{Name: "gone", Type: "String"}),
+			mkTable("sharded_events", EngineMergeTree{},
+				ColumnSpec{Name: "id", Type: "UInt64"}),
+		}, nil)}
+	errs := Validate(dbs, ParseSkipSet(""), ClusterSet{})
+	require.Len(t, errs, 1)
+	assert.Equal(t, KindDistributedColumn, errs[0].Kind)
+	assert.Equal(t, ObjectRef{Database: "posthog", Name: "gone"}, errs[0].Missing)
+	assert.Contains(t, errs[0].Reason, "not present on remote")
+}
+
+// A proxy column whose type differs from the remote is an error.
+func TestValidate_ProxyColumns_TypeMismatch(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{
+			mkProxy("events", "sharded_events", ColumnSpec{Name: "id", Type: "UInt32"}),
+			mkTable("sharded_events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UInt64"}),
+		}, nil)}
+	errs := Validate(dbs, ParseSkipSet(""), ClusterSet{})
+	require.Len(t, errs, 1)
+	assert.Equal(t, KindDistributedColumn, errs[0].Kind)
+	assert.Contains(t, errs[0].Reason, "UInt32")
+	assert.Contains(t, errs[0].Reason, "UInt64")
+}
+
+// Same type but different nullability is a mismatch.
+func TestValidate_ProxyColumns_NullabilityMismatch(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{
+			mkProxy("events", "sharded_events", ColumnSpec{Name: "id", Type: "UInt64", Nullable: true}),
+			mkTable("sharded_events", EngineMergeTree{}, ColumnSpec{Name: "id", Type: "UInt64"}),
+		}, nil)}
+	errs := Validate(dbs, ParseSkipSet(""), ClusterSet{})
+	require.Len(t, errs, 1)
+	assert.Equal(t, KindDistributedColumn, errs[0].Kind)
+	assert.Contains(t, errs[0].Reason, "Nullable(UInt64)")
+}
+
+// A remote column the proxy omits is fine by default (subset) but an error
+// under -strict-proxy-columns.
+func TestValidate_ProxyColumns_StrictExtraRemoteColumn(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{
+			mkProxy("events", "sharded_events", ColumnSpec{Name: "id", Type: "UInt64"}),
+			mkTable("sharded_events", EngineMergeTree{},
+				ColumnSpec{Name: "id", Type: "UInt64"},
+				ColumnSpec{Name: "team_id", Type: "UInt32"}),
+		}, nil)}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), ClusterSet{}),
+		"remote-only column is fine under subset default")
+
+	errs := ValidateOpts(dbs, ParseSkipSet(""), ClusterSet{}, ValidateOptions{StrictProxyColumns: true})
+	require.Len(t, errs, 1)
+	assert.Equal(t, KindDistributedColumn, errs[0].Kind)
+	assert.Equal(t, ObjectRef{Database: "posthog", Name: "team_id"}, errs[0].Missing)
+	assert.Contains(t, errs[0].Reason, "strict-proxy-columns")
+}
+
+// The column check runs against a remote resolved through a mapped cluster.
+func TestValidate_ProxyColumns_CrossCluster(t *testing.T) {
+	cs := NewClusterSet()
+	cs.Add("aux", []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("sharded_web_stats", EngineMergeTree{}, ColumnSpec{Name: "day", Type: "Date"})},
+		nil)})
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("web_stats", "aux", "posthog", "sharded_web_stats")},
+		nil)}
+	// Proxy has no columns -> subset trivially holds -> resolves cleanly.
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), cs))
+
+	// Now give the proxy a column the aux remote lacks.
+	dbs2 := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("web_stats", EngineDistributed{
+			ClusterName: "aux", RemoteDatabase: "posthog", RemoteTable: "sharded_web_stats",
+		}, ColumnSpec{Name: "day", Type: "Date"}, ColumnSpec{Name: "missing", Type: "UInt8"})},
+		nil)}
+	errs := Validate(dbs2, ParseSkipSet(""), cs)
+	require.Len(t, errs, 1)
+	assert.Equal(t, KindDistributedColumn, errs[0].Kind)
+	assert.Equal(t, ObjectRef{Database: "posthog", Name: "missing"}, errs[0].Missing)
+}
+
+// The column check does not run when the remote is unresolved (@absent) — there
+// is no schema to compare against.
+func TestValidate_ProxyColumns_AbsentRemoteNoColumnCheck(t *testing.T) {
+	cs := NewClusterSet()
+	cs.AddAbsent("aux")
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("web_stats", EngineDistributed{
+			ClusterName: "aux", RemoteDatabase: "posthog", RemoteTable: "sharded_web_stats",
+		}, ColumnSpec{Name: "anything", Type: "UInt8"})},
+		nil)}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), cs),
+		"@absent remote has no schema, so no column check fires")
+}
+
 // A cluster marked @absent has no local composition; references into it are
 // structurally unresolvable and count as satisfied.
 func TestValidate_DistributedRemote_AbsentCluster(t *testing.T) {

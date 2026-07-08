@@ -23,6 +23,12 @@ const (
 	// virtual-prefixed names (those starting with `_`) and to MVs with a
 	// single resolvable source and no JOIN/CTE/UNION/subquery/SELECT *.
 	KindMVColumn = "mv_column"
+
+	// KindDistributedColumn flags a Distributed table whose columns disagree
+	// with its resolved remote storage table: a column the proxy declares is
+	// absent from the remote, or its type/nullability differs. In strict mode
+	// it also flags remote columns the proxy omits.
+	KindDistributedColumn = "distributed_column"
 )
 
 // ObjectRef identifies a schema object (table or materialized view) by its
@@ -460,11 +466,34 @@ func dedupeRefs(refs []ObjectRef) []ObjectRef {
 // view sources are likewise resolved against the union of mapped clusters when
 // missing locally (a co-located read carries no cluster name). Pass
 // ClusterSet{} when no external cluster mappings are available.
+//
+// Once a Distributed remote resolves to an inspectable table, the proxy's
+// columns are checked against it (subset by default; see ValidateOptions).
 func Validate(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet) []ValidationError {
+	return ValidateOpts(dbs, skip, clusters, ValidateOptions{})
+}
+
+// ValidateOptions tunes optional checks layered on top of Validate's core
+// dependency resolution.
+type ValidateOptions struct {
+	// StrictProxyColumns requires a Distributed table and its remote to have
+	// exactly the same set of columns. When false (default), the proxy's
+	// columns need only be a subset of the remote's (every proxy column must
+	// exist on the remote with a matching type) — a proxy may legitimately
+	// omit columns.
+	StrictProxyColumns bool
+}
+
+// ValidateOpts is Validate with explicit options.
+func ValidateOpts(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet, opts ValidateOptions) []ValidationError {
 	declared := declaredObjects(dbs)
 	loadedDBs := map[string]bool{}
+	localTables := map[ObjectRef]TableSpec{}
 	for _, db := range dbs {
 		loadedDBs[db.Name] = true
+		for _, t := range db.Tables {
+			localTables[ObjectRef{Database: db.Name, Name: t.Name}] = t
+		}
 	}
 
 	deps, err := CollectDependencies(dbs)
@@ -485,10 +514,16 @@ func Validate(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet) []Validatio
 		}
 		// Distributed remotes route through the cluster-aware algorithm; the
 		// cluster name (not the database, which is uniform across clusters) is
-		// the discriminator.
+		// the discriminator. When the remote resolves to an inspectable table,
+		// its columns are compared with the proxy's.
 		if dep.Kind == DepDistributedRemote {
-			if e := resolveDistributedRemote(dep, declared, clusters); e != nil {
+			remoteSpec, e := resolveDistributedRemote(dep, declared, localTables, clusters)
+			if e != nil {
 				errs = append(errs, *e)
+			} else if remoteSpec != nil {
+				if proxy, ok := localTables[dep.From]; ok {
+					errs = append(errs, validateDistributedColumns(dep, proxy, *remoteSpec, opts.StrictProxyColumns)...)
+				}
 			}
 			continue
 		}
@@ -526,19 +561,13 @@ func Validate(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet) []Validatio
 	// MV column validation (heuristic, virtual-prefixed names only).
 	// Runs in addition to the dependency check above. Same skip rules.
 	resolver := NewSchemaResolver(dbs)
-	tablesByRef := map[ObjectRef]TableSpec{}
-	for _, db := range dbs {
-		for _, t := range db.Tables {
-			tablesByRef[ObjectRef{Database: db.Name, Name: t.Name}] = t
-		}
-	}
 	for _, db := range dbs {
 		for _, mv := range db.MaterializedViews {
 			from := ObjectRef{Database: db.Name, Name: mv.Name}
 			if skip.Skips(from) {
 				continue
 			}
-			errs = append(errs, validateMVColumns(from, mv, db.Name, tablesByRef, resolver)...)
+			errs = append(errs, validateMVColumns(from, mv, db.Name, localTables, resolver)...)
 		}
 	}
 
@@ -570,12 +599,21 @@ func Validate(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet) []Validatio
 // A remote_servers alias (e.g. "posthog_writable") is resolved to its base
 // cluster before steps 2–4, so it shares that base's composition and @absent
 // status. Error messages name the alias and the base it resolves to.
-func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, clusters ClusterSet) *ValidationError {
+//
+// On success it returns the remote's TableSpec when the remote is an
+// inspectable table (local or in a mapped cluster) so the caller can compare
+// columns, or nil when the remote resolves but has no inspectable schema (an
+// @absent cluster, or a remote captured as an opaque raw/MV/view). The
+// *ValidationError is non-nil only when the remote cannot be resolved at all.
+func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, localTables map[ObjectRef]TableSpec, clusters ClusterSet) (*TableSpec, *ValidationError) {
 	remote := dep.To
 
 	// 1. Local to the node's own schema (alias-independent).
 	if declared[remote] {
-		return nil
+		if spec, ok := localTables[remote]; ok {
+			return &spec, nil
+		}
+		return nil, nil // declared but opaque (raw/MV/view) — no columns to check
 	}
 
 	// Follow alias links to the base cluster for the mapped/absent checks.
@@ -588,9 +626,12 @@ func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, clust
 	// 2. Mapped external cluster.
 	if clusters.mapped(cluster) {
 		if clusters.declares(cluster, remote) {
-			return nil
+			if spec, ok := clusters.lookupTable(cluster, remote); ok {
+				return &spec, nil
+			}
+			return nil, nil // declared in-cluster but opaque
 		}
-		return &ValidationError{
+		return nil, &ValidationError{
 			Object:  dep.From,
 			Missing: remote,
 			Kind:    dep.Kind,
@@ -600,16 +641,115 @@ func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, clust
 	}
 	// 3. Cluster declared absent.
 	if clusters.isAbsent(cluster) {
-		return nil
+		return nil, nil
 	}
 	// 4. Unknown cluster, no mapping.
-	return &ValidationError{
+	return nil, &ValidationError{
 		Object:  dep.From,
 		Missing: remote,
 		Kind:    dep.Kind,
 		Reason: fmt.Sprintf("%s references remote %q on cluster %s, which is not declared locally and has no -cluster mapping (add it or mark @absent)",
 			depPhrase(dep.Kind), remote, clusterDesc),
 	}
+}
+
+// validateDistributedColumns compares a Distributed proxy's columns with its
+// resolved remote storage table. Comparison is on type + nullability only —
+// not the full columnsEqual — because a proxy legitimately omits the remote's
+// CODEC/DEFAULT/TTL/comment. Every forwarded proxy column must exist on the
+// remote with a matching type (subset). When strict, the remote's forwarded
+// columns must also all exist on the proxy (exact mirror). Column names sort
+// for deterministic output.
+//
+// ALIAS and EPHEMERAL columns are computed/insert-only, not stored or
+// transferred, so a proxy may declare them without the remote having them (and
+// vice-versa); they are excluded from both directions.
+func validateDistributedColumns(dep Dependency, proxy, remote TableSpec, strict bool) []ValidationError {
+	remoteCols := make(map[string]ColumnSpec, len(remote.Columns))
+	for _, c := range remote.Columns {
+		remoteCols[c.Name] = c
+	}
+	proxyCols := make(map[string]ColumnSpec, len(proxy.Columns))
+	for _, c := range proxy.Columns {
+		proxyCols[c.Name] = c
+	}
+
+	var errs []ValidationError
+	for _, pc := range sortedColumns(proxy.Columns) {
+		if !isForwardedColumn(pc) {
+			continue
+		}
+		rc, ok := remoteCols[pc.Name]
+		if !ok {
+			errs = append(errs, ValidationError{
+				Object:  dep.From,
+				Missing: ObjectRef{Database: dep.To.Database, Name: pc.Name},
+				Kind:    KindDistributedColumn,
+				Reason: fmt.Sprintf("Distributed table column %q is not present on remote table %q",
+					pc.Name, dep.To),
+			})
+			continue
+		}
+		if !columnTypeMatches(pc, rc) {
+			errs = append(errs, ValidationError{
+				Object:  dep.From,
+				Missing: ObjectRef{Database: dep.To.Database, Name: pc.Name},
+				Kind:    KindDistributedColumn,
+				Reason: fmt.Sprintf("Distributed table column %q has type %s but remote table %q has %s",
+					pc.Name, columnTypeString(pc), dep.To, columnTypeString(rc)),
+			})
+		}
+	}
+
+	if strict {
+		for _, rc := range sortedColumns(remote.Columns) {
+			if !isForwardedColumn(rc) {
+				continue
+			}
+			if _, ok := proxyCols[rc.Name]; !ok {
+				errs = append(errs, ValidationError{
+					Object:  dep.From,
+					Missing: ObjectRef{Database: dep.To.Database, Name: rc.Name},
+					Kind:    KindDistributedColumn,
+					Reason: fmt.Sprintf("remote table %q column %q is missing from the Distributed table (strict-proxy-columns)",
+						dep.To, rc.Name),
+				})
+			}
+		}
+	}
+	return errs
+}
+
+// columnTypeMatches reports whether two columns have the same declared type and
+// nullability, ignoring CODEC/DEFAULT/TTL/comment and other modifiers a proxy
+// may drop.
+func columnTypeMatches(a, b ColumnSpec) bool {
+	return a.Type == b.Type && a.Nullable == b.Nullable
+}
+
+// isForwardedColumn reports whether a column is part of the data a Distributed
+// table forwards to its remote. ALIAS columns are computed at query time and
+// EPHEMERAL columns exist only for INSERT — neither is stored or transferred,
+// so they need not exist on the remote storage table.
+func isForwardedColumn(c ColumnSpec) bool {
+	return c.Alias == nil && c.Ephemeral == nil
+}
+
+// columnTypeString renders a column's type for error messages, showing the
+// Nullable(...) wrapper when set.
+func columnTypeString(c ColumnSpec) string {
+	if c.Nullable {
+		return "Nullable(" + c.Type + ")"
+	}
+	return c.Type
+}
+
+// sortedColumns returns the columns ordered by name for deterministic errors.
+func sortedColumns(cols []ColumnSpec) []ColumnSpec {
+	out := make([]ColumnSpec, len(cols))
+	copy(out, cols)
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
 }
 
 // validateMVColumns runs the heuristic virtual-column reference check on

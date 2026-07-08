@@ -98,6 +98,18 @@ func (cs ClusterSet) declaredInAnyMapped(ref ObjectRef) bool {
 	return false
 }
 
+// lookupTable returns the remote's TableSpec from the named cluster's
+// composition, if that cluster is mapped and declares the object as a table.
+// Used by the Distributed proxy column check to inspect a cross-cluster
+// remote's columns.
+func (cs ClusterSet) lookupTable(name string, ref ObjectRef) (TableSpec, bool) {
+	r, ok := cs.resolver[name]
+	if !ok {
+		return TableSpec{}, false
+	}
+	return r.LookupTable(ref.Database, ref.Name)
+}
+
 // declares reports whether the named cluster declares the given object.
 func (cs ClusterSet) declares(name string, ref ObjectRef) bool {
 	return cs.declared[name][ref]

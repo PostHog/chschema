@@ -188,11 +188,16 @@ func buildClusterSet(entries []clusterEntry) (hclload.ClusterSet, error) {
 // cluster with no local composition, or NAME=@alias=BASE for a remote_servers
 // alias that shares BASE's composition. With no -cluster mapping, an off-node
 // remote errors (add a mapping, mark it @absent, or -skip-validation it).
+//
+// Once a remote resolves, the proxy's columns are checked against it: every
+// proxy column must exist on the remote with a matching type. -strict-proxy-columns
+// additionally requires the remote's columns to all exist on the proxy.
 func runValidate(args []string) {
 	fs := flag.NewFlagSet("hclexp validate", flag.ExitOnError)
 	configFlag := fs.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
 	layersFlag := fs.String("layer", "", "comma-separated list of layer directories (loaded in order)")
 	skipFlag := fs.String("skip-validation", "", "comma-separated dependent object names to skip, or \"*\" for all")
+	strictProxyCols := fs.Bool("strict-proxy-columns", false, "require Distributed proxy and remote to have exactly the same columns (default: proxy columns need only be a subset)")
 	var clusters clusterFlag
 	fs.Var(&clusters, "cluster", "repeatable NAME=STACK external cluster mapping for Distributed remotes; STACK is OS-list-separated (':') layer dirs, @absent, or @alias=BASE")
 	_ = fs.Parse(args)
@@ -213,7 +218,8 @@ func runValidate(args []string) {
 		os.Exit(1)
 	}
 
-	errs := hclload.Validate(schema.Databases, hclload.ParseSkipSet(*skipFlag), clusterSet)
+	errs := hclload.ValidateOpts(schema.Databases, hclload.ParseSkipSet(*skipFlag), clusterSet,
+		hclload.ValidateOptions{StrictProxyColumns: *strictProxyCols})
 	if len(errs) > 0 {
 		for _, e := range errs {
 			fmt.Fprintf(os.Stderr, "validation error: %s\n", e.Error())
