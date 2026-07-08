@@ -490,3 +490,35 @@ func TestBuildClusterSet_AliasMissingBaseName(t *testing.T) {
 	_, err := buildClusterSet([]clusterEntry{{name: "aux_writable", stack: aliasPrefix}})
 	require.Error(t, err)
 }
+
+// End-to-end through real HCL parsing: a view whose source table lives in a
+// mapped cluster resolves; without the mapping it errors.
+func TestValidate_ViewSourceCrossCluster_EndToEnd(t *testing.T) {
+	nodePath := writeTemp(t, "node.hcl", `
+database "posthog" {
+  view "web_stats_view" {
+    query = "SELECT day FROM posthog.sharded_web_stats_preaggregated"
+  }
+}`)
+	auxPath := filepath.Join(t.TempDir(), "aux.hcl")
+	require.NoError(t, os.WriteFile(auxPath, []byte(`
+database "posthog" {
+  table "sharded_web_stats_preaggregated" {
+    order_by = ["day"]
+    column "day" { type = "Date" }
+    engine "merge_tree" {}
+  }
+}`), 0o600))
+
+	node, err := hclload.ParseFile(nodePath)
+	require.NoError(t, err)
+	require.NoError(t, hclload.Resolve(node))
+
+	withAux, err := buildClusterSet([]clusterEntry{{name: "aux", stack: filepath.Dir(auxPath)}})
+	require.NoError(t, err)
+	require.Empty(t, hclload.Validate(node.Databases, hclload.ParseSkipSet(""), withAux),
+		"view source resolves against the mapped aux cluster")
+
+	require.Len(t, hclload.Validate(node.Databases, hclload.ParseSkipSet(""), hclload.ClusterSet{}), 1,
+		"without the aux mapping the cross-cluster view source is unresolved")
+}

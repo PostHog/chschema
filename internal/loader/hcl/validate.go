@@ -456,8 +456,10 @@ func dedupeRefs(refs []ObjectRef) []ObjectRef {
 // Distributed remotes are resolved cluster-aware against clusters: a proxy
 // routinely forwards to a storage table that lives on another cluster's
 // composition (same database name, different cluster). See
-// resolveDistributedRemote for the routing rules. Pass ClusterSet{} when no
-// external cluster mappings are available.
+// resolveDistributedRemote for the routing rules. Materialized-view and plain-
+// view sources are likewise resolved against the union of mapped clusters when
+// missing locally (a co-located read carries no cluster name). Pass
+// ClusterSet{} when no external cluster mappings are available.
 func Validate(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet) []ValidationError {
 	declared := declaredObjects(dbs)
 	loadedDBs := map[string]bool{}
@@ -489,6 +491,16 @@ func Validate(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet) []Validatio
 				errs = append(errs, *e)
 			}
 			continue
+		}
+		// A materialized view or plain view reads its source from the local
+		// server, which at composition time is the union of all co-located
+		// sibling clusters. A source missing locally is satisfied when it is
+		// declared in any mapped cluster. (Only SELECT sources read across the
+		// composition; write targets — MV dest, Buffer, TimeSeries — stay local.)
+		if dep.Kind == DepMVSource || dep.Kind == DepViewSource {
+			if !declared[dep.To] && clusters.declaredInAnyMapped(dep.To) {
+				continue
+			}
 		}
 		if !loadedDBs[dep.To.Database] {
 			errs = append(errs, ValidationError{

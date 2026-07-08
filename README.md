@@ -225,7 +225,8 @@ It's the static guard the diff/apply path relies on:
 
 - A **`materialized_view`** reads from source tables (named in its `query`)
   and writes into `to_table`. Both must be declared somewhere in the
-  loaded schema.
+  loaded schema — the source may also live on a mapped sibling cluster
+  (see below), the destination must be local.
 - A **`distributed`-engine table** forwards to the table named by its
   `cluster_name` / `remote_database` / `remote_table`. The remote must be
   declared on the node itself, on a mapped cluster (see below), or in the
@@ -248,7 +249,7 @@ hclexp validate -config ./schema/posthog.hcl -skip-validation=events_mv,events_d
 hclexp validate -config ./schema/posthog.hcl -skip-validation='*'
 ```
 
-### Cross-cluster Distributed remotes
+### Cross-cluster references
 
 A `Distributed` proxy routinely forwards to a storage table that lives on
 **another cluster's** composition — the remote database is `posthog` on
@@ -273,6 +274,14 @@ hclexp validate -layer ./nodes/data \
   -cluster aux_writable=@alias=aux \
   -cluster events_recent=@absent
 ```
+
+The same mappings also resolve **materialized-view and plain-view sources**:
+a `SELECT ... FROM posthog.foo` carries no cluster name, so a source missing
+from the node is satisfied when `foo` is declared in *any* mapped cluster —
+the co-located composition the server sees at runtime. `@absent` clusters
+contribute no schema and never satisfy a view source (the table must really
+exist somewhere); only `Distributed` remotes, which name their cluster
+explicitly, are satisfied by `@absent`.
 
 With **no** `-cluster` mapping an off-node remote is an error — a new
 cross-cluster proxy can't be silently accepted: map its cluster, mark it
