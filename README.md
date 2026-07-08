@@ -290,6 +290,32 @@ cross-cluster proxy can't be silently accepted: map its cluster, mark it
 hand-maintained skip list with a generated cluster mapping that actually
 checks the remotes exist.
 
+#### Deriving clusters from the role manifest
+
+Instead of listing every cluster as a flag, `-manifest`/`-env` derive the
+mappings from the same role manifest `plan`/`web` consume. A ClickHouse cluster
+is composed of nodes from one or more roles, so a `cluster` block lists its
+member roles and its schema is their **union** for the selected env:
+
+```hcl
+role "data"             { env "prod-us" { layers = ["layers/base", "layers/env/prod-us"] } }
+role "ingestion-events" { env "prod-us" { layers = ["layers/base", "layers/ingestion", "layers/env/prod-us"] } }
+
+cluster "posthog" {
+  roles   = ["data", "ingestion-events"]
+  aliases = ["posthog_writable", "posthog_single_shard"]
+}
+```
+
+```sh
+hclexp validate -layer ./nodes/data -manifest roles.hcl -env prod-us -layer-root .
+```
+
+Each cluster resolves against the union of its member roles' compositions;
+aliases resolve to their base. Explicit `-cluster` flags are applied last, so
+they override or extend the manifest (e.g. `-cluster events_recent=@absent`).
+A cluster that references an undeclared role is rejected.
+
 ### Distributed proxy columns
 
 Once a `Distributed` remote resolves to an inspectable table (locally or via a

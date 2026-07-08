@@ -149,6 +149,14 @@ const (
 // composition; an @alias=BASE stack points the cluster at BASE's composition.
 func buildClusterSet(entries []clusterEntry) (hclload.ClusterSet, error) {
 	cs := hclload.NewClusterSet()
+	err := applyClusterEntries(&cs, entries)
+	return cs, err
+}
+
+// applyClusterEntries adds each -cluster flag entry to cs. Entries are applied
+// in order, so a later entry (or a flag applied after a manifest) overrides an
+// earlier mapping for the same name.
+func applyClusterEntries(cs *hclload.ClusterSet, entries []clusterEntry) error {
 	for _, e := range entries {
 		switch {
 		case e.stack == absentStack:
@@ -157,7 +165,7 @@ func buildClusterSet(entries []clusterEntry) (hclload.ClusterSet, error) {
 		case strings.HasPrefix(e.stack, aliasPrefix):
 			base := strings.TrimPrefix(e.stack, aliasPrefix)
 			if base == "" {
-				return cs, fmt.Errorf("cluster %q: %s requires a base cluster name", e.name, aliasPrefix)
+				return fmt.Errorf("cluster %q: %s requires a base cluster name", e.name, aliasPrefix)
 			}
 			cs.AddAlias(e.name, base)
 			continue
@@ -165,14 +173,61 @@ func buildClusterSet(entries []clusterEntry) (hclload.ClusterSet, error) {
 		dirs := filepath.SplitList(e.stack)
 		schema, err := hclload.LoadLayers(dirs)
 		if err != nil {
-			return cs, fmt.Errorf("cluster %q: loading %v: %w", e.name, dirs, err)
+			return fmt.Errorf("cluster %q: loading %v: %w", e.name, dirs, err)
 		}
 		if err := hclload.Resolve(schema); err != nil {
-			return cs, fmt.Errorf("cluster %q: resolving %v: %w", e.name, dirs, err)
+			return fmt.Errorf("cluster %q: resolving %v: %w", e.name, dirs, err)
 		}
 		cs.Add(e.name, schema.Databases)
 	}
-	return cs, nil
+	return nil
+}
+
+// buildManifestClusters adds cluster mappings derived from the role manifest to
+// cs. A ClickHouse cluster is composed of nodes from one or more roles, so each
+// cluster block's schema is the union of its member roles' compositions for env
+// (layer paths resolved under layerRoot). Roles not deployed in env are skipped.
+// Each cluster's aliases map to @alias=cluster.
+func buildManifestClusters(cs *hclload.ClusterSet, path, env, layerRoot string) error {
+	roles, err := parseManifest(path, env)
+	if err != nil {
+		return err
+	}
+	layersByRole := make(map[string][]string, len(roles))
+	for _, r := range roles {
+		layersByRole[r.Role] = r.Layers
+	}
+
+	clusters, err := parseManifestClusters(path)
+	if err != nil {
+		return err
+	}
+	for _, cl := range clusters {
+		var dbs []hclload.DatabaseSpec
+		for _, role := range cl.Roles {
+			layers, ok := layersByRole[role]
+			if !ok {
+				continue // role not deployed in this env
+			}
+			dirs := make([]string, len(layers))
+			for i, l := range layers {
+				dirs[i] = filepath.Join(layerRoot, l)
+			}
+			schema, err := hclload.LoadLayers(dirs)
+			if err != nil {
+				return fmt.Errorf("cluster %q role %q: loading %v: %w", cl.Name, role, dirs, err)
+			}
+			if err := hclload.Resolve(schema); err != nil {
+				return fmt.Errorf("cluster %q role %q: resolving %v: %w", cl.Name, role, dirs, err)
+			}
+			dbs = append(dbs, schema.Databases...)
+		}
+		cs.Add(cl.Name, dbs)
+		for _, alias := range cl.Aliases {
+			cs.AddAlias(alias, cl.Name)
+		}
+	}
+	return nil
 }
 
 // runValidate loads an HCL config (single file or layers), resolves it, and
@@ -192,15 +247,28 @@ func buildClusterSet(entries []clusterEntry) (hclload.ClusterSet, error) {
 // Once a remote resolves, the proxy's columns are checked against it: every
 // proxy column must exist on the remote with a matching type. -strict-proxy-columns
 // additionally requires the remote's columns to all exist on the proxy.
+//
+// Instead of listing every cluster as a -cluster flag, -manifest/-env derive the
+// mappings from the same role manifest `plan` uses: each role's `cluster` (and
+// `aliases`) maps to its composed layer stack for -env. Explicit -cluster flags
+// are applied last, so they override or extend the manifest (e.g. NAME=@absent).
 func runValidate(args []string) {
 	fs := flag.NewFlagSet("hclexp validate", flag.ExitOnError)
 	configFlag := fs.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
 	layersFlag := fs.String("layer", "", "comma-separated list of layer directories (loaded in order)")
 	skipFlag := fs.String("skip-validation", "", "comma-separated dependent object names to skip, or \"*\" for all")
 	strictProxyCols := fs.Bool("strict-proxy-columns", false, "require Distributed proxy and remote to have exactly the same columns (default: proxy columns need only be a subset)")
+	manifestFlag := fs.String("manifest", "", "HCL role manifest to derive -cluster mappings from (each role's cluster/aliases -> its -env layer stack); requires -env")
+	envFlag := fs.String("env", "", "environment selecting each role's layer stack in -manifest")
+	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under")
 	var clusters clusterFlag
 	fs.Var(&clusters, "cluster", "repeatable NAME=STACK external cluster mapping for Distributed remotes; STACK is OS-list-separated (':') layer dirs, @absent, or @alias=BASE")
 	_ = fs.Parse(args)
+
+	if (*manifestFlag == "") != (*envFlag == "") {
+		slog.Error("-manifest and -env must be used together")
+		os.Exit(2)
+	}
 
 	schema, err := load(*configFlag, *layersFlag)
 	if err != nil {
@@ -212,8 +280,16 @@ func runValidate(args []string) {
 		os.Exit(1)
 	}
 
-	clusterSet, err := buildClusterSet(clusters.entries)
-	if err != nil {
+	// Manifest-derived cluster mappings first; explicit -cluster flags applied
+	// last so they override or extend them (e.g. NAME=@absent).
+	clusterSet := hclload.NewClusterSet()
+	if *manifestFlag != "" {
+		if err := buildManifestClusters(&clusterSet, *manifestFlag, *envFlag, *layerRootFlag); err != nil {
+			slog.Error("failed to derive clusters from manifest", "file", *manifestFlag, "env", *envFlag, "err", err)
+			os.Exit(1)
+		}
+	}
+	if err := applyClusterEntries(&clusterSet, clusters.entries); err != nil {
 		slog.Error("failed to load cluster mapping", "err", err)
 		os.Exit(1)
 	}

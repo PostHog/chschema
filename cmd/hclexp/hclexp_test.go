@@ -491,6 +491,164 @@ func TestBuildClusterSet_AliasMissingBaseName(t *testing.T) {
 	require.Error(t, err)
 }
 
+// parseManifestClusters decodes cluster blocks (roles + aliases) and rejects
+// duplicates / empty role lists.
+func TestParseManifestClusters(t *testing.T) {
+	path := writeTemp(t, "roles.hcl", `
+role "data" {
+  env "prod-us" { layers = ["layers/base"] }
+}
+role "ingestion-events" {
+  env "prod-us" { layers = ["layers/ingestion"] }
+}
+
+cluster "posthog" {
+  roles   = ["data", "ingestion-events"]
+  aliases = ["posthog_writable", "posthog_single_shard"]
+}`)
+	clusters, err := parseManifestClusters(path)
+	require.NoError(t, err)
+	require.Len(t, clusters, 1)
+	require.Equal(t, "posthog", clusters[0].Name)
+	require.Equal(t, []string{"data", "ingestion-events"}, clusters[0].Roles)
+	require.Equal(t, []string{"posthog_writable", "posthog_single_shard"}, clusters[0].Aliases)
+
+	dup := writeTemp(t, "dup.hcl", `
+cluster "posthog" {
+  roles = ["data"]
+}
+cluster "posthog" {
+  roles = ["aux"]
+}`)
+	_, err = parseManifestClusters(dup)
+	require.Error(t, err)
+
+	empty := writeTemp(t, "empty.hcl", `
+cluster "posthog" {
+  roles = []
+}`)
+	_, err = parseManifestClusters(empty)
+	require.Error(t, err)
+
+	// A cluster referencing a role with no role block is rejected.
+	unknown := writeTemp(t, "unknown.hcl", `
+role "data" {
+  env "prod-us" { layers = ["layers/data"] }
+}
+cluster "posthog" {
+  roles = ["data", "ghost"]
+}`)
+	_, err = parseManifestClusters(unknown)
+	require.ErrorContains(t, err, "ghost")
+}
+
+// A cluster's schema is the UNION of its member roles' compositions: a proxy
+// on cluster "posthog" resolves against a table declared in EITHER role.
+func TestBuildManifestClusters_UnionOfRoles(t *testing.T) {
+	root := t.TempDir()
+	// role "data" declares sharded_events; role "ingestion" declares kafka_events.
+	writeLayer(t, root, "layers/data/data.hcl", `
+database "posthog" {
+  table "sharded_events" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+  }
+}`)
+	writeLayer(t, root, "layers/ingestion/ing.hcl", `
+database "posthog" {
+  table "kafka_events" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+  }
+}`)
+	manifest := writeTemp(t, "roles.hcl", `
+role "data" {
+  env "prod-us" { layers = ["layers/data"] }
+}
+role "ingestion" {
+  env "prod-us" { layers = ["layers/ingestion"] }
+}
+
+cluster "posthog" {
+  roles   = ["data", "ingestion"]
+  aliases = ["posthog_writable"]
+}`)
+	cs := hclload.NewClusterSet()
+	require.NoError(t, buildManifestClusters(&cs, manifest, "prod-us", root))
+
+	proxy := func(cluster, remote string) []hclload.DatabaseSpec {
+		return []hclload.DatabaseSpec{{
+			Name: "posthog",
+			Tables: []hclload.TableSpec{{
+				Name: "p",
+				Engine: &hclload.EngineSpec{Kind: "distributed", Decoded: hclload.EngineDistributed{
+					ClusterName: cluster, RemoteDatabase: "posthog", RemoteTable: remote,
+				}},
+			}},
+		}}
+	}
+	// Both a data-role table and an ingestion-role table resolve on "posthog".
+	require.Empty(t, hclload.Validate(proxy("posthog", "sharded_events"), hclload.ParseSkipSet(""), cs),
+		"remote from the data role resolves against the unioned posthog cluster")
+	require.Empty(t, hclload.Validate(proxy("posthog", "kafka_events"), hclload.ParseSkipSet(""), cs),
+		"remote from the ingestion role resolves against the unioned posthog cluster")
+	// The alias resolves via the same union.
+	require.Empty(t, hclload.Validate(proxy("posthog_writable", "kafka_events"), hclload.ParseSkipSet(""), cs),
+		"alias resolves via the unioned base cluster")
+	// A table on neither role errors.
+	require.Len(t, hclload.Validate(proxy("posthog", "nonexistent"), hclload.ParseSkipSet(""), cs), 1)
+}
+
+// End-to-end through the binary path: -manifest resolves a cross-cluster proxy
+// with no -cluster flags; without it the proxy errors.
+func TestValidate_ManifestClusters_EndToEnd(t *testing.T) {
+	root := t.TempDir()
+	writeLayer(t, root, "layers/aux/aux.hcl", `
+database "posthog" {
+  table "sharded_web_stats" {
+    order_by = ["day"]
+    column "day" { type = "Date" }
+    engine "merge_tree" {}
+  }
+}`)
+	manifest := writeTemp(t, "roles.hcl", `
+role "aux" {
+  env "prod-us" { layers = ["layers/aux"] }
+}
+cluster "aux" {
+  roles   = ["aux"]
+  aliases = ["aux_writable"]
+}`)
+
+	cs := hclload.NewClusterSet()
+	require.NoError(t, buildManifestClusters(&cs, manifest, "prod-us", root))
+
+	proxy := func(cluster string) []hclload.DatabaseSpec {
+		return []hclload.DatabaseSpec{{
+			Name: "posthog",
+			Tables: []hclload.TableSpec{{
+				Name: "web_stats",
+				Engine: &hclload.EngineSpec{Kind: "distributed", Decoded: hclload.EngineDistributed{
+					ClusterName: cluster, RemoteDatabase: "posthog", RemoteTable: "sharded_web_stats",
+				}},
+			}},
+		}}
+	}
+	require.Empty(t, hclload.Validate(proxy("aux"), hclload.ParseSkipSet(""), cs))
+	require.Empty(t, hclload.Validate(proxy("aux_writable"), hclload.ParseSkipSet(""), cs),
+		"manifest alias resolves via its base cluster")
+}
+
+// writeLayer writes content to root/rel, creating parent dirs.
+func writeLayer(t *testing.T, root, rel, content string) {
+	t.Helper()
+	p := filepath.Join(root, rel)
+	require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+	require.NoError(t, os.WriteFile(p, []byte(content), 0o600))
+}
+
 // End-to-end through real HCL parsing: a Distributed proxy that declares a
 // column its remote lacks is flagged, and -strict-proxy-columns flags a
 // remote-only column too.
