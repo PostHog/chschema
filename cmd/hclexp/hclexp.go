@@ -252,7 +252,15 @@ func clusterSetFromRoles(cs *hclload.ClusterSet, clusters []manifestClusterBlock
 				dbs = append(dbs, s.Databases...)
 			}
 		}
-		cs.Add(cl.Name, dbs)
+		// No member role composes this cluster in the selected env: it is
+		// modeled elsewhere (env-varying / external), so treat it as absent —
+		// proxies into it are satisfied rather than failing against an empty
+		// schema.
+		if len(dbs) == 0 {
+			cs.AddAbsent(cl.Name)
+		} else {
+			cs.Add(cl.Name, dbs)
+		}
 		for _, alias := range cl.Aliases {
 			cs.AddAlias(alias, cl.Name)
 		}
