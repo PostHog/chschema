@@ -19,3 +19,16 @@ role "data" {
   env "prod-us" { layers = ["layers/base", "layers/env/prod-us"] }
   env "prod-eu" { layers = ["layers/base", "layers/env/prod-eu"] }
 }
+
+# Optional cluster blocks (consumed by `hclexp validate -manifest`, ignored by
+# plan/web). A ClickHouse cluster is composed of nodes from one or more roles;
+# its schema is the union of those roles' compositions. `validate` resolves a
+# Distributed table's cluster_name (and remote_servers aliases) against it.
+cluster "ops" {
+  roles = ["ops"]
+}
+
+cluster "posthog" {
+  roles   = ["data"]
+  aliases = ["posthog_writable"]
+}

@@ -26,6 +26,12 @@ import (
 //	}
 type planManifest struct {
 	Roles []manifestRoleBlock `hcl:"role,block"`
+
+	// Clusters is optional cross-cluster metadata used by `validate` and
+	// ignored by `plan`/`web`. A ClickHouse cluster is composed of nodes from
+	// one or more roles, so each cluster block lists the roles whose
+	// compositions (unioned) make up that cluster's schema.
+	Clusters []manifestClusterBlock `hcl:"cluster,block"`
 }
 
 type manifestRoleBlock struct {
@@ -36,6 +42,15 @@ type manifestRoleBlock struct {
 type manifestEnvBlock struct {
 	Name   string   `hcl:"name,label"`
 	Layers []string `hcl:"layers"`
+}
+
+// manifestClusterBlock maps a ClickHouse cluster_name to the roles whose nodes
+// compose it (the cluster's schema is their union) and the remote_servers
+// aliases that share that composition.
+type manifestClusterBlock struct {
+	Name    string   `hcl:"name,label"`
+	Roles   []string `hcl:"roles"`
+	Aliases []string `hcl:"aliases,optional"`
 }
 
 // manifestRole is a resolved role for one selected environment: a node role and
@@ -163,6 +178,43 @@ func parseManifest(path, env string) ([]manifestRole, error) {
 		return nil, fmt.Errorf("no roles deployed in env %q", env)
 	}
 	return roles, nil
+}
+
+// parseManifestClusters decodes the optional cluster blocks from the manifest.
+// Each names a ClickHouse cluster_name and the roles whose compositions union
+// into its schema (plus remote_servers aliases). Duplicate cluster names, or a
+// cluster with no roles, are rejected. Returns an empty slice when the manifest
+// declares no clusters.
+func parseManifestClusters(path string) ([]manifestClusterBlock, error) {
+	parser := hclparse.NewParser()
+	f, diags := parser.ParseHCLFile(path)
+	if diags.HasErrors() {
+		return nil, fmt.Errorf("%s", diags)
+	}
+	var m planManifest
+	if diags := gohcl.DecodeBody(f.Body, nil, &m); diags.HasErrors() {
+		return nil, fmt.Errorf("%s", diags)
+	}
+	declaredRoles := make(map[string]bool, len(m.Roles))
+	for _, rb := range m.Roles {
+		declaredRoles[rb.Name] = true
+	}
+	seen := map[string]bool{}
+	for _, c := range m.Clusters {
+		if seen[c.Name] {
+			return nil, fmt.Errorf("duplicate cluster %q", c.Name)
+		}
+		seen[c.Name] = true
+		if len(c.Roles) == 0 {
+			return nil, fmt.Errorf("cluster %q: roles is empty", c.Name)
+		}
+		for _, role := range c.Roles {
+			if !declaredRoles[role] {
+				return nil, fmt.Errorf("cluster %q: unknown role %q (no such role block in the manifest)", c.Name, role)
+			}
+		}
+	}
+	return m.Clusters, nil
 }
 
 // currentByRole loads every per-node dump in dir and returns one representative
