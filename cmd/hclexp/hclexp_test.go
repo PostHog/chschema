@@ -641,6 +641,99 @@ cluster "aux" {
 		"manifest alias resolves via its base cluster")
 }
 
+// validateManifest validates every role's composition, resolving cross-cluster
+// references against the manifest-derived cluster set. Clean roles pass; a role
+// with a broken reference reports it, while its cross-cluster proxy resolves.
+func TestValidateManifest_AllRoles(t *testing.T) {
+	root := t.TempDir()
+	// aux role: a clean storage table.
+	writeLayer(t, root, "layers/aux/aux.hcl", `
+database "posthog" {
+  table "sharded_web_stats" {
+    order_by = ["day"]
+    column "day" { type = "Date" }
+    engine "merge_tree" {}
+  }
+}`)
+	// data role: a Distributed proxy into aux (resolves cross-cluster) plus a
+	// view referencing a table that exists nowhere (an error).
+	writeLayer(t, root, "layers/data/data.hcl", `
+database "posthog" {
+  table "web_stats" {
+    engine "distributed" {
+      cluster_name    = "aux"
+      remote_database = "posthog"
+      remote_table    = "sharded_web_stats"
+    }
+    column "day" { type = "Date" }
+  }
+  view "broken" {
+    query = "SELECT day FROM posthog.nonexistent"
+  }
+}`)
+	manifest := writeTemp(t, "roles.hcl", `
+role "data" {
+  env "prod-us" { layers = ["layers/data"] }
+}
+role "aux" {
+  env "prod-us" { layers = ["layers/aux"] }
+}
+cluster "aux"     { roles = ["aux"] }
+cluster "posthog" { roles = ["data"] }`)
+
+	results, err := validateManifest(manifest, "prod-us", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 2, "every deployed role is validated")
+
+	byRole := map[string][]hclload.ValidationError{}
+	for _, r := range results {
+		byRole[r.Role] = r.Errs
+	}
+	require.Empty(t, byRole["aux"], "aux role is clean")
+	require.Len(t, byRole["data"], 1, "data role has exactly the broken view (its proxy resolved cross-cluster)")
+	require.Equal(t, "broken", byRole["data"][0].Object.Name)
+	require.Equal(t, "nonexistent", byRole["data"][0].Missing.Name)
+}
+
+// A fully consistent manifest yields no errors on any role.
+func TestValidateManifest_AllClean(t *testing.T) {
+	root := t.TempDir()
+	writeLayer(t, root, "layers/aux/aux.hcl", `
+database "posthog" {
+  table "sharded_web_stats" {
+    order_by = ["day"]
+    column "day" { type = "Date" }
+    engine "merge_tree" {}
+  }
+}`)
+	writeLayer(t, root, "layers/data/data.hcl", `
+database "posthog" {
+  table "web_stats" {
+    engine "distributed" {
+      cluster_name    = "aux"
+      remote_database = "posthog"
+      remote_table    = "sharded_web_stats"
+    }
+    column "day" { type = "Date" }
+  }
+}`)
+	manifest := writeTemp(t, "roles.hcl", `
+role "data" {
+  env "prod-us" { layers = ["layers/data"] }
+}
+role "aux" {
+  env "prod-us" { layers = ["layers/aux"] }
+}
+cluster "aux" { roles = ["aux"] }`)
+
+	results, err := validateManifest(manifest, "prod-us", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 2)
+	for _, r := range results {
+		require.Empty(t, r.Errs, "role %s should be clean", r.Role)
+	}
+}
+
 // writeLayer writes content to root/rel, creating parent dirs.
 func writeLayer(t *testing.T, root, rel, content string) {
 	t.Helper()

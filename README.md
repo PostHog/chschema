@@ -316,6 +316,19 @@ aliases resolve to their base. Explicit `-cluster` flags are applied last, so
 they override or extend the manifest (e.g. `-cluster events_recent=@absent`).
 A cluster that references an undeclared role is rejected.
 
+#### Validating a whole environment
+
+With `-manifest`/`-env` and **no** `-layer`/`-config`, validate runs in
+manifest-driven mode: it validates **every role** in the manifest for that env,
+each against the cluster set derived from the whole manifest. One command checks
+the entire environment instead of a shell loop over nodes; failures are prefixed
+with the role they came from.
+
+```sh
+hclexp validate -manifest roles.hcl -env prod-us -layer-root .
+# validation error: [role data] posthog.web_stats: Distributed table column ...
+```
+
 ### Distributed proxy columns
 
 Once a `Distributed` remote resolves to an inspectable table (locally or via a
