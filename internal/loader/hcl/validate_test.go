@@ -339,6 +339,84 @@ func TestValidate_DistributedRemote_AliasToUnmappedBase(t *testing.T) {
 	assert.Contains(t, errs[0].Reason, "no -cluster mapping")
 }
 
+// A materialized view whose source table lives on a mapped sibling cluster
+// resolves against that cluster instead of erroring (co-located composition).
+func TestValidate_MVSource_ResolvesViaMappedCluster(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("web_stats_mv_target", EngineMergeTree{})},
+		[]MaterializedViewSpec{mkMV("web_stats_mv", "posthog.web_stats_mv_target",
+			"SELECT day FROM posthog.sharded_web_stats_preaggregated")},
+	)}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), auxCluster()),
+		"MV source declared in a mapped cluster resolves")
+}
+
+// A plain view's source table resolves the same way.
+func TestValidate_ViewSource_ResolvesViaMappedCluster(t *testing.T) {
+	dbs := []DatabaseSpec{{
+		Name:  "posthog",
+		Views: []ViewSpec{{Name: "web_stats_view", Query: "SELECT day FROM posthog.sharded_web_stats_preaggregated"}},
+	}}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), auxCluster()),
+		"view source declared in a mapped cluster resolves")
+}
+
+// A source declared on neither the node nor any mapped cluster is a real error.
+func TestValidate_MVSource_MissingEverywhere(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("web_stats_mv_target", EngineMergeTree{})},
+		[]MaterializedViewSpec{mkMV("web_stats_mv", "posthog.web_stats_mv_target",
+			"SELECT day FROM posthog.nonexistent_src")},
+	)}
+	errs := Validate(dbs, ParseSkipSet(""), auxCluster())
+	require.Len(t, errs, 1)
+	assert.Equal(t, ObjectRef{Database: "posthog", Name: "nonexistent_src"}, errs[0].Missing)
+	assert.Equal(t, DepMVSource, errs[0].Kind)
+}
+
+// With no -cluster mapping, a cross-cluster source errors (backward compatible;
+// documents the migration path for callers).
+func TestValidate_MVSource_NoMappingErrors(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("web_stats_mv_target", EngineMergeTree{})},
+		[]MaterializedViewSpec{mkMV("web_stats_mv", "posthog.web_stats_mv_target",
+			"SELECT day FROM posthog.sharded_web_stats_preaggregated")},
+	)}
+	assert.Len(t, Validate(dbs, ParseSkipSet(""), ClusterSet{}), 1,
+		"no mapping -> cross-cluster source is unresolved")
+}
+
+// An @absent cluster contributes no composition, so it never satisfies an
+// MV/View source (unlike a named Distributed remote). The source must really
+// exist somewhere.
+func TestValidate_MVSource_AbsentClusterDoesNotSatisfy(t *testing.T) {
+	cs := NewClusterSet()
+	cs.AddAbsent("aux")
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("web_stats_mv_target", EngineMergeTree{})},
+		[]MaterializedViewSpec{mkMV("web_stats_mv", "posthog.web_stats_mv_target",
+			"SELECT day FROM posthog.sharded_web_stats_preaggregated")},
+	)}
+	assert.Len(t, Validate(dbs, ParseSkipSet(""), cs), 1,
+		"@absent does not satisfy an MV source")
+}
+
+// The fallback is scoped to SELECT sources: a materialized view's destination
+// (a write target, which must be local) is not resolved against mapped clusters.
+func TestValidate_MVDest_NotResolvedCrossCluster(t *testing.T) {
+	cs := NewClusterSet()
+	cs.Add("aux", []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("remote_dest", EngineMergeTree{})}, nil)})
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("local_src", EngineMergeTree{})},
+		[]MaterializedViewSpec{mkMV("mv", "posthog.remote_dest", "SELECT x FROM posthog.local_src")},
+	)}
+	errs := Validate(dbs, ParseSkipSet(""), cs)
+	require.Len(t, errs, 1)
+	assert.Equal(t, ObjectRef{Database: "posthog", Name: "remote_dest"}, errs[0].Missing)
+	assert.Equal(t, DepMVDest, errs[0].Kind)
+}
+
 // A cluster marked @absent has no local composition; references into it are
 // structurally unresolvable and count as satisfied.
 func TestValidate_DistributedRemote_AbsentCluster(t *testing.T) {

@@ -84,6 +84,20 @@ func (cs ClusterSet) isAbsent(name string) bool {
 	return cs.absent[name]
 }
 
+// declaredInAnyMapped reports whether the object is declared in any mapped
+// cluster. Used to resolve MV/View sources that read a table on a co-located
+// sibling cluster: the SELECT carries no cluster name, so the reference is
+// satisfied when the table exists in the composition of any mapped cluster.
+// @absent clusters contribute no composition and never match.
+func (cs ClusterSet) declaredInAnyMapped(ref ObjectRef) bool {
+	for _, set := range cs.declared {
+		if set[ref] {
+			return true
+		}
+	}
+	return false
+}
+
 // declares reports whether the named cluster declares the given object.
 func (cs ClusterSet) declares(name string, ref ObjectRef) bool {
 	return cs.declared[name][ref]
