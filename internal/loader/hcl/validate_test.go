@@ -550,6 +550,32 @@ func TestValidate_ProxyColumns_AbsentRemoteNoColumnCheck(t *testing.T) {
 		"@absent remote has no schema, so no column check fires")
 }
 
+// A name is in exactly one category: a later AddAbsent overrides a prior Add
+// (so `-cluster NAME=@absent` overrides a manifest-declared cluster).
+func TestValidate_ClusterSet_AbsentOverridesMapped(t *testing.T) {
+	cs := NewClusterSet()
+	cs.Add("aux", []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("sharded", EngineMergeTree{})}, nil)})
+	cs.AddAbsent("aux") // override → absent
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("p", "aux", "posthog", "gone")}, nil)}
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), cs),
+		"AddAbsent overrides a prior Add; the proxy is satisfied")
+}
+
+// Conversely, a later Add overrides a prior AddAbsent (a real mapping wins over
+// an earlier absent marker).
+func TestValidate_ClusterSet_MappedOverridesAbsent(t *testing.T) {
+	cs := NewClusterSet()
+	cs.AddAbsent("aux")
+	cs.Add("aux", []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkTable("sharded", EngineMergeTree{})}, nil)}) // override → mapped
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("p", "aux", "posthog", "gone")}, nil)}
+	assert.Len(t, Validate(dbs, ParseSkipSet(""), cs), 1,
+		"Add overrides a prior AddAbsent; the proxy is validated and the missing remote errors")
+}
+
 // A cluster marked @absent has no local composition; references into it are
 // structurally unresolvable and count as satisfied.
 func TestValidate_DistributedRemote_AbsentCluster(t *testing.T) {

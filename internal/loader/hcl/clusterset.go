@@ -36,6 +36,10 @@ func (cs *ClusterSet) Add(name string, dbs []DatabaseSpec) {
 	}
 	cs.declared[name] = declaredObjects(dbs)
 	cs.resolver[name] = NewSchemaResolver(dbs)
+	// A name is in exactly one category; the latest writer wins so a -cluster
+	// flag reliably overrides a manifest-derived mapping.
+	delete(cs.absent, name)
+	delete(cs.alias, name)
 }
 
 // AddAbsent declares a cluster that has no composition available in this env.
@@ -46,6 +50,11 @@ func (cs *ClusterSet) AddAbsent(name string) {
 		*cs = NewClusterSet()
 	}
 	cs.absent[name] = true
+	// Clear any prior mapping/alias so `-cluster NAME=@absent` overrides a
+	// manifest-declared cluster (mapped is checked before absent otherwise).
+	delete(cs.declared, name)
+	delete(cs.resolver, name)
+	delete(cs.alias, name)
 }
 
 // AddAlias records that alias resolves to base: a Distributed remote on the
@@ -56,6 +65,9 @@ func (cs *ClusterSet) AddAlias(alias, base string) {
 		*cs = NewClusterSet()
 	}
 	cs.alias[alias] = base
+	delete(cs.declared, alias)
+	delete(cs.resolver, alias)
+	delete(cs.absent, alias)
 }
 
 // resolveCluster follows alias links to the terminal (base) cluster name. A

@@ -815,6 +815,128 @@ cluster "posthog" { roles = ["data"] }`)
 	require.Len(t, byRole["data"], 2, "exactly the two real problems, nothing more")
 }
 
+// #127: a cluster whose member roles have no composition in the selected env
+// should resolve @absent (proxies satisfied), not register empty-but-mapped
+// (proxies falsely erroring "not declared in that cluster's schema").
+func TestValidateManifest_UncomposedClusterIsAbsent(t *testing.T) {
+	root := t.TempDir()
+	// data role composes the posthog cluster, but only for env "local".
+	writeLayer(t, root, "layers/data/data.hcl", `
+database "posthog" {
+  table "sharded_events" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+  }
+}`)
+	// ingestion role is deployed in prod-us and proxies into the posthog cluster.
+	writeLayer(t, root, "layers/ingestion/ing.hcl", `
+database "posthog" {
+  table "events" {
+    engine "distributed" {
+      cluster_name    = "posthog"
+      remote_database = "posthog"
+      remote_table    = "sharded_events"
+    }
+    column "id" { type = "UInt64" }
+  }
+}`)
+	manifest := writeTemp(t, "roles.hcl", `
+role "data" {
+  env "local" { layers = ["layers/data"] }
+}
+role "ingestion" {
+  env "prod-us" { layers = ["layers/ingestion"] }
+}
+cluster "posthog" { roles = ["data"] }`)
+
+	// -env prod-us: data has no prod-us composition, so posthog is uncomposed.
+	results, err := validateManifest(manifest, "prod-us", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
+	require.NoError(t, err)
+	byRole := map[string][]hclload.ValidationError{}
+	for _, r := range results {
+		byRole[r.Role] = r.Errs
+	}
+	require.Empty(t, byRole["ingestion"],
+		"proxy into an uncomposed cluster should be satisfied (@absent), not errored")
+}
+
+// The same cluster, in an env where its member role IS composed, validates the
+// proxy against its real schema.
+func TestValidateManifest_ComposedClusterValidates(t *testing.T) {
+	root := t.TempDir()
+	writeLayer(t, root, "layers/data/data.hcl", `
+database "posthog" {
+  table "sharded_events" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+  }
+  table "events" {
+    engine "distributed" {
+      cluster_name    = "posthog"
+      remote_database = "posthog"
+      remote_table    = "sharded_events"
+    }
+    column "id" { type = "UInt64" }
+  }
+}`)
+	manifest := writeTemp(t, "roles.hcl", `
+role "data" {
+  env "local" { layers = ["layers/data"] }
+}
+cluster "posthog" { roles = ["data"] }`)
+
+	results, err := validateManifest(manifest, "local", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
+	require.NoError(t, err)
+	require.Len(t, results, 1)
+	require.Empty(t, results[0].Errs, "composed cluster: the proxy resolves against its real schema")
+}
+
+// #127 corollary: -cluster X=@absent must override a manifest-declared X.
+func TestValidateManifest_AbsentFlagOverridesManifestCluster(t *testing.T) {
+	root := t.TempDir()
+	// posthog is composed (data deployed in prod-us) but declares only 'other',
+	// so a proxy to sharded_events would error unless posthog is forced @absent.
+	writeLayer(t, root, "layers/data/data.hcl", `
+database "posthog" {
+  table "other" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+  }
+}`)
+	writeLayer(t, root, "layers/ingestion/ing.hcl", `
+database "posthog" {
+  table "events" {
+    engine "distributed" {
+      cluster_name    = "posthog"
+      remote_database = "posthog"
+      remote_table    = "sharded_events"
+    }
+    column "id" { type = "UInt64" }
+  }
+}`)
+	manifest := writeTemp(t, "roles.hcl", `
+role "data" {
+  env "prod-us" { layers = ["layers/data"] }
+}
+role "ingestion" {
+  env "prod-us" { layers = ["layers/ingestion"] }
+}
+cluster "posthog" { roles = ["data"] }`)
+
+	flags := []clusterEntry{{name: "posthog", stack: absentStack}}
+	results, err := validateManifest(manifest, "prod-us", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, flags)
+	require.NoError(t, err)
+	byRole := map[string][]hclload.ValidationError{}
+	for _, r := range results {
+		byRole[r.Role] = r.Errs
+	}
+	require.Empty(t, byRole["ingestion"],
+		"-cluster posthog=@absent should override the manifest-declared posthog and satisfy the proxy")
+}
+
 // writeLayer writes content to root/rel, creating parent dirs.
 func writeLayer(t *testing.T, root, rel, content string) {
 	t.Helper()
