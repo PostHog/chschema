@@ -193,41 +193,108 @@ func buildManifestClusters(cs *hclload.ClusterSet, path, env, layerRoot string) 
 	if err != nil {
 		return err
 	}
-	layersByRole := make(map[string][]string, len(roles))
-	for _, r := range roles {
-		layersByRole[r.Role] = r.Layers
-	}
-
 	clusters, err := parseManifestClusters(path)
 	if err != nil {
 		return err
 	}
+	// Load only the roles some cluster references (single-node mode needs the
+	// mappings, not every role's schema).
+	referenced := map[string]bool{}
+	for _, cl := range clusters {
+		for _, role := range cl.Roles {
+			referenced[role] = true
+		}
+	}
+	needed := make([]manifestRole, 0, len(referenced))
+	for _, r := range roles {
+		if referenced[r.Role] {
+			needed = append(needed, r)
+		}
+	}
+	schemas, err := loadManifestRoleSchemas(needed, layerRoot)
+	if err != nil {
+		return err
+	}
+	clusterSetFromRoles(cs, clusters, schemas)
+	return nil
+}
+
+// loadManifestRoleSchemas loads and resolves each role's composition for the
+// selected env (layer paths under layerRoot) into a schema, keyed by role name.
+func loadManifestRoleSchemas(roles []manifestRole, layerRoot string) (map[string]*hclload.Schema, error) {
+	schemas := make(map[string]*hclload.Schema, len(roles))
+	for _, r := range roles {
+		dirs := make([]string, len(r.Layers))
+		for i, l := range r.Layers {
+			dirs[i] = filepath.Join(layerRoot, l)
+		}
+		schema, err := hclload.LoadLayers(dirs)
+		if err != nil {
+			return nil, fmt.Errorf("role %q: loading %v: %w", r.Role, dirs, err)
+		}
+		if err := hclload.Resolve(schema); err != nil {
+			return nil, fmt.Errorf("role %q: resolving %v: %w", r.Role, dirs, err)
+		}
+		schemas[r.Role] = schema
+	}
+	return schemas, nil
+}
+
+// clusterSetFromRoles registers each cluster's mapping in cs: its schema is the
+// union of its member roles' (preloaded) compositions, and each alias maps to
+// @alias=cluster. A member role absent from schemas (not deployed in the env)
+// contributes nothing.
+func clusterSetFromRoles(cs *hclload.ClusterSet, clusters []manifestClusterBlock, schemas map[string]*hclload.Schema) {
 	for _, cl := range clusters {
 		var dbs []hclload.DatabaseSpec
 		for _, role := range cl.Roles {
-			layers, ok := layersByRole[role]
-			if !ok {
-				continue // role not deployed in this env
+			if s, ok := schemas[role]; ok {
+				dbs = append(dbs, s.Databases...)
 			}
-			dirs := make([]string, len(layers))
-			for i, l := range layers {
-				dirs[i] = filepath.Join(layerRoot, l)
-			}
-			schema, err := hclload.LoadLayers(dirs)
-			if err != nil {
-				return fmt.Errorf("cluster %q role %q: loading %v: %w", cl.Name, role, dirs, err)
-			}
-			if err := hclload.Resolve(schema); err != nil {
-				return fmt.Errorf("cluster %q role %q: resolving %v: %w", cl.Name, role, dirs, err)
-			}
-			dbs = append(dbs, schema.Databases...)
 		}
 		cs.Add(cl.Name, dbs)
 		for _, alias := range cl.Aliases {
 			cs.AddAlias(alias, cl.Name)
 		}
 	}
-	return nil
+}
+
+// roleValidation holds the validation errors for one role's composition.
+type roleValidation struct {
+	Role string
+	Errs []hclload.ValidationError
+}
+
+// validateManifest validates every role's composition in the manifest for env,
+// each against the cluster set derived from the whole manifest (member-role
+// unions + aliases, with flagEntries applied last). Results are returned per
+// role in manifest order.
+func validateManifest(path, env, layerRoot string, skip hclload.SkipSet, opts hclload.ValidateOptions, flagEntries []clusterEntry) ([]roleValidation, error) {
+	roles, err := parseManifest(path, env)
+	if err != nil {
+		return nil, err
+	}
+	clusters, err := parseManifestClusters(path)
+	if err != nil {
+		return nil, err
+	}
+	schemas, err := loadManifestRoleSchemas(roles, layerRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	cs := hclload.NewClusterSet()
+	clusterSetFromRoles(&cs, clusters, schemas)
+	if err := applyClusterEntries(&cs, flagEntries); err != nil {
+		return nil, err
+	}
+
+	results := make([]roleValidation, 0, len(roles))
+	for _, r := range roles {
+		errs := hclload.ValidateOpts(schemas[r.Role].Databases, skip, cs, opts)
+		results = append(results, roleValidation{Role: r.Role, Errs: errs})
+	}
+	return results, nil
 }
 
 // runValidate loads an HCL config (single file or layers), resolves it, and
@@ -249,16 +316,22 @@ func buildManifestClusters(cs *hclload.ClusterSet, path, env, layerRoot string) 
 // additionally requires the remote's columns to all exist on the proxy.
 //
 // Instead of listing every cluster as a -cluster flag, -manifest/-env derive the
-// mappings from the same role manifest `plan` uses: each role's `cluster` (and
-// `aliases`) maps to its composed layer stack for -env. Explicit -cluster flags
-// are applied last, so they override or extend the manifest (e.g. NAME=@absent).
+// mappings from the same role manifest `plan` uses: each `cluster` block maps to
+// the union of its member roles' composed layer stacks for -env. Explicit
+// -cluster flags are applied last, so they override or extend the manifest
+// (e.g. NAME=@absent).
+//
+// With -manifest/-env and no explicit node (-layer/-config), validate runs in
+// manifest-driven mode: it validates every role in the manifest, each against
+// the cluster set derived from the whole manifest — one command to check a
+// whole environment.
 func runValidate(args []string) {
 	fs := flag.NewFlagSet("hclexp validate", flag.ExitOnError)
 	configFlag := fs.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
 	layersFlag := fs.String("layer", "", "comma-separated list of layer directories (loaded in order)")
 	skipFlag := fs.String("skip-validation", "", "comma-separated dependent object names to skip, or \"*\" for all")
 	strictProxyCols := fs.Bool("strict-proxy-columns", false, "require Distributed proxy and remote to have exactly the same columns (default: proxy columns need only be a subset)")
-	manifestFlag := fs.String("manifest", "", "HCL role manifest to derive -cluster mappings from (each role's cluster/aliases -> its -env layer stack); requires -env")
+	manifestFlag := fs.String("manifest", "", "HCL role manifest to derive -cluster mappings from; requires -env. With no -layer/-config, validates every role in the manifest")
 	envFlag := fs.String("env", "", "environment selecting each role's layer stack in -manifest")
 	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under")
 	var clusters clusterFlag
@@ -268,6 +341,15 @@ func runValidate(args []string) {
 	if (*manifestFlag == "") != (*envFlag == "") {
 		slog.Error("-manifest and -env must be used together")
 		os.Exit(2)
+	}
+
+	// Manifest-driven mode: -manifest/-env with no explicit node (-layer or
+	// -config) validates every role in the manifest, each against the clusters
+	// derived from the whole manifest.
+	if *manifestFlag != "" && *layersFlag == "" && !flagWasSet(fs, "config") {
+		runValidateManifest(*manifestFlag, *envFlag, *layerRootFlag,
+			hclload.ParseSkipSet(*skipFlag), hclload.ValidateOptions{StrictProxyColumns: *strictProxyCols}, clusters.entries)
+		return
 	}
 
 	schema, err := load(*configFlag, *layersFlag)
@@ -305,6 +387,42 @@ func runValidate(args []string) {
 	}
 
 	slog.Info("schema validation passed", "databases", len(schema.Databases))
+}
+
+// flagWasSet reports whether the named flag was explicitly provided on the
+// command line (as opposed to left at its default).
+func flagWasSet(fs *flag.FlagSet, name string) bool {
+	set := false
+	fs.Visit(func(f *flag.Flag) {
+		if f.Name == name {
+			set = true
+		}
+	})
+	return set
+}
+
+// runValidateManifest validates every role in the manifest for env, each
+// against the cluster set derived from the whole manifest. Errors are printed
+// per role and it exits non-zero if any role fails.
+func runValidateManifest(manifestPath, env, layerRoot string, skip hclload.SkipSet, opts hclload.ValidateOptions, flagEntries []clusterEntry) {
+	results, err := validateManifest(manifestPath, env, layerRoot, skip, opts, flagEntries)
+	if err != nil {
+		slog.Error("failed to validate manifest", "file", manifestPath, "env", env, "err", err)
+		os.Exit(1)
+	}
+
+	total := 0
+	for _, r := range results {
+		for _, e := range r.Errs {
+			fmt.Fprintf(os.Stderr, "validation error: [role %s] %s\n", r.Role, e.Error())
+		}
+		total += len(r.Errs)
+	}
+	if total > 0 {
+		slog.Error("schema validation failed", "env", env, "roles", len(results), "errors", total)
+		os.Exit(1)
+	}
+	slog.Info("schema validation passed", "env", env, "roles", len(results))
 }
 
 // runLoad loads an HCL config (single file or layers), resolves it, and
