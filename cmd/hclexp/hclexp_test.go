@@ -491,6 +491,44 @@ func TestBuildClusterSet_AliasMissingBaseName(t *testing.T) {
 	require.Error(t, err)
 }
 
+// End-to-end through real HCL parsing: a Distributed proxy that declares a
+// column its remote lacks is flagged, and -strict-proxy-columns flags a
+// remote-only column too.
+func TestValidate_ProxyColumns_EndToEnd(t *testing.T) {
+	path := writeTemp(t, "node.hcl", `
+database "posthog" {
+  table "sharded_events" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    column "team_id" { type = "UInt32" }
+    engine "merge_tree" {}
+  }
+  table "events" {
+    engine "distributed" {
+      cluster_name    = "posthog"
+      remote_database = "posthog"
+      remote_table    = "sharded_events"
+    }
+    column "id" { type = "UInt64" }
+    column "proxy_only" { type = "String" }
+  }
+}`)
+	schema, err := hclload.ParseFile(path)
+	require.NoError(t, err)
+	require.NoError(t, hclload.Resolve(schema))
+
+	// Default (subset): the proxy-only column is flagged; the remote-only
+	// team_id is allowed.
+	errs := hclload.Validate(schema.Databases, hclload.ParseSkipSet(""), hclload.ClusterSet{})
+	require.Len(t, errs, 1)
+	require.Equal(t, "proxy_only", errs[0].Missing.Name)
+
+	// Strict: the remote-only team_id is also flagged.
+	strict := hclload.ValidateOpts(schema.Databases, hclload.ParseSkipSet(""), hclload.ClusterSet{},
+		hclload.ValidateOptions{StrictProxyColumns: true})
+	require.Len(t, strict, 2)
+}
+
 // End-to-end through real HCL parsing: a view whose source table lives in a
 // mapped cluster resolves; without the mapping it errors.
 func TestValidate_ViewSourceCrossCluster_EndToEnd(t *testing.T) {
