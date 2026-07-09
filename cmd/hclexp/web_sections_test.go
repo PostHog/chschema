@@ -202,6 +202,15 @@ func TestWebSections_ConstraintsSection(t *testing.T) {
 	}, sec)
 }
 
+func TestWebSections_ProjectionViews(t *testing.T) {
+	assert.Nil(t, projectionViews(nil))
+
+	views := projectionViews(sectionsSchema().Databases[0].Tables[0].Projections)
+	assert.Equal(t, []projectionView{
+		{Name: "proj_by_ts", Query: "SELECT ts, id ORDER BY ts"},
+	}, views)
+}
+
 func TestWebSections_BuildHTMLViewNotFound(t *testing.T) {
 	srv, err := newWebServer(sectionsSchema())
 	require.NoError(t, err)
@@ -247,6 +256,9 @@ func TestWebSections_TablePage(t *testing.T) {
 	assert.Contains(t, body, "Constraints")
 	assert.Contains(t, body, "c_positive")
 	assert.Contains(t, body, "assume")
+	assert.Contains(t, body, "Projections")
+	assert.Contains(t, body, "proj_by_ts")
+	assert.Contains(t, body, "SELECT ts, id ORDER BY ts")
 }
 
 func TestWebSections_MaterializedViewPage(t *testing.T) {

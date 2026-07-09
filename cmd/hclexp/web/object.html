@@ -41,6 +41,10 @@
   </table>
   {{end}}
 
+  {{if .Projections}}<h2>Projections</h2>
+  {{range .Projections}}<h3 class="proj">{{.Name}}</h3><pre class="code">{{.Query}}</pre>{{end}}
+  {{end}}
+
   {{if .Query}}<h2>Query</h2><pre class="code">{{.Query}}</pre>{{end}}
   {{if .RawSQL}}<h2>SQL</h2><pre class="code">{{.RawSQL}}</pre>{{end}}
 {{else}}

@@ -409,26 +409,27 @@ type indexData struct {
 }
 
 type objectData struct {
-	Title      string
-	Base       string // URL prefix for links (manifest mode); "" in single mode
-	Label      string // schema label shown in the nav (manifest mode); "" otherwise
-	Database   string
-	Kind       string
-	KindLabel  string
-	Name       string
-	View       string // "html" | "ddl" | "hcl"
-	HTMLHref   string
-	DDLHref    string
-	HCLHref    string
-	Props      []kv
-	Tables     []tableSection
-	Query      string
-	RawSQL     string
-	Code       string // rendered DDL or HCL for those views
-	FlowAnchor string // anchor on /flows when this object participates in a flow
-	Problems   []problemView
-	DependsOn  []objLink
-	DependedBy []objLink
+	Title       string
+	Base        string // URL prefix for links (manifest mode); "" in single mode
+	Label       string // schema label shown in the nav (manifest mode); "" otherwise
+	Database    string
+	Kind        string
+	KindLabel   string
+	Name        string
+	View        string // "html" | "ddl" | "hcl"
+	HTMLHref    string
+	DDLHref     string
+	HCLHref     string
+	Props       []kv
+	Tables      []tableSection
+	Projections []projectionView
+	Query       string
+	RawSQL      string
+	Code        string // rendered DDL or HCL for those views
+	FlowAnchor  string // anchor on /flows when this object participates in a flow
+	Problems    []problemView
+	DependsOn   []objLink
+	DependedBy  []objLink
 }
 
 // columnCollapseLimit is the row count above which a collapsible column list is
@@ -563,6 +564,7 @@ func (s *webServer) buildHTMLView(data *objectData, db *hclload.DatabaseSpec, ki
 		if sec, ok := constraintsSection(t.Constraints); ok {
 			data.Tables = append(data.Tables, sec)
 		}
+		data.Projections = projectionViews(t.Projections)
 	case hclload.KindMaterializedView:
 		mv := findMaterializedView(db, name)
 		if mv == nil {
@@ -768,6 +770,26 @@ func constraintsSection(cs []hclload.ConstraintSpec) (tableSection, bool) {
 		sec.Rows = append(sec.Rows, []string{c.Name, kind, expr})
 	}
 	return sec, true
+}
+
+// projectionView is a table projection rendered on the object page: its name and
+// canonical SELECT, shown as a query block like a materialized view's query.
+type projectionView struct {
+	Name  string
+	Query string
+}
+
+// projectionViews maps a table's projections to their rendered views. Returns
+// nil when the table has none (the template omits the section).
+func projectionViews(ps []hclload.ProjectionSpec) []projectionView {
+	if len(ps) == 0 {
+		return nil
+	}
+	views := make([]projectionView, 0, len(ps))
+	for _, p := range ps {
+		views = append(views, projectionView{Name: p.Name, Query: p.Query})
+	}
+	return views
 }
 
 func dictAttributesSection(attrs []hclload.DictionaryAttribute) tableSection {
