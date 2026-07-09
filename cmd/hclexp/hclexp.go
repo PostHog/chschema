@@ -247,16 +247,18 @@ func loadManifestRoleSchemas(roles []manifestRole, layerRoot string) (map[string
 func clusterSetFromRoles(cs *hclload.ClusterSet, clusters []manifestClusterBlock, schemas map[string]*hclload.Schema) {
 	for _, cl := range clusters {
 		var dbs []hclload.DatabaseSpec
-		for _, role := range cl.Roles {
-			if s, ok := schemas[role]; ok {
-				dbs = append(dbs, s.Databases...)
+		if !cl.Absent {
+			for _, role := range cl.Roles {
+				if s, ok := schemas[role]; ok {
+					dbs = append(dbs, s.Databases...)
+				}
 			}
 		}
-		// No member role composes this cluster in the selected env: it is
-		// modeled elsewhere (env-varying / external), so treat it as absent —
-		// proxies into it are satisfied rather than failing against an empty
-		// schema.
-		if len(dbs) == 0 {
+		// Explicitly absent, or no member role composes this cluster in the
+		// selected env: it is modeled elsewhere (env-varying / external), so
+		// treat it as absent — proxies into it are satisfied rather than
+		// failing against an empty schema.
+		if cl.Absent || len(dbs) == 0 {
 			cs.AddAbsent(cl.Name)
 		} else {
 			cs.Add(cl.Name, dbs)
@@ -339,6 +341,7 @@ func runValidate(args []string) {
 	layersFlag := fs.String("layer", "", "comma-separated list of layer directories (loaded in order)")
 	skipFlag := fs.String("skip-validation", "", "comma-separated dependent object names to skip, or \"*\" for all")
 	strictProxyCols := fs.Bool("strict-proxy-columns", false, "require Distributed proxy and remote to have exactly the same columns (default: proxy columns need only be a subset)")
+	strictClusters := fs.Bool("strict-clusters", false, "require every Distributed remote to resolve against a real composition; a remote on an @absent cluster is an error")
 	manifestFlag := fs.String("manifest", "", "HCL role manifest to derive -cluster mappings from; requires -env. With no -layer/-config, validates every role in the manifest")
 	envFlag := fs.String("env", "", "environment selecting each role's layer stack in -manifest")
 	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under")
@@ -356,7 +359,9 @@ func runValidate(args []string) {
 	// derived from the whole manifest.
 	if *manifestFlag != "" && *layersFlag == "" && !flagWasSet(fs, "config") {
 		runValidateManifest(*manifestFlag, *envFlag, *layerRootFlag,
-			hclload.ParseSkipSet(*skipFlag), hclload.ValidateOptions{StrictProxyColumns: *strictProxyCols}, clusters.entries)
+			hclload.ParseSkipSet(*skipFlag),
+			hclload.ValidateOptions{StrictProxyColumns: *strictProxyCols, StrictClusters: *strictClusters},
+			clusters.entries)
 		return
 	}
 
@@ -385,7 +390,7 @@ func runValidate(args []string) {
 	}
 
 	errs := hclload.ValidateOpts(schema.Databases, hclload.ParseSkipSet(*skipFlag), clusterSet,
-		hclload.ValidateOptions{StrictProxyColumns: *strictProxyCols})
+		hclload.ValidateOptions{StrictProxyColumns: *strictProxyCols, StrictClusters: *strictClusters})
 	if len(errs) > 0 {
 		for _, e := range errs {
 			fmt.Fprintf(os.Stderr, "validation error: %s\n", e.Error())

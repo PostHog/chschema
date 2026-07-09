@@ -32,3 +32,9 @@ cluster "posthog" {
   roles   = ["data"]
   aliases = ["posthog_writable"]
 }
+
+# A cluster modeled elsewhere (no composition in this manifest): proxies into it
+# resolve as satisfied, unless `validate -strict-clusters` is used.
+cluster "events_recent" {
+  absent = true
+}

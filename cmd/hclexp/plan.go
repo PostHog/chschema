@@ -46,11 +46,13 @@ type manifestEnvBlock struct {
 
 // manifestClusterBlock maps a ClickHouse cluster_name to the roles whose nodes
 // compose it (the cluster's schema is their union) and the remote_servers
-// aliases that share that composition.
+// aliases that share that composition. A cluster with no composition in the
+// manifest (modeled elsewhere) is declared with absent = true instead of roles.
 type manifestClusterBlock struct {
 	Name    string   `hcl:"name,label"`
-	Roles   []string `hcl:"roles"`
+	Roles   []string `hcl:"roles,optional"`
 	Aliases []string `hcl:"aliases,optional"`
+	Absent  bool     `hcl:"absent,optional"`
 }
 
 // manifestRole is a resolved role for one selected environment: a node role and
@@ -205,8 +207,16 @@ func parseManifestClusters(path string) ([]manifestClusterBlock, error) {
 			return nil, fmt.Errorf("duplicate cluster %q", c.Name)
 		}
 		seen[c.Name] = true
+		// A cluster is either composed from roles or explicitly absent (no
+		// composition in this manifest), never both nor neither.
+		if c.Absent {
+			if len(c.Roles) > 0 {
+				return nil, fmt.Errorf("cluster %q: absent and roles are mutually exclusive", c.Name)
+			}
+			continue
+		}
 		if len(c.Roles) == 0 {
-			return nil, fmt.Errorf("cluster %q: roles is empty", c.Name)
+			return nil, fmt.Errorf("cluster %q: set roles or absent = true", c.Name)
 		}
 		for _, role := range c.Roles {
 			if !declaredRoles[role] {

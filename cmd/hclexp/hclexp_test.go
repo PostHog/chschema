@@ -542,6 +542,76 @@ cluster "posthog" {
 	require.ErrorContains(t, err, "ghost")
 }
 
+func TestParseManifestClusters_Absent(t *testing.T) {
+	ok := writeTemp(t, "ok.hcl", `
+cluster "events_recent" {
+  absent  = true
+  aliases = ["events_recent_writable"]
+}`)
+	clusters, err := parseManifestClusters(ok)
+	require.NoError(t, err)
+	require.Len(t, clusters, 1)
+	require.True(t, clusters[0].Absent)
+	require.Empty(t, clusters[0].Roles)
+
+	both := writeTemp(t, "both.hcl", `
+role "data" {
+  env "prod-us" { layers = ["layers/data"] }
+}
+cluster "x" {
+  roles  = ["data"]
+  absent = true
+}`)
+	_, err = parseManifestClusters(both)
+	require.ErrorContains(t, err, "mutually exclusive")
+
+	neither := writeTemp(t, "neither.hcl", `
+cluster "x" {
+}`)
+	_, err = parseManifestClusters(neither)
+	require.ErrorContains(t, err, "roles or absent")
+}
+
+// A manifest cluster declared absent = true resolves proxies (and its aliases)
+// into it as satisfied, with no composing role.
+func TestBuildManifestClusters_ExplicitAbsent(t *testing.T) {
+	root := t.TempDir()
+	writeLayer(t, root, "layers/data/data.hcl", `
+database "posthog" {
+  table "t" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+  }
+}`)
+	manifest := writeTemp(t, "roles.hcl", `
+role "data" {
+  env "prod-us" { layers = ["layers/data"] }
+}
+cluster "events_recent" {
+  absent  = true
+  aliases = ["events_recent_writable"]
+}`)
+	cs := hclload.NewClusterSet()
+	require.NoError(t, buildManifestClusters(&cs, manifest, "prod-us", root))
+
+	proxy := func(cluster string) []hclload.DatabaseSpec {
+		return []hclload.DatabaseSpec{{
+			Name: "posthog",
+			Tables: []hclload.TableSpec{{
+				Name: "p",
+				Engine: &hclload.EngineSpec{Kind: "distributed", Decoded: hclload.EngineDistributed{
+					ClusterName: cluster, RemoteDatabase: "posthog", RemoteTable: "sharded_x",
+				}},
+			}},
+		}}
+	}
+	require.Empty(t, hclload.Validate(proxy("events_recent"), hclload.ParseSkipSet(""), cs),
+		"proxy into an explicitly-absent manifest cluster is satisfied")
+	require.Empty(t, hclload.Validate(proxy("events_recent_writable"), hclload.ParseSkipSet(""), cs),
+		"an alias of an absent cluster is also satisfied")
+}
+
 // A cluster's schema is the UNION of its member roles' compositions: a proxy
 // on cluster "posthog" resolves against a table declared in EITHER role.
 func TestBuildManifestClusters_UnionOfRoles(t *testing.T) {

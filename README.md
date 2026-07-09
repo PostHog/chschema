@@ -305,6 +305,12 @@ cluster "posthog" {
   roles   = ["data", "ingestion-events"]
   aliases = ["posthog_writable", "posthog_single_shard"]
 }
+
+# A cluster with no composition in the manifest (modeled elsewhere) is declared
+# absent instead of with roles; proxies into it resolve as satisfied.
+cluster "events_recent" {
+  absent = true
+}
 ```
 
 ```sh
@@ -312,9 +318,16 @@ hclexp validate -layer ./nodes/data -manifest roles.hcl -env prod-us -layer-root
 ```
 
 Each cluster resolves against the union of its member roles' compositions;
-aliases resolve to their base. Explicit `-cluster` flags are applied last, so
-they override or extend the manifest (e.g. `-cluster events_recent=@absent`).
-A cluster that references an undeclared role is rejected.
+aliases resolve to their base. A cluster whose member roles aren't deployed in
+the env (or that sets `absent = true`) is treated absent. Explicit `-cluster`
+flags are applied last, so they override or extend the manifest (e.g.
+`-cluster events_recent=@absent`). A cluster that references an undeclared role,
+or sets both `roles` and `absent`, is rejected.
+
+Pass **`-strict-clusters`** to forbid absence entirely: every Distributed remote
+must resolve against a real composition, so a remote on an `@absent` cluster
+becomes an error. Use it as the CI gate once the whole fleet is composed, so a
+stale `@absent` (a cluster that has since been mapped) cannot silently pass.
 
 #### Validating a whole environment
 

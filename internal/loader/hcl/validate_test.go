@@ -550,6 +550,35 @@ func TestValidate_ProxyColumns_AbsentRemoteNoColumnCheck(t *testing.T) {
 		"@absent remote has no schema, so no column check fires")
 }
 
+// StrictClusters turns a satisfied @absent remote into an error, enforcing that
+// every Distributed remote resolves against a real composition.
+func TestValidate_StrictClusters_AbsentErrors(t *testing.T) {
+	cs := NewClusterSet()
+	cs.AddAbsent("events_recent")
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{mkDistTableOn("proxy", "events_recent", "posthog", "sharded_x")}, nil)}
+
+	assert.Empty(t, Validate(dbs, ParseSkipSet(""), cs),
+		"default: an @absent remote is satisfied")
+
+	errs := ValidateOpts(dbs, ParseSkipSet(""), cs, ValidateOptions{StrictClusters: true})
+	require.Len(t, errs, 1)
+	assert.Equal(t, DepDistributedRemote, errs[0].Kind)
+	assert.Contains(t, errs[0].Reason, "strict-clusters")
+}
+
+// Strict clusters does not affect a remote that resolves for real (local or
+// mapped) — only @absent ones.
+func TestValidate_StrictClusters_RealResolutionUnaffected(t *testing.T) {
+	dbs := []DatabaseSpec{mkDBMixed("posthog",
+		[]TableSpec{
+			mkDistTableOn("proxy", "posthog", "posthog", "sharded_x"),
+			mkTable("sharded_x", EngineMergeTree{}),
+		}, nil)}
+	assert.Empty(t, ValidateOpts(dbs, ParseSkipSet(""), ClusterSet{}, ValidateOptions{StrictClusters: true}),
+		"a locally-resolved remote is fine under strict clusters")
+}
+
 // A name is in exactly one category: a later AddAbsent overrides a prior Add
 // (so `-cluster NAME=@absent` overrides a manifest-declared cluster).
 func TestValidate_ClusterSet_AbsentOverridesMapped(t *testing.T) {

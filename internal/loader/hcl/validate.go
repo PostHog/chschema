@@ -482,6 +482,13 @@ type ValidateOptions struct {
 	// exist on the remote with a matching type) — a proxy may legitimately
 	// omit columns.
 	StrictProxyColumns bool
+
+	// StrictClusters requires every Distributed remote to resolve against a
+	// real composition: a remote on an @absent cluster is an error instead of
+	// being satisfied. Use it to enforce full validation when the whole fleet
+	// is composed, so a stale @absent (a cluster that has since been mapped)
+	// cannot silently pass.
+	StrictClusters bool
 }
 
 // ValidateOpts is Validate with explicit options.
@@ -517,7 +524,7 @@ func ValidateOpts(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet, opts Va
 		// the discriminator. When the remote resolves to an inspectable table,
 		// its columns are compared with the proxy's.
 		if dep.Kind == DepDistributedRemote {
-			remoteSpec, e := resolveDistributedRemote(dep, declared, localTables, clusters)
+			remoteSpec, e := resolveDistributedRemote(dep, declared, localTables, clusters, opts.StrictClusters)
 			if e != nil {
 				errs = append(errs, *e)
 			} else if remoteSpec != nil {
@@ -590,7 +597,7 @@ func ValidateOpts(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet, opts Va
 //  2. Mapped external: the cluster has a loaded composition → the remote must
 //     be declared there, else it is real cross-cluster drift (error).
 //  3. Absent: the cluster was declared @absent → structurally unresolvable,
-//     counts as satisfied.
+//     counts as satisfied (an error under strict, which forbids absent).
 //  4. Unknown: the remote is neither local nor in a mapped/absent cluster →
 //     error. This is the anti-staleness guarantee: a new cross-cluster proxy
 //     cannot be silently accepted; the caller must map the cluster or mark it
@@ -605,7 +612,7 @@ func ValidateOpts(dbs []DatabaseSpec, skip SkipSet, clusters ClusterSet, opts Va
 // columns, or nil when the remote resolves but has no inspectable schema (an
 // @absent cluster, or a remote captured as an opaque raw/MV/view). The
 // *ValidationError is non-nil only when the remote cannot be resolved at all.
-func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, localTables map[ObjectRef]TableSpec, clusters ClusterSet) (*TableSpec, *ValidationError) {
+func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, localTables map[ObjectRef]TableSpec, clusters ClusterSet, strict bool) (*TableSpec, *ValidationError) {
 	remote := dep.To
 
 	// 1. Local to the node's own schema (alias-independent).
@@ -641,6 +648,15 @@ func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, local
 	}
 	// 3. Cluster declared absent.
 	if clusters.isAbsent(cluster) {
+		if strict {
+			return nil, &ValidationError{
+				Object:  dep.From,
+				Missing: remote,
+				Kind:    dep.Kind,
+				Reason: fmt.Sprintf("%s references remote %q on cluster %s, which is @absent but -strict-clusters requires every cluster to resolve against a real composition",
+					depPhrase(dep.Kind), remote, clusterDesc),
+			}
+		}
 		return nil, nil
 	}
 	// 4. Unknown cluster, no mapping.
