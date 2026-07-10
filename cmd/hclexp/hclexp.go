@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -96,7 +97,8 @@ Commands:
   validate     check that MV and Distributed dependency references resolve
   drift        detect cross-node schema drift across per-node HCL dumps
   sql2hcl      apply SQL DDL edits (CREATE/ALTER/DROP/RENAME) to an HCL schema
-  load         parse and resolve an HCL config (default when flags are given)
+  load         parse and resolve an HCL config, layer stack, or manifest role
+               (default when flags are given)
   web          serve a read-only web UI to browse the resolved schema
   github-token mint a short-lived GitHub App installation token (prints to stdout)
   version      print the hclexp build version, commit and build time
@@ -219,10 +221,20 @@ func buildManifestClusters(cs *hclload.ClusterSet, path, env, layerRoot string) 
 	return nil
 }
 
-// loadManifestRoleSchemas loads and resolves each role's composition for the
-// selected env (layer paths under layerRoot) into a schema, keyed by role name.
-func loadManifestRoleSchemas(roles []manifestRole, layerRoot string) (map[string]*hclload.Schema, error) {
-	schemas := make(map[string]*hclload.Schema, len(roles))
+// composedRole is one role's manifest-declared layer stack and the resolved
+// schema that stack composes to. Resolved holds Layers joined under the
+// -layer-root, i.e. the dirs actually handed to the loader.
+type composedRole struct {
+	Role     string
+	Layers   []string
+	Resolved []string
+	Schema   *hclload.Schema
+}
+
+// composeManifestRoles loads and resolves each role's composition for the
+// selected env (layer paths under layerRoot), preserving manifest order.
+func composeManifestRoles(roles []manifestRole, layerRoot string) ([]composedRole, error) {
+	composed := make([]composedRole, 0, len(roles))
 	for _, r := range roles {
 		dirs := make([]string, len(r.Layers))
 		for i, l := range r.Layers {
@@ -235,7 +247,26 @@ func loadManifestRoleSchemas(roles []manifestRole, layerRoot string) (map[string
 		if err := hclload.Resolve(schema); err != nil {
 			return nil, fmt.Errorf("role %q: resolving %v: %w", r.Role, dirs, err)
 		}
-		schemas[r.Role] = schema
+		composed = append(composed, composedRole{
+			Role:     r.Role,
+			Layers:   r.Layers,
+			Resolved: dirs,
+			Schema:   schema,
+		})
+	}
+	return composed, nil
+}
+
+// loadManifestRoleSchemas loads and resolves each role's composition for the
+// selected env (layer paths under layerRoot) into a schema, keyed by role name.
+func loadManifestRoleSchemas(roles []manifestRole, layerRoot string) (map[string]*hclload.Schema, error) {
+	composed, err := composeManifestRoles(roles, layerRoot)
+	if err != nil {
+		return nil, err
+	}
+	schemas := make(map[string]*hclload.Schema, len(composed))
+	for _, c := range composed {
+		schemas[c.Role] = c.Schema
 	}
 	return schemas, nil
 }
@@ -275,11 +306,13 @@ type roleValidation struct {
 	Errs []hclload.ValidationError
 }
 
-// validateManifest validates every role's composition in the manifest for env,
-// each against the cluster set derived from the whole manifest (member-role
-// unions + aliases, with flagEntries applied last). Results are returned per
-// role in manifest order.
-func validateManifest(path, env, layerRoot string, skip hclload.SkipSet, opts hclload.ValidateOptions, flagEntries []clusterEntry) ([]roleValidation, error) {
+// validateManifest validates the manifest's role compositions for env, each
+// against the cluster set derived from the whole manifest (member-role unions
+// + aliases, with flagEntries applied last). A non-empty role narrows which
+// roles are validated, not which compose the cluster set: a single role's
+// Distributed proxies still have to resolve against the other roles' storage
+// tables. Results are returned per role in manifest order.
+func validateManifest(path, env, layerRoot, role string, skip hclload.SkipSet, opts hclload.ValidateOptions, flagEntries []clusterEntry) ([]roleValidation, error) {
 	roles, err := parseManifest(path, env)
 	if err != nil {
 		return nil, err
@@ -299,8 +332,12 @@ func validateManifest(path, env, layerRoot string, skip hclload.SkipSet, opts hc
 		return nil, err
 	}
 
-	results := make([]roleValidation, 0, len(roles))
-	for _, r := range roles {
+	selected, err := filterManifestRoles(roles, role, env)
+	if err != nil {
+		return nil, err
+	}
+	results := make([]roleValidation, 0, len(selected))
+	for _, r := range selected {
 		errs := hclload.ValidateOpts(schemas[r.Role].Databases, skip, cs, opts)
 		results = append(results, roleValidation{Role: r.Role, Errs: errs})
 	}
@@ -344,6 +381,7 @@ func runValidate(args []string) {
 	strictClusters := fs.Bool("strict-clusters", false, "require every Distributed remote to resolve against a real composition; a remote on an @absent cluster is an error")
 	manifestFlag := fs.String("manifest", "", "HCL role manifest to derive -cluster mappings from; requires -env. With no -layer/-config, validates every role in the manifest")
 	envFlag := fs.String("env", "", "environment selecting each role's layer stack in -manifest")
+	roleFlag := fs.String("role", "", "in manifest-driven mode, validate only this role (clusters are still derived from the whole manifest)")
 	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under")
 	var clusters clusterFlag
 	fs.Var(&clusters, "cluster", "repeatable NAME=STACK external cluster mapping for Distributed remotes; STACK is OS-list-separated (':') layer dirs, @absent, or @alias=BASE")
@@ -353,16 +391,24 @@ func runValidate(args []string) {
 		slog.Error("-manifest and -env must be used together")
 		os.Exit(2)
 	}
+	if *roleFlag != "" && *manifestFlag == "" {
+		slog.Error("-role requires -manifest")
+		os.Exit(2)
+	}
 
 	// Manifest-driven mode: -manifest/-env with no explicit node (-layer or
-	// -config) validates every role in the manifest, each against the clusters
-	// derived from the whole manifest.
+	// -config) validates every role in the manifest (or just -role), each
+	// against the clusters derived from the whole manifest.
 	if *manifestFlag != "" && *layersFlag == "" && !flagWasSet(fs, "config") {
-		runValidateManifest(*manifestFlag, *envFlag, *layerRootFlag,
+		runValidateManifest(*manifestFlag, *envFlag, *layerRootFlag, *roleFlag,
 			hclload.ParseSkipSet(*skipFlag),
 			hclload.ValidateOptions{StrictProxyColumns: *strictProxyCols, StrictClusters: *strictClusters},
 			clusters.entries)
 		return
+	}
+	if *roleFlag != "" {
+		slog.Error("-role requires manifest-driven mode (-manifest/-env without -layer/-config)")
+		os.Exit(2)
 	}
 
 	schema, err := load(*configFlag, *layersFlag)
@@ -417,10 +463,13 @@ func flagWasSet(fs *flag.FlagSet, name string) bool {
 // runValidateManifest validates every role in the manifest for env, each
 // against the cluster set derived from the whole manifest. Errors are printed
 // per role and it exits non-zero if any role fails.
-func runValidateManifest(manifestPath, env, layerRoot string, skip hclload.SkipSet, opts hclload.ValidateOptions, flagEntries []clusterEntry) {
-	results, err := validateManifest(manifestPath, env, layerRoot, skip, opts, flagEntries)
+func runValidateManifest(manifestPath, env, layerRoot, role string, skip hclload.SkipSet, opts hclload.ValidateOptions, flagEntries []clusterEntry) {
+	results, err := validateManifest(manifestPath, env, layerRoot, role, skip, opts, flagEntries)
 	if err != nil {
 		slog.Error("failed to validate manifest", "file", manifestPath, "env", env, "err", err)
+		if errors.Is(err, errUnknownRole) {
+			os.Exit(2)
+		}
 		os.Exit(1)
 	}
 
@@ -438,14 +487,34 @@ func runValidateManifest(manifestPath, env, layerRoot string, skip hclload.SkipS
 	slog.Info("schema validation passed", "env", env, "roles", len(results))
 }
 
-// runLoad loads an HCL config (single file or layers), resolves it, and
-// optionally writes the resolved schema back out as canonical HCL.
+// runLoad loads an HCL config (single file, layers, or a role manifest),
+// resolves it, and optionally writes the resolved schema back out as
+// canonical HCL.
+//
+// With -manifest/-env the layer stack comes from the same role manifest
+// `validate` and `plan` consume, so callers never rebuild it by hand. -role
+// selects one role; without it every role deployed in -env is composed and
+// -out must name a directory.
 func runLoad(args []string) {
 	fs := flag.NewFlagSet("hclexp", flag.ExitOnError)
 	configFlag := fs.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
 	layersFlag := fs.String("layer", "", "comma-separated list of layer directories (loaded in order)")
-	outFlag := fs.String("out", "", "if set, write the resolved schema to this file as canonical HCL ('-' for stdout)")
+	outFlag := fs.String("out", "", "if set, write the resolved schema to this file as canonical HCL ('-' for stdout); a directory in manifest mode")
+	manifestFlag := fs.String("manifest", "", "HCL role manifest to compose from; requires -env. Mutually exclusive with -layer/-config")
+	envFlag := fs.String("env", "", "environment selecting each role's layer stack in -manifest")
+	roleFlag := fs.String("role", "", "compose only this role from -manifest (default: every role deployed in -env)")
+	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under")
+	formatFlag := fs.String("format", "hcl", "output format: hcl (default) or json (the resolved layer stack per role; requires -manifest)")
 	_ = fs.Parse(args)
+
+	if err := loadFlagsError(*manifestFlag, *envFlag, *roleFlag, *formatFlag, *layersFlag, flagWasSet(fs, "config")); err != nil {
+		slog.Error("invalid flags", "err", err)
+		os.Exit(2)
+	}
+	if *manifestFlag != "" {
+		runLoadManifest(*manifestFlag, *envFlag, *roleFlag, *layerRootFlag, *formatFlag, *outFlag)
+		return
+	}
 
 	slog.Info("HCL experiment is up")
 
