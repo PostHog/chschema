@@ -168,6 +168,9 @@ The `justfile` has the full recipe list.
 - ✅ Fails on references into databases that weren't loaded
 - ✅ `-skip-validation=<name,...>` / `-skip-validation='*'` skips checks
   for named dependent objects
+- ✅ `-role <name>` (manifest-driven mode) validates only that role; the
+  cluster set is still derived from the whole manifest, so a single role's
+  cross-role Distributed proxies still resolve
 - ✅ `hclexp diff -sql` orders CREATE/DROP DDL by these dependencies
 
 ### Cross-Node Drift (`hclexp drift`)
@@ -198,6 +201,18 @@ The `justfile` has the full recipe list.
 - ✅ `-format text` (default) or `json`; JSON emits a dependency-ordered
   `operations` list (kind, object_type, database, object, engine, replicated,
   sql, unsafe) plus a top-level `unsafe` list, for migration generators / CI
+
+### Composing a node from the manifest (`hclexp load`)
+- ✅ `-manifest`/`-env` compose a node straight from the same role manifest
+  `validate` and `plan` consume, so callers never rebuild the layer stack by
+  hand; `-layer-root` roots the manifest's layer paths
+- ✅ `-role <name>` composes one role; without it every role deployed in `-env`
+  is composed and `-out` must name a directory (one `<env>-<role>.hcl` each).
+  Several roles cannot go to stdout — their `database` blocks would collide
+- ✅ `-format json` emits each role's declared and resolved layer stack, for
+  callers that need the stack itself rather than the composed schema
+- ✅ `-manifest` is mutually exclusive with `-layer`/`-config`; an unknown
+  `-role` exits 2, as in `validate`
 
 ### Cross-role planning (`hclexp plan`)
 - ✅ Diffs every role in an HCL `-manifest` against a `-dump` topology in one

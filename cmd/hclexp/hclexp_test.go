@@ -751,7 +751,7 @@ role "aux" {
 cluster "aux"     { roles = ["aux"] }
 cluster "posthog" { roles = ["data"] }`)
 
-	results, err := validateManifest(manifest, "prod-us", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
+	results, err := validateManifest(manifest, "prod-us", root, "", hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 2, "every deployed role is validated")
 
@@ -796,7 +796,7 @@ role "aux" {
 }
 cluster "aux" { roles = ["aux"] }`)
 
-	results, err := validateManifest(manifest, "prod-us", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
+	results, err := validateManifest(manifest, "prod-us", root, "", hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 2)
 	for _, r := range results {
@@ -863,7 +863,7 @@ cluster "posthog" { roles = ["data"] }`)
 
 	// events_recent has no composing role; declare it @absent via a flag.
 	flags := []clusterEntry{{name: "events_recent", stack: absentStack}}
-	results, err := validateManifest(manifest, "prod-us", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, flags)
+	results, err := validateManifest(manifest, "prod-us", root, "", hclload.ParseSkipSet(""), hclload.ValidateOptions{}, flags)
 	require.NoError(t, err)
 
 	byRole := map[string][]hclload.ValidationError{}
@@ -921,7 +921,7 @@ role "ingestion" {
 cluster "posthog" { roles = ["data"] }`)
 
 	// -env prod-us: data has no prod-us composition, so posthog is uncomposed.
-	results, err := validateManifest(manifest, "prod-us", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
+	results, err := validateManifest(manifest, "prod-us", root, "", hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
 	require.NoError(t, err)
 	byRole := map[string][]hclload.ValidationError{}
 	for _, r := range results {
@@ -957,7 +957,7 @@ role "data" {
 }
 cluster "posthog" { roles = ["data"] }`)
 
-	results, err := validateManifest(manifest, "local", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
+	results, err := validateManifest(manifest, "local", root, "", hclload.ParseSkipSet(""), hclload.ValidateOptions{}, nil)
 	require.NoError(t, err)
 	require.Len(t, results, 1)
 	require.Empty(t, results[0].Errs, "composed cluster: the proxy resolves against its real schema")
@@ -997,7 +997,7 @@ role "ingestion" {
 cluster "posthog" { roles = ["data"] }`)
 
 	flags := []clusterEntry{{name: "posthog", stack: absentStack}}
-	results, err := validateManifest(manifest, "prod-us", root, hclload.ParseSkipSet(""), hclload.ValidateOptions{}, flags)
+	results, err := validateManifest(manifest, "prod-us", root, "", hclload.ParseSkipSet(""), hclload.ValidateOptions{}, flags)
 	require.NoError(t, err)
 	byRole := map[string][]hclload.ValidationError{}
 	for _, r := range results {
