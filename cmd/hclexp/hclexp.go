@@ -231,28 +231,35 @@ type composedRole struct {
 	Schema   *hclload.Schema
 }
 
-// composeManifestRoles loads and resolves each role's composition for the
-// selected env (layer paths under layerRoot), preserving manifest order.
-func composeManifestRoles(roles []manifestRole, layerRoot string) ([]composedRole, error) {
-	composed := make([]composedRole, 0, len(roles))
+// resolveManifestStacks joins each role's declared layer stack under
+// layerRoot, preserving manifest order. Purely structural — the layer dirs
+// are never read, so it works before they exist on disk; Schema stays nil.
+func resolveManifestStacks(roles []manifestRole, layerRoot string) []composedRole {
+	stacks := make([]composedRole, 0, len(roles))
 	for _, r := range roles {
 		dirs := make([]string, len(r.Layers))
 		for i, l := range r.Layers {
 			dirs[i] = filepath.Join(layerRoot, l)
 		}
-		schema, err := hclload.LoadLayers(dirs)
+		stacks = append(stacks, composedRole{Role: r.Role, Layers: r.Layers, Resolved: dirs})
+	}
+	return stacks
+}
+
+// composeManifestRoles loads and resolves each role's composition for the
+// selected env (layer paths under layerRoot), preserving manifest order.
+func composeManifestRoles(roles []manifestRole, layerRoot string) ([]composedRole, error) {
+	composed := resolveManifestStacks(roles, layerRoot)
+	for i := range composed {
+		c := &composed[i]
+		schema, err := hclload.LoadLayers(c.Resolved)
 		if err != nil {
-			return nil, fmt.Errorf("role %q: loading %v: %w", r.Role, dirs, err)
+			return nil, fmt.Errorf("role %q: loading %v: %w", c.Role, c.Resolved, err)
 		}
 		if err := hclload.Resolve(schema); err != nil {
-			return nil, fmt.Errorf("role %q: resolving %v: %w", r.Role, dirs, err)
+			return nil, fmt.Errorf("role %q: resolving %v: %w", c.Role, c.Resolved, err)
 		}
-		composed = append(composed, composedRole{
-			Role:     r.Role,
-			Layers:   r.Layers,
-			Resolved: dirs,
-			Schema:   schema,
-		})
+		c.Schema = schema
 	}
 	return composed, nil
 }
@@ -504,7 +511,7 @@ func runLoad(args []string) {
 	envFlag := fs.String("env", "", "environment selecting each role's layer stack in -manifest")
 	roleFlag := fs.String("role", "", "compose only this role from -manifest (default: every role deployed in -env)")
 	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under")
-	formatFlag := fs.String("format", "hcl", "output format: hcl (default) or json (the resolved layer stack per role; requires -manifest)")
+	formatFlag := fs.String("format", "hcl", "output format: hcl (default) or json (the resolved layer stack per role, from the manifest alone — the layer dirs need not exist; requires -manifest)")
 	_ = fs.Parse(args)
 
 	if err := loadFlagsError(*manifestFlag, *envFlag, *roleFlag, *formatFlag, *layersFlag, flagWasSet(fs, "config")); err != nil {

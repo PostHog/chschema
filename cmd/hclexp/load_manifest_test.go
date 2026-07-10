@@ -240,6 +240,41 @@ func TestWriteLoadJSON(t *testing.T) {
 	}, got)
 }
 
+// -format json answers "what should I fetch?" before the layers exist: the
+// stacks come from the manifest alone, never from composing the layer dirs,
+// so a fresh clone (or a base-ref bump adding a layer) is not an error.
+func TestWriteLoadJSON_BeforeLayersExist(t *testing.T) {
+	root := t.TempDir() // deliberately empty: no layer dir is ever created
+	manifest := writeTemp(t, "manifest.hcl", `
+role "ops" {
+  env "dev" { layers = ["roles/shared", "roles/ops/dev"] }
+}`)
+
+	roles, err := parseManifest(manifest, "dev")
+	require.NoError(t, err)
+	roles, err = filterManifestRoles(roles, "", "dev")
+	require.NoError(t, err)
+
+	out := filepath.Join(t.TempDir(), "stacks.json")
+	require.NoError(t, writeLoadJSON(out, "dev", resolveManifestStacks(roles, root)))
+
+	body, err := os.ReadFile(out)
+	require.NoError(t, err)
+	var got loadJSON
+	require.NoError(t, json.Unmarshal(body, &got))
+	require.Equal(t, loadJSON{
+		Env: "dev",
+		Roles: []loadRoleJSON{{
+			Role:   "ops",
+			Layers: []string{"roles/shared", "roles/ops/dev"},
+			ResolvedLayers: []string{
+				filepath.Join(root, "roles/shared"),
+				filepath.Join(root, "roles/ops/dev"),
+			},
+		}},
+	}, got)
+}
+
 // -role filters the JSON document too.
 func TestWriteLoadJSON_RoleFilter(t *testing.T) {
 	root, manifest := twoRoleManifest(t)

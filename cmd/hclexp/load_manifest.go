@@ -90,18 +90,20 @@ func runLoadManifest(manifestPath, env, role, layerRoot, format, out string) {
 		os.Exit(2)
 	}
 
-	composed, err := composeManifestRoles(roles, layerRoot)
-	if err != nil {
-		slog.Error("failed to compose manifest roles", "file", manifestPath, "env", env, "err", err)
-		os.Exit(1)
-	}
-
+	// The JSON document is the stacks themselves, so it resolves structurally
+	// — the layers need not exist yet ("what should I fetch?" on a fresh clone).
 	if format == "json" {
-		if err := writeLoadJSON(out, env, composed); err != nil {
+		if err := writeLoadJSON(out, env, resolveManifestStacks(roles, layerRoot)); err != nil {
 			slog.Error("failed to write JSON", "err", err)
 			os.Exit(1)
 		}
 		return
+	}
+
+	composed, err := composeManifestRoles(roles, layerRoot)
+	if err != nil {
+		slog.Error("failed to compose manifest roles", "file", manifestPath, "env", env, "err", err)
+		os.Exit(1)
 	}
 
 	if err := checkOutTarget(out, len(composed)); err != nil {
