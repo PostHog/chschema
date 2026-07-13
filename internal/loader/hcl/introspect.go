@@ -115,6 +115,11 @@ func processIntrospectRowsOpt(db *DatabaseSpec, database string, rows rowScanner
 			slog.Warn("captured object as raw SQL", "object", database+"."+name, "kind", kind, "reason", err)
 		}
 	}
+	// Canonicalize every expression-bearing field so an introspected schema
+	// diffs clean against the same schema composed from HCL (issue #136): both
+	// sides run the identical pass, so authored and live forms reduce to the
+	// same text.
+	canonicalize(db)
 	return nil
 }
 
