@@ -32,7 +32,7 @@ func ParseFile(path string) (*Schema, error) {
 
 	for di := range spec.Databases {
 		db := &spec.Databases[di]
-		normalizeQueries(db)
+		canonicalize(db)
 		for i := range db.Raws {
 			r := &db.Raws[i]
 			if !rawKinds[r.Kind] {
