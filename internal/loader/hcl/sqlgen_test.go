@@ -753,19 +753,55 @@ func TestSQLGen_AlterDictionary_SkippedSecretOnly_EmitsNothing(t *testing.T) {
 // Backstop: whatever path builds a statement, the redaction marker never
 // leaves hclexp. Named collections still let it through their per-param diff
 // (an added NC with redacted params, #141) — emit() is what stops it.
+// Backstop: whatever path builds a statement, the redaction marker never
+// leaves hclexp. The NC diff (three-verdict handling) and the CREATE
+// guards stop it upstream, so drive emit() directly with a hand-built SET —
+// the backstop is the last line of defence for paths no guard anticipated.
 func TestSQLGen_EmitRefusesStatementCarryingRedactionMarker(t *testing.T) {
 	cs := ChangeSet{NamedCollections: []NamedCollectionChange{{
-		Name: "nc",
-		Add: &NamedCollectionSpec{
-			Name:   "nc",
-			Params: []NamedCollectionParam{{Key: "password", Value: RedactedValue}},
-		},
+		Name:      "nc",
+		SetParams: []NamedCollectionParam{{Key: "password", Value: RedactedValue}},
 	}}}
 	out := GenerateSQL(cs)
 	assert.Empty(t, out.Statements, "writing the literal [HIDDEN] would clobber the real secret")
 	require.Len(t, out.Unsafe, 1)
 	assert.Equal(t, "nc", out.Unsafe[0].Table)
 	assert.Contains(t, out.Unsafe[0].Reason, "refusing to write it to a cluster")
+}
+
+func TestSQLGen_NamedCollectionAdd_RedactedParamBlocked(t *testing.T) {
+	cs := ChangeSet{NamedCollections: []NamedCollectionChange{{
+		Name: "nc",
+		Add: &NamedCollectionSpec{
+			Name: "nc",
+			Params: []NamedCollectionParam{
+				{Key: "url", Value: "https://b"},
+				{Key: "password", Value: RedactedValue},
+			},
+		},
+	}}}
+	out := GenerateSQL(cs)
+	assert.Empty(t, out.Statements)
+	require.Len(t, out.Unsafe, 1)
+	assert.Equal(t, "nc", out.Unsafe[0].Table)
+	assert.Contains(t, out.Unsafe[0].Reason, "named collection param(s) [password]")
+	assert.Contains(t, out.Unsafe[0].Reason, "displaySecretsInShowAndSelect")
+}
+
+func TestSQLGen_NamedCollectionRecreate_RedactedParamBlocksPair(t *testing.T) {
+	cluster := "main"
+	cs := ChangeSet{NamedCollections: []NamedCollectionChange{{
+		Name: "nc", Recreate: true, Drop: true,
+		Add: &NamedCollectionSpec{
+			Name:    "nc",
+			Cluster: &cluster,
+			Params:  []NamedCollectionParam{{Key: "password", Value: RedactedValue}},
+		},
+	}}}
+	out := GenerateSQL(cs)
+	assert.Empty(t, out.Statements, "no DROP either — dropping without recreating destroys the collection")
+	require.Len(t, out.Unsafe, 1)
+	assert.Contains(t, out.Unsafe[0].Reason, "named collection param(s) [password]")
 }
 
 func TestSQLGen_DropDictionary(t *testing.T) {

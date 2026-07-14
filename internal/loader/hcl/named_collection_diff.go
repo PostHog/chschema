@@ -42,7 +42,10 @@ type NamedCollectionChange struct {
 	CommentChange *StringChange
 
 	// SkippedRedactedParams lists param keys whose diff was suppressed
-	// because either side had the redacted "[HIDDEN]" value. The CLI
+	// because the value is the redacted "[HIDDEN]" placeholder on one side
+	// while the other side holds a real value, differs in flags, or lacks
+	// the param entirely. Identically-redacted params (hidden on both
+	// sides, flags equal) are not a difference and are not listed. The CLI
 	// surfaces these so operators know hclexp couldn't verify equality.
 	SkippedRedactedParams []string
 
@@ -133,11 +136,16 @@ func diffOneNamedCollection(name string, f, ft *NamedCollectionSpec) NamedCollec
 		return change
 	}
 
-	// Param SET / DELETE. Params whose value is "[HIDDEN]" on EITHER side
-	// are skipped — we can't tell whether they actually differ, and writing
-	// the literal "[HIDDEN]" back to the cluster would clobber the real
-	// secret. They're recorded in SkippedRedactedParams so the CLI can
-	// warn the operator.
+	// Param SET / DELETE. A value of "[HIDDEN]" (RedactedValue) means the
+	// real value is unknown to hclexp. Three verdicts per param:
+	//   - hidden on BOTH sides with equal flags: every observer sees the
+	//     same thing — not a difference (identically-redacted dumps must
+	//     not read as drift);
+	//   - hidden on either side otherwise (including a hidden param the
+	//     other side lacks entirely): unverifiable — recorded in
+	//     SkippedRedactedParams and never SET, because writing the literal
+	//     "[HIDDEN]" would clobber the real secret;
+	//   - visible on both sides: compared normally.
 	fromParams := map[string]NamedCollectionParam{}
 	for _, p := range f.Params {
 		fromParams[p.Key] = p
@@ -148,11 +156,14 @@ func diffOneNamedCollection(name string, f, ft *NamedCollectionSpec) NamedCollec
 	}
 	for _, p := range ft.Params {
 		fp, present := fromParams[p.Key]
-		if present && (fp.Value == RedactedValue || p.Value == RedactedValue) {
+		toHidden := p.Value == RedactedValue
+		fromHidden := present && fp.Value == RedactedValue
+		switch {
+		case toHidden && fromHidden && ncPtrBoolEqual(fp.Overridable, p.Overridable):
+			// equally blind on both sides: silent
+		case toHidden || fromHidden:
 			change.SkippedRedactedParams = append(change.SkippedRedactedParams, p.Key)
-			continue
-		}
-		if !present || fp.Value != p.Value || !ncPtrBoolEqual(fp.Overridable, p.Overridable) {
+		case !present || fp.Value != p.Value || !ncPtrBoolEqual(fp.Overridable, p.Overridable):
 			change.SetParams = append(change.SetParams, p)
 		}
 	}

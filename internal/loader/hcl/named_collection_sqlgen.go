@@ -24,6 +24,22 @@ func dropNamedCollectionSQL(name string) string {
 	return fmt.Sprintf("DROP NAMED COLLECTION %s", name)
 }
 
+// redactedNCBlock reports why no CREATE may be generated from nc, or ""
+// when there is no obstacle. A CREATE NAMED COLLECTION writes every param,
+// so a spec whose values carry the RedactedValue marker cannot be emitted:
+// hclexp does not know the real values, and the literal placeholder would
+// overwrite them. Mirrors redactedSecretBlock for dictionaries.
+func redactedNCBlock(nc NamedCollectionSpec) string {
+	keys := RedactedParamKeys(nc)
+	if len(keys) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("named collection param(s) [%s] are unknown to hclexp (%s: redacted by the server at introspection, "+
+		"or declared unmanaged in HCL); CREATE NAMED COLLECTION would write the literal placeholder over the real value. "+
+		"Grant displaySecretsInShowAndSelect AND set display_secrets_in_show_and_select=1, or apply this change manually",
+		strings.Join(keys, ", "), RedactedValue)
+}
+
 func alterNamedCollectionSetSQL(name string, params []NamedCollectionParam) string {
 	if len(params) == 0 {
 		return ""

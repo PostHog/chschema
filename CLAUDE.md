@@ -141,9 +141,12 @@ The `justfile` has the full recipe list.
   from "no secret". It compares as unknown (both sides hidden → equal; hidden
   vs a real value → reported unverifiable, excluded from the diff; hidden vs
   absent → a real difference), and `sqlgen` refuses to emit any statement
-  containing it — a whole-object rewrite would otherwise install the dictionary
-  without its credential. Authored `password = "[HIDDEN]"` declares a secret
-  managed outside hclexp. See `docs/README.hcl.md`
+  containing it. What that costs differs by kind: a dictionary is rewritten
+  whole, so an unknown secret blocks *any* change to it; a named collection has
+  surgical `ALTER … SET`/`DELETE`, so only the statements that write every param
+  (`CREATE`, and the DROP+CREATE an `ON CLUSTER` change forces — blocked as a
+  pair) are refused. Authored `password = "[HIDDEN]"` declares a secret managed
+  outside hclexp. See `docs/README.hcl.md`
 - ✅ Long view/MV `query` as a one-liner, HCL heredoc, or `file("x.sql")`;
   all normalize to a canonical beautified form so formatting never diffs as
   drift (see `docs/README.hcl.md`)

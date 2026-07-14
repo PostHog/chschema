@@ -103,8 +103,14 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	// before any other create — dependent tables can rely on the new NC).
 	for _, ncc := range cs.NamedCollections {
 		if ncc.Recreate && ncc.Add != nil {
-			emit(OpDrop, KindNamedCollection, "", ncc.Name, dropNamedCollectionSQL(ncc.Name))
-			emit(OpCreate, KindNamedCollection, "", ncc.Name, createNamedCollectionSQL(*ncc.Add))
+			if reason := redactedNCBlock(*ncc.Add); reason != "" {
+				// Block the whole pair: dropping without being able to
+				// recreate would destroy the collection.
+				out.Unsafe = append(out.Unsafe, UnsafeChange{Database: "", Table: ncc.Name, Reason: reason})
+			} else {
+				emit(OpDrop, KindNamedCollection, "", ncc.Name, dropNamedCollectionSQL(ncc.Name))
+				emit(OpCreate, KindNamedCollection, "", ncc.Name, createNamedCollectionSQL(*ncc.Add))
+			}
 		}
 		if ncc.Error != "" {
 			out.Unsafe = append(out.Unsafe, UnsafeChange{
@@ -118,6 +124,10 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	// 2. Fresh NC adds.
 	for _, ncc := range cs.NamedCollections {
 		if ncc.Add != nil && !ncc.Recreate {
+			if reason := redactedNCBlock(*ncc.Add); reason != "" {
+				out.Unsafe = append(out.Unsafe, UnsafeChange{Database: "", Table: ncc.Name, Reason: reason})
+				continue
+			}
 			emit(OpCreate, KindNamedCollection, "", ncc.Name, createNamedCollectionSQL(*ncc.Add))
 		}
 	}
