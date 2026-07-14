@@ -669,9 +669,12 @@ comma-joined. A rename is reported on the **new** name (`column:<new>`, with `ol
 none: a dictionary reconciles via `CREATE OR REPLACE`, so it emits one `modify`
 per changed config path; and a named-collection `param:` set is always `modify`
 with `new` only (`ALTER … SET` overwrites, even for a param that is new). A param
-whose value is redacted on either side reports `[HIDDEN]` on both — hclexp could
-not verify equality (grant `displaySecretsInShowAndSelect` to compare); a
-dictionary's `source.<secret>` reports the same way, for the same reason.
+that is redacted (`[HIDDEN]`) on one side while the other side holds a real value,
+differs in flags, or lacks it entirely reports `[HIDDEN]` on **both** sides — hclexp
+could not verify equality, and printing the known side would leak a real secret into
+CI logs. Identically-redacted params (hidden on both sides, flags equal) are not a
+difference at all, so identically-redacted dumps compare clean. A dictionary's
+`source.<secret>` reports the same way, for the same reason.
 
 ### Secrets and the `[HIDDEN]` marker
 
@@ -681,21 +684,19 @@ user lacks `displaySecretsInShowAndSelect` (or the server/query does not enable
 values and a dictionary's `SOURCE(...)` credentials.
 
 hclexp keeps that marker rather than dropping it, so it round-trips through an
-HCL dump: a dump with `password = "[HIDDEN]"` says *"this dictionary has a
-secret I cannot see"*, which a dump with no `password` at all cannot. Three
-rules follow.
+HCL dump: a dump with `password = "[HIDDEN]"` says *"this object has a secret I
+cannot see"*, which a dump with no `password` at all cannot. Three rules follow,
+and they are the same for both object kinds.
 
 **It is never written back.** No generated statement may contain `[HIDDEN]` —
-writing the literal would overwrite the real credential with a placeholder. A
-dictionary is reconciled by rewriting it whole (`CREATE OR REPLACE DICTIONARY`,
-which is how *every* dictionary change is applied), and that rewrite includes
-the source credential; so if the target spec's secret is the marker, hclexp
-emits no DDL and reports the object as unsafe with the reason.
+writing the literal would overwrite the real credential with a placeholder. Any
+statement built from a spec carrying the marker is refused, with an unsafe
+reason naming the offending fields.
 
-**It compares as unknown, not as a value.** Both sides `[HIDDEN]` → equal
-(the normal `drift` case, where every node was dumped by the same user; two
-genuinely different hidden secrets do read as equal — no observer without the
-grant can do better). One side `[HIDDEN]` and the other a real value → the
+**It compares as unknown, not as a value.** Both sides `[HIDDEN]` → equal, and
+silently (the normal `drift` case, where every node was dumped by the same user;
+two genuinely different hidden secrets do read as equal — no observer without
+the grant can do better). One side `[HIDDEN]` and the other a real value → the
 field is reported as unverifiable and excluded from the comparison, so an
 authored secret is not mistaken for a change on every run. `[HIDDEN]` versus
 *absent* is a real difference: present-vs-absent is visible even when the value
@@ -703,11 +704,23 @@ is not.
 
 **You may write it deliberately.** `password = "[HIDDEN]"` in authored HCL
 declares a secret managed outside hclexp. It compares clean against a redacting
-cluster; the cost is that any *other* change to that dictionary is blocked (a
-whole-object rewrite cannot preserve a secret it does not know), so those are
-applied by hand.
+cluster.
 
-If a dictionary reports `source.password` on every run, pick one:
+What a blocked emission costs you differs by kind, because the two reconcile
+differently:
+
+- A **dictionary** is rewritten whole (`CREATE OR REPLACE DICTIONARY` — how
+  *every* dictionary change is applied), and that rewrite includes the source
+  credential. So an unknown secret blocks **any** change to that dictionary; a
+  whole-object rewrite cannot preserve a secret it does not know.
+- A **named collection** has surgical DDL (`ALTER … SET` / `DELETE`), so a
+  normal param change still applies while a secret stays unknown. Only the
+  statements that write every param — `CREATE NAMED COLLECTION`, and the
+  DROP+CREATE pair an `ON CLUSTER` change forces — are blocked. The recreate is
+  blocked as a *pair*: dropping a collection hclexp cannot then recreate would
+  destroy it.
+
+If an object reports an unverifiable secret on every run, pick one:
 
 1. Grant `displaySecretsInShowAndSelect` and set
    `display_secrets_in_show_and_select=1` for the introspecting user — the
@@ -715,7 +728,7 @@ If a dictionary reports `source.password` on every run, pick one:
    through hclexp works. Note that dumps then contain real secrets in
    plaintext; treat the artifacts accordingly.
 2. Declare it unmanaged: `password = "[HIDDEN]"` (above).
-3. `-exclude` the dictionary entirely — the bluntest option.
+3. `-exclude` the object entirely — the bluntest option.
 
 A passworded dictionary whose authored HCL simply *omits* the password is a
 genuine difference, and the generated `CREATE OR REPLACE` will **remove** the
