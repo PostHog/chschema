@@ -103,3 +103,64 @@ func TestLoadExcludeConfig_EmptyAndInvalid(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid exclude pattern")
 }
+
+// writeTempExclude writes an exclude config to a temp file and returns its path.
+func writeTempExclude(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "exclude.hcl")
+	require.NoError(t, os.WriteFile(path, []byte(content), 0o600))
+	return path
+}
+
+func TestFilterSchema(t *testing.T) {
+	s := &Schema{
+		Databases: []DatabaseSpec{{
+			Name: "posthog",
+			Tables: []TableSpec{
+				{Name: "events"},
+				{Name: "tmp_migration"},
+			},
+			Views: []ViewSpec{{Name: "events_view", Query: "SELECT 1"}},
+			Raws:  []RawSpec{{Kind: "table", Name: "legacy_backup", SQL: "CREATE ..."}},
+		}},
+		NamedCollections: []NamedCollectionSpec{{Name: "s3_creds"}},
+	}
+
+	m := NewExcludeMatcherWithTypes(
+		[]string{KindNamedCollection},
+		"tmp_*", "posthog.*_backup",
+	)
+	FilterSchema(s, m)
+
+	want := &Schema{
+		Databases: []DatabaseSpec{{
+			Name:   "posthog",
+			Tables: []TableSpec{{Name: "events"}},
+			Views:  []ViewSpec{{Name: "events_view", Query: "SELECT 1"}},
+			Raws:   []RawSpec{},
+		}},
+		NamedCollections: []NamedCollectionSpec{},
+	}
+	assert.Equal(t, want, s)
+}
+
+func TestLoadExcludeConfig_ObjectTypes(t *testing.T) {
+	path := writeTempExclude(t, `
+exclude {
+  patterns     = ["tmp_*"]
+  object_types = ["named_collection"]
+}`)
+	m, err := LoadExcludeConfig(path)
+	require.NoError(t, err)
+	assert.True(t, m.MatchesObject(KindNamedCollection, "", "anything"))
+	assert.True(t, m.MatchesObject(KindTable, "db", "tmp_x"))
+	assert.False(t, m.MatchesObject(KindTable, "db", "events"))
+	assert.False(t, m.Empty())
+
+	_, err = LoadExcludeConfig(writeTempExclude(t, `
+exclude {
+  patterns     = []
+  object_types = ["nonsense"]
+}`))
+	require.ErrorContains(t, err, "nonsense")
+}
