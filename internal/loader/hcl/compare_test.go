@@ -4,7 +4,79 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
+
+// Drives the real Diff -> GenerateSQL -> BuildObjectComparisons pipeline:
+// one added table (with its CREATE op attached, keeping the global order
+// index), one altered table whose ORDER BY change is unsafe, and direction
+// pinning (added = present only on the right).
+func TestBuildObjectComparisons(t *testing.T) {
+	idCol := ColumnSpec{Name: "id", Type: "UInt64"}
+	tsCol := ColumnSpec{Name: "ts", Type: "DateTime"}
+
+	sessionsLeft := mkTable("sessions", EngineMergeTree{}, idCol)
+	sessionsLeft.OrderBy = []string{"id"}
+	sessionsRight := mkTable("sessions", EngineMergeTree{}, idCol)
+	sessionsRight.OrderBy = []string{"id", "ts"} // unsafe, no DDL emitted
+	archive := mkTable("archive", EngineMergeTree{}, idCol, tsCol)
+	archive.OrderBy = []string{"id"}
+
+	left := &Schema{Databases: []DatabaseSpec{mkDB("posthog", sessionsLeft)}}
+	right := &Schema{Databases: []DatabaseSpec{mkDB("posthog", archive, sessionsRight)}}
+
+	cs := Diff(left, right)
+	gen := GenerateSQL(cs)
+	objs := BuildObjectComparisons(cs, gen, left, right)
+
+	byName := map[string]ObjectComparison{}
+	for _, o := range objs {
+		byName[o.Object] = o
+	}
+
+	created := byName["archive"]
+	assert.Equal(t, StatusAdded, created.Status)
+	assert.Equal(t, KindTable, created.ObjectType)
+	assert.Equal(t, "posthog", created.Database)
+	require.Len(t, created.Operations, 1)
+	assert.Equal(t, OpCreate, created.Operations[0].Kind)
+	assert.Contains(t, created.Operations[0].SQL, "CREATE TABLE")
+	assert.False(t, created.Unsafe)
+
+	altered := byName["sessions"]
+	assert.Equal(t, StatusAltered, altered.Status)
+	assert.True(t, altered.Unsafe)
+	assert.Contains(t, altered.UnsafeReason, "ORDER BY")
+	assert.Empty(t, altered.Operations) // unsafe-only change emits no DDL
+	assert.Equal(t, []FieldChange{
+		{Field: "order_by", Change: "modify", Old: "id", New: "id, ts"},
+	}, altered.Changes)
+
+	// Nested op Order is the index into the global dependency-sorted list.
+	globalOps := buildJSONOperations(gen, left, right)
+	for _, o := range objs {
+		for _, op := range o.Operations {
+			assert.Equal(t, globalOps[op.Order], op)
+		}
+	}
+}
+
+func TestSummarizeComparisonsAndOneLiner(t *testing.T) {
+	objs := []ObjectComparison{
+		{ObjectType: KindTable, Status: StatusAdded},
+		{ObjectType: KindTable, Status: StatusAltered},
+		{ObjectType: KindMaterializedView, Status: StatusDropped},
+		{ObjectType: KindRaw, Status: StatusAltered},
+		{ObjectType: KindNamedCollection, Status: StatusAltered},
+	}
+	s := SummarizeComparisons(objs)
+	assert.Equal(t, CompareSummary{
+		TablesAdded: 1, TablesAltered: 1,
+		MVsDropped: 1, RawsAltered: 1, NamedCollectionsChanged: 1,
+	}, s)
+	assert.Equal(t, "+1 table, ~1 table, -1 mv, ~1 raw, ~1 named_collection", s.OneLiner())
+	assert.Equal(t, "changed", CompareSummary{}.OneLiner())
+}
 
 // fieldChangesForTable flattens every TableDiff aspect into the documented
 // field vocabulary, in declaration order (columns, indexes, projections,

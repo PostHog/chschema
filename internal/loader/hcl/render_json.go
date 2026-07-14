@@ -49,14 +49,25 @@ type DiffJSON struct {
 // carries no engine information of its own. Unsafe flags come from the existing
 // gen.Unsafe list (no separate diff path), matched by database + object.
 func RenderDiffJSON(gen GeneratedSQL, left, right *Schema) ([]byte, error) {
-	doc := DiffJSON{Operations: make([]JSONOperation, 0, len(gen.Ops))}
+	doc := DiffJSON{Operations: buildJSONOperations(gen, left, right)}
+	for _, u := range gen.Unsafe {
+		doc.Unsafe = append(doc.Unsafe, JSONUnsafe{Database: u.Database, Object: u.Table, Reason: u.Reason})
+	}
+	return json.MarshalIndent(doc, "", "  ")
+}
+
+// buildJSONOperations enriches the generated ops with their global order,
+// engine family (target schema first, falling back to current — an ALTER
+// that doesn't change the engine carries none of its own), and unsafe flags.
+func buildJSONOperations(gen GeneratedSQL, left, right *Schema) []JSONOperation {
+	ops := make([]JSONOperation, 0, len(gen.Ops))
 	for i, op := range gen.Ops {
 		engine := ""
 		if op.ObjectType == KindTable {
 			engine = engineFor(op.Database, op.Object, right, left)
 		}
 		unsafe, reason := unsafeFor(gen.Unsafe, op.Database, op.Object)
-		doc.Operations = append(doc.Operations, JSONOperation{
+		ops = append(ops, JSONOperation{
 			Order:        i,
 			Kind:         op.Kind,
 			ObjectType:   op.ObjectType,
@@ -70,10 +81,7 @@ func RenderDiffJSON(gen GeneratedSQL, left, right *Schema) ([]byte, error) {
 			UnsafeReason: reason,
 		})
 	}
-	for _, u := range gen.Unsafe {
-		doc.Unsafe = append(doc.Unsafe, JSONUnsafe{Database: u.Database, Object: u.Table, Reason: u.Reason})
-	}
-	return json.MarshalIndent(doc, "", "  ")
+	return ops
 }
 
 // engineFor returns the ClickHouse engine family name (e.g.

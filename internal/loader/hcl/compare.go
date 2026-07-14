@@ -1,6 +1,9 @@
 package hcl
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Comparison statuses. Status is right-relative: "added" means the right
 // side of the Diff has the object and the left does not.
@@ -59,6 +62,167 @@ type CompareSummary struct {
 	RawsDropped             int `json:"raws_dropped"`
 	RawsAltered             int `json:"raws_altered"`
 	NamedCollectionsChanged int `json:"named_collections_changed"`
+}
+
+// BuildObjectComparisons flattens a ChangeSet into one entry per differing
+// object, attaching each generated operation to its object. Status is
+// right-relative; nested operations keep their global dependency order, so
+// the object view and the flat operation list can never disagree about
+// sequencing.
+func BuildObjectComparisons(cs ChangeSet, gen GeneratedSQL, left, right *Schema) []ObjectComparison {
+	type ref struct{ db, object string }
+	opsByRef := map[ref][]JSONOperation{}
+	for _, op := range buildJSONOperations(gen, left, right) {
+		k := ref{op.Database, op.Object}
+		opsByRef[k] = append(opsByRef[k], op)
+	}
+
+	// Non-nil so an empty diff marshals as "objects": [] (the jq contract in
+	// check-live.sh is `.objects == []`), never null.
+	out := []ObjectComparison{}
+	add := func(db, name, objType, status string, changes []FieldChange) int {
+		oc := ObjectComparison{
+			Database: db, Object: name, ObjectType: objType, Status: status,
+			Changes: changes, Operations: opsByRef[ref{db, name}],
+		}
+		if oc.Operations == nil {
+			oc.Operations = []JSONOperation{}
+		}
+		oc.Unsafe, oc.UnsafeReason = unsafeFor(gen.Unsafe, db, name)
+		out = append(out, oc)
+		return len(out) - 1
+	}
+
+	for _, dc := range cs.Databases {
+		for _, t := range dc.AddTables {
+			add(dc.Database, t.Name, KindTable, StatusAdded, nil)
+		}
+		for _, t := range dc.DropTables {
+			add(dc.Database, t.Name, KindTable, StatusDropped, nil)
+		}
+		for _, td := range dc.AlterTables {
+			add(dc.Database, td.Table, KindTable, StatusAltered, fieldChangesForTable(td))
+		}
+		for _, mv := range dc.AddMaterializedViews {
+			add(dc.Database, mv.Name, KindMaterializedView, StatusAdded, nil)
+		}
+		for _, name := range dc.DropMaterializedViews {
+			add(dc.Database, name, KindMaterializedView, StatusDropped, nil)
+		}
+		for _, mvd := range dc.AlterMaterializedViews {
+			add(dc.Database, mvd.Name, KindMaterializedView, StatusAltered, fieldChangesForMaterializedView(mvd))
+		}
+		for _, v := range dc.AddViews {
+			add(dc.Database, v.Name, KindView, StatusAdded, nil)
+		}
+		for _, name := range dc.DropViews {
+			add(dc.Database, name, KindView, StatusDropped, nil)
+		}
+		for _, vd := range dc.AlterViews {
+			add(dc.Database, vd.Name, KindView, StatusAltered, fieldChangesForView(vd))
+		}
+		for _, d := range dc.AddDictionaries {
+			add(dc.Database, d.Name, KindDictionary, StatusAdded, nil)
+		}
+		for _, name := range dc.DropDictionaries {
+			add(dc.Database, name, KindDictionary, StatusDropped, nil)
+		}
+		for _, dd := range dc.AlterDictionaries {
+			add(dc.Database, dd.Name, KindDictionary, StatusAltered, fieldChangesForDictionary(dd))
+		}
+		for _, r := range dc.AddRaws {
+			out[add(dc.Database, r.Name, KindRaw, StatusAdded, nil)].RawKind = r.Kind
+		}
+		for _, r := range dc.DropRaws {
+			out[add(dc.Database, r.Name, KindRaw, StatusDropped, nil)].RawKind = r.Kind
+		}
+		for _, rc := range dc.AlterRaws {
+			i := add(dc.Database, rc.Name, KindRaw, StatusAltered, fieldChangesForRaw(rc))
+			out[i].RawKind = rc.Kind
+			if rc.IsUnsafe() && !out[i].Unsafe {
+				out[i].Unsafe = true
+				out[i].UnsafeReason = "recreating a raw table drops its data"
+			}
+		}
+	}
+
+	for _, ncc := range cs.NamedCollections {
+		status := StatusAltered
+		switch {
+		case ncc.Recreate:
+			// DROP+CREATE pair, surfaced as altered with an on_cluster change
+		case ncc.Add != nil:
+			status = StatusAdded
+		case ncc.Drop:
+			status = StatusDropped
+		}
+		i := add("", ncc.Name, KindNamedCollection, status, fieldChangesForNamedCollection(ncc))
+		out[i].Error = ncc.Error
+	}
+	return out
+}
+
+// SummarizeComparisons counts comparisons by object type and status.
+func SummarizeComparisons(objs []ObjectComparison) CompareSummary {
+	var s CompareSummary
+	for _, o := range objs {
+		var added, dropped, altered *int
+		switch o.ObjectType {
+		case KindTable:
+			added, dropped, altered = &s.TablesAdded, &s.TablesDropped, &s.TablesAltered
+		case KindMaterializedView:
+			added, dropped, altered = &s.MVsAdded, &s.MVsDropped, &s.MVsAltered
+		case KindView:
+			added, dropped, altered = &s.ViewsAdded, &s.ViewsDropped, &s.ViewsAltered
+		case KindDictionary:
+			added, dropped, altered = &s.DictsAdded, &s.DictsDropped, &s.DictsAltered
+		case KindRaw:
+			added, dropped, altered = &s.RawsAdded, &s.RawsDropped, &s.RawsAltered
+		case KindNamedCollection:
+			s.NamedCollectionsChanged++
+			continue
+		default:
+			continue
+		}
+		switch o.Status {
+		case StatusAdded:
+			*added++
+		case StatusDropped:
+			*dropped++
+		case StatusAltered:
+			*altered++
+		}
+	}
+	return s
+}
+
+// OneLiner renders the summary as the compact drift line, e.g.
+// "+1 table, ~2 mv, ~1 raw". An all-zero summary falls back to "changed".
+func (s CompareSummary) OneLiner() string {
+	var parts []string
+	add := func(label string, plus, minus, alt int) {
+		if plus > 0 {
+			parts = append(parts, fmt.Sprintf("+%d %s", plus, label))
+		}
+		if minus > 0 {
+			parts = append(parts, fmt.Sprintf("-%d %s", minus, label))
+		}
+		if alt > 0 {
+			parts = append(parts, fmt.Sprintf("~%d %s", alt, label))
+		}
+	}
+	add("table", s.TablesAdded, s.TablesDropped, s.TablesAltered)
+	add("mv", s.MVsAdded, s.MVsDropped, s.MVsAltered)
+	add("dict", s.DictsAdded, s.DictsDropped, s.DictsAltered)
+	add("view", s.ViewsAdded, s.ViewsDropped, s.ViewsAltered)
+	add("raw", s.RawsAdded, s.RawsDropped, s.RawsAltered)
+	if s.NamedCollectionsChanged > 0 {
+		parts = append(parts, fmt.Sprintf("~%d named_collection", s.NamedCollectionsChanged))
+	}
+	if len(parts) == 0 {
+		return "changed"
+	}
+	return strings.Join(parts, ", ")
 }
 
 // fieldChangesForTable flattens a TableDiff into attribute-level changes.
