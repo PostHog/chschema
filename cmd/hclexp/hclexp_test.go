@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -177,13 +178,13 @@ database "posthog" {
 	require.False(t, cs.IsEmpty())
 
 	var buf bytes.Buffer
-	renderChangeSet(&buf, cs)
+	renderComparisons(&buf, cs, leftDBs, rightDBs)
 
 	want := `database "posthog"
   + table new_table
   - table old_table
   ~ table events
-      + column event String
+      + column event = String
       ~ column team_id: UInt32 -> UInt64
       + setting index_granularity = 8192
 `
@@ -224,7 +225,7 @@ database "posthog" {
 	require.True(t, cs.IsEmpty(), "diffing a file with itself must produce no changes")
 
 	var buf bytes.Buffer
-	renderChangeSet(&buf, cs)
+	renderComparisons(&buf, cs, left, right)
 	require.Empty(t, buf.String())
 }
 
@@ -238,7 +239,8 @@ func TestRenderChangeSet_MaterializedViews(t *testing.T) {
 				},
 				DropMaterializedViews: []string{"mv_old"},
 				AlterMaterializedViews: []hclload.MaterializedViewDiff{
-					{Name: "mv_rebuild", Recreate: true},
+					{Name: "mv_rebuild", Recreate: true, ColumnsChanged: true,
+						ToTableChange: &hclload.StringChange{Old: ptrStr("t_old"), New: ptrStr("t_new")}},
 					{Name: "mv_query_update", QueryChange: &hclload.StringChange{Old: ptrStr("SELECT 1"), New: ptrStr("SELECT 2")}},
 				},
 			},
@@ -246,13 +248,14 @@ func TestRenderChangeSet_MaterializedViews(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	renderChangeSet(&buf, cs)
+	renderComparisons(&buf, cs, nil, nil)
 
 	want := `database "posthog"
-  + materialized_view mv_events -> events_agg
+  + materialized_view mv_events
   - materialized_view mv_old
-  ~ materialized_view mv_rebuild
-      ! requires recreation (to_table or columns changed)
+  ~ materialized_view mv_rebuild (UNSAFE: materialized view to_table or column list change requires recreating the view)
+      ~ to_table: t_old -> t_new
+      ~ columns changed
   ~ materialized_view mv_query_update
       ~ query changed
 `
@@ -268,22 +271,23 @@ func TestRenderChangeSet_Views(t *testing.T) {
 				DropViews: []string{"old_v"},
 				AlterViews: []hclload.ViewDiff{
 					{Name: "modified_q", QueryChange: &hclload.StringChange{Old: ptrStr("SELECT 1"), New: ptrStr("SELECT 2")}},
-					{Name: "recreated", Recreate: true},
+					{Name: "recreated", Recreate: true, RecreateChanged: []string{"sql_security", "cluster"}},
 				},
 			},
 		},
 	}
 
 	var buf bytes.Buffer
-	renderChangeSet(&buf, cs)
+	renderComparisons(&buf, cs, nil, nil)
 
 	want := `database "posthog"
   + view new_v
   - view old_v
   ~ view modified_q
       ~ query changed
-  ~ view recreated
-      ! requires recreation (column_aliases / sql_security / definer / cluster changed)
+  ~ view recreated (UNSAFE: view column_aliases / sql_security / definer / cluster change requires recreating the view)
+      ~ sql_security changed
+      ~ cluster changed
 `
 	require.Equal(t, want, buf.String())
 }
@@ -319,6 +323,15 @@ func writeTemp(t *testing.T, name, content string) string {
 
 func ptrStr(s string) *string { return &s }
 
+// renderComparisons is the text path `hclexp diff` takes: a ChangeSet is
+// projected onto per-object comparisons (with the generated DDL attached, so
+// unsafe flags come from sqlgen) and rendered. Tests that build a ChangeSet by
+// hand pass nil schemas — engine enrichment simply stays empty.
+func renderComparisons(w io.Writer, cs hclload.ChangeSet, left, right *hclload.Schema) {
+	gen := hclload.GenerateSQL(cs)
+	hclload.RenderObjectComparisons(w, hclload.BuildObjectComparisons(cs, gen, left, right))
+}
+
 func TestRenderChangeSet_Dictionaries(t *testing.T) {
 	cs := hclload.ChangeSet{Databases: []hclload.DatabaseChange{{
 		Database:          "posthog",
@@ -328,12 +341,14 @@ func TestRenderChangeSet_Dictionaries(t *testing.T) {
 	}}}
 
 	var buf bytes.Buffer
-	renderChangeSet(&buf, cs)
+	renderComparisons(&buf, cs, nil, nil)
 
 	want := `database "posthog"
   + dictionary new_dict
   - dictionary old_dict
-  ~ dictionary rebuild_dict (changed: layout, source)
+  ~ dictionary rebuild_dict (UNSAFE: dictionary change requires CREATE OR REPLACE DICTIONARY (changed: layout, source))
+      ~ layout changed
+      ~ source changed
 `
 	require.Equal(t, want, buf.String())
 }
@@ -350,13 +365,15 @@ func TestRenderChangeSet_Raws(t *testing.T) {
 	}}}
 
 	var buf bytes.Buffer
-	renderChangeSet(&buf, cs)
+	renderComparisons(&buf, cs, nil, nil)
 
 	want := `database "posthog"
   + raw dictionary new_raw
   - raw view old_raw
-  ~ raw dictionary safe_raw (recreate)
-  ~ raw table risky_raw (recreate) ! UNSAFE: destroys data
+  ~ raw dictionary safe_raw
+      ~ sql changed
+  ~ raw table risky_raw (UNSAFE: raw table change requires DROP + CREATE, which destroys the table's data)
+      ~ sql changed
 `
 	require.Equal(t, want, buf.String())
 }
@@ -374,14 +391,14 @@ func TestRenderChangeSet_NamedCollections(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	renderChangeSet(&buf, cs)
+	renderComparisons(&buf, cs, nil, nil)
 
 	want := `named_collections
   + named_collection new_nc
   - named_collection old_nc
   ~ named_collection prod_nc
-      ~ param kafka_topic_list (set)
-      ~ param kafka_new_setting (set)
+      ~ param kafka_topic_list = new_topic
+      ~ param kafka_new_setting = added
       - param kafka_unused
 `
 	require.Equal(t, want, buf.String())
@@ -1083,4 +1100,48 @@ database "posthog" {
 
 	require.Len(t, hclload.Validate(node.Databases, hclload.ParseSkipSet(""), hclload.ClusterSet{}), 1,
 		"without the aux mapping the cross-cluster view source is unresolved")
+}
+
+// A diff whose only difference is an excluded object must be empty after
+// FilterSchema — the CLI-level contract behind `-exclude`.
+func TestDiffWithExcludeFilteredSchemas(t *testing.T) {
+	dir := t.TempDir()
+	leftPath := filepath.Join(dir, "left.hcl")
+	rightPath := filepath.Join(dir, "right.hcl")
+	require.NoError(t, os.WriteFile(leftPath, []byte(`
+database "d" {
+  table "events" {
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+    order_by = ["id"]
+  }
+}
+`), 0o644))
+	require.NoError(t, os.WriteFile(rightPath, []byte(`
+database "d" {
+  table "events" {
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+    order_by = ["id"]
+  }
+  table "tmp_scratch" {
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+    order_by = ["id"]
+  }
+}
+`), 0o644))
+
+	left, err := loadSide(leftPath)
+	require.NoError(t, err)
+	right, err := loadSide(rightPath)
+	require.NoError(t, err)
+
+	// Without the filter the scratch table is a real difference.
+	require.False(t, hclload.Diff(left, right).IsEmpty())
+
+	m := hclload.NewExcludeMatcherWithTypes(nil, "tmp_*")
+	hclload.FilterSchema(left, m)
+	hclload.FilterSchema(right, m)
+	require.True(t, hclload.Diff(left, right).IsEmpty())
 }

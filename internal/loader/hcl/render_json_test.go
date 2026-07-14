@@ -38,7 +38,7 @@ func TestRenderDiffJSON(t *testing.T) {
 
 	cs := Diff(left, right)
 	gen := GenerateSQL(cs)
-	out, err := RenderDiffJSON(gen, left, right)
+	out, err := RenderDiffJSON(cs, gen, left, right)
 	require.NoError(t, err)
 
 	var doc DiffJSON
@@ -89,6 +89,25 @@ func TestRenderDiffJSON(t *testing.T) {
 	assert.Equal(t, OpAlter, sessions.Kind)
 	assert.True(t, sessions.Unsafe)
 	assert.Contains(t, sessions.UnsafeReason, "ORDER BY")
+
+	// The same document carries per-object comparisons and derived counts.
+	objByName := map[string]ObjectComparison{}
+	for _, o := range doc.Objects {
+		objByName[o.Object] = o
+	}
+	assert.Equal(t, StatusAdded, objByName["query_log_archive"].Status)
+	assert.Equal(t, StatusAltered, objByName["events"].Status)
+	assert.True(t, objByName["sessions"].Unsafe)
+	assert.Equal(t, CompareSummary{TablesAdded: 1, TablesAltered: 2}, doc.Summary)
+}
+
+// An empty diff marshals objects as [], never null — downstream gates do
+// `jq -e '.objects == []'`.
+func TestRenderDiffJSON_EmptyDiff(t *testing.T) {
+	out, err := RenderDiffJSON(ChangeSet{}, GeneratedSQL{}, nil, nil)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"objects": []`)
+	assert.Contains(t, string(out), `"operations": []`)
 }
 
 // Adding an index to an existing table yields the ALTER (manual: false) plus
@@ -103,8 +122,9 @@ func TestRenderDiffJSON_ManualMaterializeIndex(t *testing.T) {
 
 	left := &Schema{Databases: []DatabaseSpec{mkDB("posthog", leftT)}}
 	right := &Schema{Databases: []DatabaseSpec{mkDB("posthog", rightT)}}
-	gen := GenerateSQL(Diff(left, right))
-	out, err := RenderDiffJSON(gen, left, right)
+	cs := Diff(left, right)
+	gen := GenerateSQL(cs)
+	out, err := RenderDiffJSON(cs, gen, left, right)
 	require.NoError(t, err)
 
 	var doc DiffJSON

@@ -36,9 +36,14 @@ type JSONUnsafe struct {
 }
 
 // DiffJSON is the top-level document emitted by `hclexp diff -format json`.
+// Objects is the per-object comparison view; Operations is the flat,
+// dependency-ordered execution view of the same diff. Summary counts derive
+// from Objects.
 type DiffJSON struct {
-	Operations []JSONOperation `json:"operations"`
-	Unsafe     []JSONUnsafe    `json:"unsafe,omitempty"`
+	Objects    []ObjectComparison `json:"objects"`
+	Operations []JSONOperation    `json:"operations"`
+	Unsafe     []JSONUnsafe       `json:"unsafe,omitempty"`
+	Summary    CompareSummary     `json:"summary"`
 }
 
 // RenderDiffJSON builds the structured, dependency-ordered operation list from a
@@ -48,8 +53,13 @@ type DiffJSON struct {
 // current (left) for DROP — because an ALTER that does not change the engine
 // carries no engine information of its own. Unsafe flags come from the existing
 // gen.Unsafe list (no separate diff path), matched by database + object.
-func RenderDiffJSON(gen GeneratedSQL, left, right *Schema) ([]byte, error) {
-	doc := DiffJSON{Operations: buildJSONOperations(gen, left, right)}
+func RenderDiffJSON(cs ChangeSet, gen GeneratedSQL, left, right *Schema) ([]byte, error) {
+	objects := BuildObjectComparisons(cs, gen, left, right)
+	doc := DiffJSON{
+		Objects:    objects,
+		Operations: buildJSONOperations(gen, left, right),
+		Summary:    SummarizeComparisons(objects),
+	}
 	for _, u := range gen.Unsafe {
 		doc.Unsafe = append(doc.Unsafe, JSONUnsafe{Database: u.Database, Object: u.Table, Reason: u.Reason})
 	}
