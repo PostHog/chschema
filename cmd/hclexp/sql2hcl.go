@@ -17,7 +17,7 @@ import (
 // schema; pair it with `hclexp diff` to preview the migration the edit implies.
 func runSQL2HCL(args []string) {
 	fs := flag.NewFlagSet("hclexp sql2hcl", flag.ExitOnError)
-	leftFlag := fs.String("left", "", "HCL schema to modify: a single file, or comma-separated layer directories")
+	leftFlag := fs.String("left", "", "HCL schema to modify: a comma-separated layer stack of directories or .hcl files")
 	inFlag := fs.String("in", "", "SQL file to apply (default: stdin; \"-\" also means stdin)")
 	outFlag := fs.String("out", "", "where to write updated HCL: empty or '-'=stdout, a directory=one <db>.hcl per database, else a single file")
 	dbFlag := fs.String("database", "", "default database for unqualified object names")
@@ -67,18 +67,10 @@ func applySQL2HCL(left, in, out, db string, allowRaw bool) (applied, databases i
 	return applied, len(schema.Databases), nil
 }
 
-// loadLeft loads the left-side schema. A path naming a directory (or a
-// comma-separated list of directories) is loaded as layers; a single path that
-// is a file is parsed directly.
+// loadLeft loads the left-side schema from a comma-separated layer stack whose
+// entries are directories or single .hcl files.
 func loadLeft(path string) (*hclload.Schema, error) {
-	parts := splitList(path)
-	if len(parts) > 1 {
-		return hclload.LoadLayers(parts)
-	}
-	if info, err := os.Stat(path); err == nil && info.IsDir() {
-		return hclload.LoadLayers([]string{path})
-	}
-	return hclload.ParseFile(path)
+	return hclload.LoadLayers(splitList(path))
 }
 
 // readSQL reads the SQL to apply from a file, or from stdin when the path is

@@ -140,8 +140,8 @@ the full reference.
 # Load a single HCL file, resolve it, print a summary
 hclexp -config ./schema/posthog.hcl
 
-# Load a stack of layer directories (applied left to right)
-hclexp -layer ./schema/base,./schema/env_us
+# Load a layer stack (applied left to right); an entry may be a dir or an .hcl file
+hclexp -layer ./schema/base,./schema/env_us,./schema/nodes/ingest.hcl
 
 # Write the resolved schema out as canonical HCL
 hclexp -config ./schema/posthog.hcl -out ./resolved.hcl
@@ -150,7 +150,8 @@ hclexp -config ./schema/posthog.hcl -out ./resolved.hcl
 **Flags:**
 
 - `-config` — path to a single HCL file (default `./cmd/hclexp/node.conf`)
-- `-layer` — comma-separated list of layer directories, loaded in order
+- `-layer` — comma-separated layer stack, loaded in order; each entry is a
+  directory (every `*.hcl` in it) or a single `.hcl` file
   (mutually exclusive with `-config`)
 - `-out` — if set, write the resolved schema as canonical HCL to this path
 
@@ -184,8 +185,8 @@ hclexp diff -left ./schema/posthog.hcl \
 
 **Side specs** (`-left` / `-right`): each is one of
 
-- a single `.hcl` file
-- comma-separated layer directories (loaded + resolved in order)
+- a comma-separated layer stack, loaded + resolved in order; each entry is a
+  directory or a single `.hcl` file (so one `.hcl` path is the common case)
 - `clickhouse://[user[:password]@]host:port/db1[,db2][?secure=true[&skip-verify=true]]`
   — introspected live; missing connection pieces fall back to the
   `CLICKHOUSE_*` defaults. The optional `secure` / `skip-verify` query
@@ -257,9 +258,9 @@ A `Distributed` proxy routinely forwards to a storage table that lives on
 every cluster, so `cluster_name` is the only discriminator. Map each such
 cluster to the layer stack that composes it with the repeatable
 `-cluster NAME=STACK` flag, and the proxy's remote is resolved against that
-cluster's schema. `STACK` is a list of layer directories joined by the OS
-list separator (`:`), so it never clashes with the comma that separates
-`-layer` dirs. Two sentinel forms stand in for a stack:
+cluster's schema. `STACK` is a layer stack (directories or `.hcl` files) joined
+by the OS list separator (`:`), so it never clashes with the comma that
+separates `-layer` entries. Two sentinel forms stand in for a stack:
 
 - `NAME=@absent` — a cluster with no composition in this env; references into
   it are structurally unresolvable and count as satisfied.

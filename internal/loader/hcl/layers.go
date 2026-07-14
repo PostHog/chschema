@@ -7,15 +7,16 @@ import (
 	"sort"
 )
 
-// LoadLayers parses every .hcl file under each layer directory in the given
-// order and merges them into a combined raw spec set. Within a layer, files
-// are processed in lexical filename order. Across layers (and across files),
-// a duplicate table name is an error unless the later declaration sets
-// override = true. patch_table blocks always accumulate.
+// LoadLayers parses the .hcl files each layer path contributes, in the given
+// order, and merges them into a combined raw spec set. A layer path is either
+// a directory (every *.hcl inside it, in lexical filename order) or a single
+// .hcl file. Across layers (and across files), a duplicate table name is an
+// error unless the later declaration sets override = true. patch_table blocks
+// always accumulate.
 //
 // LoadLayers does NOT call Resolve; callers run that explicitly so they can
 // inspect the merged-but-unresolved input first.
-func LoadLayers(layerDirs []string) (*Schema, error) {
+func LoadLayers(layerPaths []string) (*Schema, error) {
 	registry := map[string]*DatabaseSpec{}
 	var ordered []string
 	ncByName := map[string]*NamedCollectionSpec{}
@@ -23,8 +24,8 @@ func LoadLayers(layerDirs []string) (*Schema, error) {
 	nodeByName := map[string]*NodeSpec{}
 	var nodeOrder []string
 
-	for _, dir := range layerDirs {
-		files, err := hclFilesIn(dir)
+	for _, path := range layerPaths {
+		files, err := LayerFiles(path)
 		if err != nil {
 			return nil, err
 		}
@@ -81,17 +82,33 @@ func LoadLayers(layerDirs []string) (*Schema, error) {
 	return out, nil
 }
 
-func hclFilesIn(dir string) ([]string, error) {
-	entries, err := os.ReadDir(dir)
+// LayerFiles returns the .hcl files a layer path contributes, in load order:
+// for a directory, every *.hcl inside it (lexical filename order); for a
+// regular file, the file itself, which must have the .hcl extension so a stack
+// entry pointing at a dump or a .sql script fails loudly rather than being
+// parsed as HCL.
+func LayerFiles(path string) ([]string, error) {
+	info, err := os.Stat(path)
 	if err != nil {
-		return nil, fmt.Errorf("read layer %q: %w", dir, err)
+		return nil, fmt.Errorf("read layer %q: %w", path, err)
+	}
+	if !info.IsDir() {
+		if filepath.Ext(path) != ".hcl" {
+			return nil, fmt.Errorf("layer %q: not an .hcl file", path)
+		}
+		return []string{path}, nil
+	}
+
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		return nil, fmt.Errorf("read layer %q: %w", path, err)
 	}
 	var files []string
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".hcl" {
 			continue
 		}
-		files = append(files, filepath.Join(dir, e.Name()))
+		files = append(files, filepath.Join(path, e.Name()))
 	}
 	sort.Strings(files)
 	return files, nil
