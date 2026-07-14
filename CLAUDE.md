@@ -135,6 +135,19 @@ The `justfile` has the full recipe list.
   explicit `column` list, `cluster`, `comment`
 - ✅ `view` and `dictionary` top-level blocks (parsed, resolved, diffed,
   and emitted as DDL)
+- ✅ A changed `dictionary` reconciles via `CREATE OR REPLACE DICTIONARY` — one
+  atomic statement rewriting the whole object, safe (a dictionary holds no
+  persistent data; it reloads from its source) and never flagged unsafe
+- ✅ Secrets: ClickHouse redacts a credential to `[HIDDEN]` unless the
+  introspecting user has `displaySecretsInShowAndSelect`. The marker is kept
+  **in-band** (dictionary sources and named-collection params alike) so it
+  round-trips through a dump and a comparison can tell "secret I cannot see"
+  from "no secret". It compares as unknown (both sides hidden → equal; hidden
+  vs a real value → reported unverifiable, excluded from the diff; hidden vs
+  absent → a real difference), and `sqlgen` refuses to emit any statement
+  containing it — a whole-object rewrite would otherwise install the dictionary
+  without its credential. Authored `password = "[HIDDEN]"` declares a secret
+  managed outside hclexp. See `docs/README.hcl.md`
 - ✅ Long view/MV `query` as a one-liner, HCL heredoc, or `file("x.sql")`;
   all normalize to a canonical beautified form so formatting never diffs as
   drift (see `docs/README.hcl.md`)

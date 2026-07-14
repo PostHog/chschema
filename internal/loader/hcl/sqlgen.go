@@ -73,7 +73,22 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	var out GeneratedSQL
 	// emit records one statement and its structured Operation in lockstep, so
 	// Ops[i] always describes Statements[i].
+	//
+	// A statement carrying the RedactedValue marker is dropped, not emitted:
+	// hclexp does not know that secret, and writing the literal "[HIDDEN]" to a
+	// cluster would overwrite the real credential with a placeholder. The
+	// dictionary paths already refuse this upstream (redactedSecretBlock), with
+	// a reason that names the field; this is the last line of defence for every
+	// object kind — notably named collections, whose per-param handling still
+	// lets the marker reach an ADD or a one-sided SET (#141).
 	emit := func(kind, objType, db, object, sql string) {
+		if strings.Contains(sql, RedactedValue) {
+			out.Unsafe = append(out.Unsafe, UnsafeChange{
+				Database: db, Table: object,
+				Reason: "statement contains the " + RedactedValue + " redaction placeholder; refusing to write it to a cluster",
+			})
+			return
+		}
 		out.Statements = append(out.Statements, sql)
 		out.Ops = append(out.Ops, Operation{Kind: kind, ObjectType: objType, Database: db, Object: object, SQL: sql})
 	}
@@ -113,7 +128,23 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	// to_table, view→source view, Buffer→destination, dictionary→source table,
 	// etc.). Objects without a dependency relationship keep their historical
 	// relative order.
+	// An added dictionary whose source secret is unknown cannot be created: the
+	// CREATE would silently install it without the credential. orderedCreates
+	// has no channel to record an UnsafeChange, so the guard runs here and the
+	// blocked op is skipped below; dependency ordering is unaffected.
+	blocked := map[ObjectRef]bool{}
+	for _, dc := range cs.Databases {
+		for _, d := range dictionariesByName(dc.AddDictionaries) {
+			if reason := redactedSecretBlock(d); reason != "" {
+				out.Unsafe = append(out.Unsafe, UnsafeChange{Database: dc.Database, Table: d.Name, Reason: reason})
+				blocked[ObjectRef{Database: dc.Database, Name: d.Name}] = true
+			}
+		}
+	}
 	for _, op := range orderedCreates(cs) {
+		if op.ObjectType == KindDictionary && blocked[ObjectRef{Database: op.Database, Name: op.Object}] {
+			continue
+		}
 		emit(op.Kind, op.ObjectType, op.Database, op.Object, op.SQL)
 	}
 	// Raw adds last among creates: a raw object (typically a leaf dictionary
@@ -177,13 +208,23 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 			}
 		}
 	}
+	// A dictionary holds no persistent data — it reloads from its source — so
+	// there is nothing to lose by replacing it, and CREATE OR REPLACE is atomic
+	// (no drop window for concurrent readers). The op kind is OpCreate because
+	// that is the verb of the statement; "altered vs added" lives on
+	// ObjectComparison.Status, not here.
 	for _, dc := range cs.Databases {
 		for _, dd := range dc.AlterDictionaries {
-			out.Unsafe = append(out.Unsafe, UnsafeChange{
-				Database: dc.Database,
-				Table:    dd.Name,
-				Reason:   fmt.Sprintf("dictionary change requires CREATE OR REPLACE DICTIONARY (changed: %s)", strings.Join(dd.Changed, ", ")),
-			})
+			// A skipped-secret-only diff is non-empty (so the object is
+			// reported) but has nothing to reconcile.
+			if len(dd.Changed) == 0 {
+				continue
+			}
+			if reason := redactedSecretBlock(dd.New); reason != "" {
+				out.Unsafe = append(out.Unsafe, UnsafeChange{Database: dc.Database, Table: dd.Name, Reason: reason})
+				continue
+			}
+			emit(OpCreate, KindDictionary, dc.Database, dd.Name, createDictionarySQL(dc.Database, dd.New))
 		}
 	}
 	// Raw recreates: a raw object is opaque, so the only reconciliation is

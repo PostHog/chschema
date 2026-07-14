@@ -74,6 +74,64 @@ func TestCHLive_Dictionary_ApplyRoundTrip(t *testing.T) {
 	assert.Equal(t, "a richly-attributed dictionary", *got.Comment)
 }
 
+// The #140 scenario, end to end against a real server: an existing dictionary
+// whose lifetime changed is reconciled by the generated DDL alone. Before the
+// fix, GenerateSQL emitted nothing here (just an UNSAFE line) and applying the
+// migration left the dictionary untouched.
+func TestCHLive_Dictionary_AlterAppliesCreateOrReplace(t *testing.T) {
+	if !*clickhouseLive {
+		t.Skip("pass -clickhouse to run against a live ClickHouse")
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	ctx := context.Background()
+
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
+		"CREATE TABLE %s.src (`k` UInt64, `v` String) ENGINE = MergeTree ORDER BY k", dbName)))
+
+	q := fmt.Sprintf("SELECT k, v FROM %s.src", dbName)
+	live := DictionarySpec{
+		Name:       "rates",
+		PrimaryKey: []string{"k"},
+		Attributes: []DictionaryAttribute{{Name: "k", Type: "UInt64"}, {Name: "v", Type: "String"}},
+		Source:     &DictionarySourceSpec{Kind: "clickhouse", Decoded: SourceClickHouse{Query: &q, User: ptr("default")}},
+		Layout:     &DictionaryLayoutSpec{Kind: "hashed", Decoded: LayoutHashed{}},
+		Lifetime:   &DictionaryLifetime{Min: ptr(int64(3000)), Max: ptr(int64(3600))},
+	}
+	require.NoError(t, conn.Exec(ctx, createDictionarySQL(dbName, live)))
+
+	desired := live
+	desired.Lifetime = &DictionaryLifetime{Min: ptr(int64(60)), Max: ptr(int64(600))}
+
+	before, err := Introspect(ctx, conn, dbName, false)
+	require.NoError(t, err)
+
+	// The desired schema is the live one with only the dictionary's lifetime
+	// changed, so the diff is exactly that one change.
+	wanted := func(live DatabaseSpec) *Schema {
+		db := live
+		db.Dictionaries = []DictionarySpec{desired}
+		return &Schema{Databases: []DatabaseSpec{db}}
+	}
+
+	gen := GenerateSQL(Diff(&Schema{Databases: []DatabaseSpec{*before}}, wanted(*before)))
+	require.Len(t, gen.Statements, 1, "the lifetime change must produce DDL")
+	assert.Contains(t, gen.Statements[0], "CREATE OR REPLACE DICTIONARY")
+	assert.Empty(t, gen.Unsafe)
+
+	require.NoError(t, conn.Exec(ctx, gen.Statements[0]), "generated DDL rejected:\n%s", gen.Statements[0])
+
+	after, err := Introspect(ctx, conn, dbName, false)
+	require.NoError(t, err)
+	got := findDictByName(after.Dictionaries, "rates")
+	require.NotNil(t, got)
+	assert.Equal(t, desired.Lifetime, got.Lifetime, "the cluster took the change")
+
+	// The migration converged: re-diffing the same desired state is a no-op.
+	assert.True(t, Diff(&Schema{Databases: []DatabaseSpec{*after}}, wanted(*after)).IsEmpty(),
+		"a second run must find nothing to do")
+}
+
 // TestCHLive_Dictionary_LayoutMatrix iterates the 10 supported layout kinds.
 // Each is created, introspected, and the round-tripped layout kind +
 // concrete decoded value is asserted.

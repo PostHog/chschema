@@ -624,7 +624,7 @@ func TestSQLGen_CreateOrReplaceDictionary(t *testing.T) {
 				Decoded: SourceClickHouse{
 					Query:    ptr("SELECT ... FROM default.exchange_rate"),
 					User:     ptr("default"),
-					Password: ptr("[HIDDEN]"),
+					Password: ptr("s3cret"),
 				},
 			},
 			Layout: &DictionaryLayoutSpec{
@@ -641,7 +641,7 @@ func TestSQLGen_CreateOrReplaceDictionary(t *testing.T) {
 	want := "CREATE OR REPLACE DICTIONARY default.exchange_rate_dict (" +
 		"`currency` String, `start_date` Date, `end_date` Nullable(Date), `rate` Decimal64(10)" +
 		") PRIMARY KEY currency " +
-		"SOURCE(CLICKHOUSE(USER 'default' PASSWORD '[HIDDEN]' QUERY 'SELECT ... FROM default.exchange_rate')) " +
+		"SOURCE(CLICKHOUSE(USER 'default' PASSWORD 's3cret' QUERY 'SELECT ... FROM default.exchange_rate')) " +
 		"LAYOUT(COMPLEX_KEY_RANGE_HASHED(RANGE_LOOKUP_STRATEGY 'max')) " +
 		"LIFETIME(MIN 3000 MAX 3600) " +
 		"RANGE(MIN start_date MAX end_date)"
@@ -667,17 +667,105 @@ func TestSQLGen_CreateOrReplaceDictionary_Simple(t *testing.T) {
 		out.Statements[0])
 }
 
-func TestSQLGen_AlterDictionary_EmitsUnsafe(t *testing.T) {
+// dictSpec is a minimal valid dictionary, for the alter/guard tests below.
+func dictSpec(name string, src DictionarySource) DictionarySpec {
+	return DictionarySpec{
+		Name:       name,
+		PrimaryKey: []string{"k"},
+		Attributes: []DictionaryAttribute{{Name: "k", Type: "UInt64"}, {Name: "v", Type: "String"}},
+		Source:     &DictionarySourceSpec{Kind: src.Kind(), Decoded: src},
+		Layout:     &DictionaryLayoutSpec{Kind: "hashed", Decoded: LayoutHashed{}},
+		Lifetime:   &DictionaryLifetime{Min: ptr(int64(60)), Max: ptr(int64(600))},
+	}
+}
+
+// A changed dictionary is reconciled by rewriting it whole. Before #140 this
+// emitted NO DDL and an UNSAFE line — the migration silently left the
+// dictionary as it was, contradicting DictionaryDiff.IsUnsafe() == false.
+func TestSQLGen_AlterDictionary_EmitsCreateOrReplace(t *testing.T) {
 	cs := ChangeSet{Databases: []DatabaseChange{{
-		Database:          "db",
-		AlterDictionaries: []DictionaryDiff{{Name: "d", Changed: []string{"query"}}},
+		Database: "db",
+		AlterDictionaries: []DictionaryDiff{{
+			Name:    "d",
+			Changed: []string{"lifetime"},
+			New:     dictSpec("d", SourceNull{}),
+		}},
+	}}}
+	out := GenerateSQL(cs)
+	require.Len(t, out.Statements, 1)
+	assert.Equal(t,
+		"CREATE OR REPLACE DICTIONARY db.d (`k` UInt64, `v` String) PRIMARY KEY k "+
+			"SOURCE(NULL()) LAYOUT(HASHED()) LIFETIME(MIN 60 MAX 600)",
+		out.Statements[0])
+	assert.Empty(t, out.Unsafe, "recreating a dictionary loses no data — it reloads from its source")
+
+	require.Len(t, out.Ops, 1)
+	assert.Equal(t, OpCreate, out.Ops[0].Kind, "the op kind is the verb of the statement")
+	assert.Equal(t, KindDictionary, out.Ops[0].ObjectType)
+}
+
+// The target spec is what gets written, so an unknown secret on the target
+// means the rewrite would install the dictionary without its credential.
+func TestSQLGen_AlterDictionary_RedactedTargetIsBlocked(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "db",
+		AlterDictionaries: []DictionaryDiff{{
+			Name:    "d",
+			Changed: []string{"lifetime"},
+			New:     dictSpec("d", SourceMySQL{Host: ptr("h"), Password: ptr(RedactedValue)}),
+		}},
 	}}}
 	out := GenerateSQL(cs)
 	assert.Empty(t, out.Statements)
 	require.Len(t, out.Unsafe, 1)
 	assert.Equal(t, "db", out.Unsafe[0].Database)
 	assert.Equal(t, "d", out.Unsafe[0].Table)
-	assert.Contains(t, out.Unsafe[0].Reason, "CREATE OR REPLACE")
+	assert.Contains(t, out.Unsafe[0].Reason, `dictionary source secret "password" is unknown to hclexp`)
+}
+
+func TestSQLGen_AddDictionary_RedactedSecretIsBlocked(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database:        "db",
+		AddDictionaries: []DictionarySpec{dictSpec("d", SourceHTTP{URL: "u", Format: "CSV", CredentialsPassword: ptr(RedactedValue)})},
+	}}}
+	out := GenerateSQL(cs)
+	assert.Empty(t, out.Statements, "a CREATE would install the dictionary with no credential at all")
+	require.Len(t, out.Unsafe, 1)
+	assert.Contains(t, out.Unsafe[0].Reason, `dictionary source secret "credentials_password" is unknown to hclexp`)
+}
+
+// A dictionary whose ONLY difference is an unverifiable secret is reported
+// (see BuildObjectComparisons) but has nothing to reconcile.
+func TestSQLGen_AlterDictionary_SkippedSecretOnly_EmitsNothing(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "db",
+		AlterDictionaries: []DictionaryDiff{{
+			Name:                   "d",
+			SkippedRedactedSecrets: []string{"password"},
+			New:                    dictSpec("d", SourceMySQL{Host: ptr("h"), Password: ptr("real")}),
+		}},
+	}}}
+	out := GenerateSQL(cs)
+	assert.Empty(t, out.Statements)
+	assert.Empty(t, out.Unsafe)
+}
+
+// Backstop: whatever path builds a statement, the redaction marker never
+// leaves hclexp. Named collections still let it through their per-param diff
+// (an added NC with redacted params, #141) — emit() is what stops it.
+func TestSQLGen_EmitRefusesStatementCarryingRedactionMarker(t *testing.T) {
+	cs := ChangeSet{NamedCollections: []NamedCollectionChange{{
+		Name: "nc",
+		Add: &NamedCollectionSpec{
+			Name:   "nc",
+			Params: []NamedCollectionParam{{Key: "password", Value: RedactedValue}},
+		},
+	}}}
+	out := GenerateSQL(cs)
+	assert.Empty(t, out.Statements, "writing the literal [HIDDEN] would clobber the real secret")
+	require.Len(t, out.Unsafe, 1)
+	assert.Equal(t, "nc", out.Unsafe[0].Table)
+	assert.Contains(t, out.Unsafe[0].Reason, "refusing to write it to a cluster")
 }
 
 func TestSQLGen_DropDictionary(t *testing.T) {

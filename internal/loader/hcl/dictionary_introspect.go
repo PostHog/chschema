@@ -258,18 +258,20 @@ func buildDictionarySourceFromAST(dictName string, s *chparser.DictionarySourceC
 	kind := strings.ToLower(s.Source.Name)
 	args := dictArgsMap(s.Args)
 
-	// optSecret captures a credential, but drops a value ClickHouse redacted to
-	// "[HIDDEN]" (returning nil) so it is never re-emitted and applied back —
-	// which would overwrite the real secret. See issue #52. To capture real
-	// values, grant displaySecretsInShowAndSelect and set
-	// display_secrets_in_show_and_select = 1.
+	// optSecret captures a credential. A value ClickHouse redacted to "[HIDDEN]"
+	// is kept as that literal marker — the same convention named collections
+	// use — so it survives introspect → dump → load → diff and every comparison
+	// can tell "this secret is unknown" from "this dictionary has no secret".
+	// The real secret is still never overwritten (#52): a spec carrying the
+	// marker is blocked at emission (redactedSecretBlock), and emit() refuses
+	// any statement containing it. To capture real values, grant
+	// displaySecretsInShowAndSelect and set display_secrets_in_show_and_select = 1.
 	optSecret := func(field string) *string {
 		v := takeArg(args, field)
 		if v == RedactedValue {
-			slog.Warn("dictionary source secret is redacted; dropping it to avoid overwriting the real value on apply",
+			slog.Warn("dictionary source secret is redacted; hclexp cannot generate DDL for this dictionary",
 				"dictionary", dictName, "source", kind, "field", field,
 				"hint", "grant displaySecretsInShowAndSelect AND set display_secrets_in_show_and_select=1")
-			return nil
 		}
 		return optStr(v)
 	}

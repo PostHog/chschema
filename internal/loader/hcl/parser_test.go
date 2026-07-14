@@ -142,7 +142,7 @@ func TestParseFile_Dictionary(t *testing.T) {
 						Decoded: SourceClickHouse{
 							Query:    ptr("SELECT currency, start_date, end_date, rate FROM default.exchange_rate"),
 							User:     ptr("default"),
-							Password: ptr("[HIDDEN]"),
+							Password: ptr("s3cret"),
 						},
 					},
 					Layout: &DictionaryLayoutSpec{

@@ -22,7 +22,7 @@ database "posthog" {
     source "clickhouse" {
       query    = "SELECT currency, start_date, end_date, rate FROM default.exchange_rate"
       user     = "default"
-      password = "[HIDDEN]"
+      password = "s3cret"
     }
     layout "complex_key_range_hashed" {
       range_lookup_strategy = "max"

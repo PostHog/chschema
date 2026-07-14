@@ -2,14 +2,23 @@ package hcl
 
 import "sort"
 
-// RedactedValue is the literal string ClickHouse returns from
-// system.named_collections for secret values when the connecting user
-// lacks displaySecretsInShowAndSelect / the server lacks
+// RedactedValue is the literal string ClickHouse substitutes for a secret when
+// the connecting user lacks displaySecretsInShowAndSelect / the server lacks
 // display_secrets_in_show_and_select / a query omits
-// format_display_secrets_in_show_and_select. The diff layer treats this
-// value as "unknown, don't generate a change" rather than as a literal
-// target — overwriting a real cluster value with the string "[HIDDEN]"
-// would be actively destructive.
+// format_display_secrets_in_show_and_select. It shows up in
+// system.named_collections values and in a dictionary's create_table_query
+// SOURCE(...) credentials.
+//
+// It is kept in-band: introspection stores the marker as the value, so it
+// round-trips through an HCL dump and every comparison — live, dump file, or
+// drift — can tell "this secret is unknown to hclexp" apart from "this object
+// has no secret". The diff layer treats it as unknown ("don't generate a
+// change") rather than as a literal target, and sqlgen refuses to emit any
+// statement containing it: writing the string "[HIDDEN]" over a real cluster
+// credential would be actively destructive.
+//
+// Authored HCL may also use it deliberately — `password = "[HIDDEN]"` declares
+// a secret that is managed outside hclexp.
 const RedactedValue = "[HIDDEN]"
 
 // NamedCollectionChange describes a planned change to a named collection.

@@ -660,6 +660,7 @@ so its DROP+CREATE is the destructive one.
 | `param:<name>`, `on_cluster` | named collection |
 | `sql` | raw block |
 | a dotted config path (`layout`, `source.clickhouse.table`, …) | dictionary |
+| `source.<secret>` (`source.password`, `source.credentials_password`) | dictionary — a credential hclexp could not verify |
 
 How values render: a column as a compact descriptor (`Nullable(String) MATERIALIZED
 upper(s) CODEC(LZ4)`), an engine as its SQL clause, `order_by`/`primary_key`
@@ -669,7 +670,56 @@ none: a dictionary reconciles via `CREATE OR REPLACE`, so it emits one `modify`
 per changed config path; and a named-collection `param:` set is always `modify`
 with `new` only (`ALTER … SET` overwrites, even for a param that is new). A param
 whose value is redacted on either side reports `[HIDDEN]` on both — hclexp could
-not verify equality (grant `displaySecretsInShowAndSelect` to compare).
+not verify equality (grant `displaySecretsInShowAndSelect` to compare); a
+dictionary's `source.<secret>` reports the same way, for the same reason.
+
+### Secrets and the `[HIDDEN]` marker
+
+ClickHouse replaces a secret with the literal `[HIDDEN]` when the introspecting
+user lacks `displaySecretsInShowAndSelect` (or the server/query does not enable
+`display_secrets_in_show_and_select`). This affects named-collection param
+values and a dictionary's `SOURCE(...)` credentials.
+
+hclexp keeps that marker rather than dropping it, so it round-trips through an
+HCL dump: a dump with `password = "[HIDDEN]"` says *"this dictionary has a
+secret I cannot see"*, which a dump with no `password` at all cannot. Three
+rules follow.
+
+**It is never written back.** No generated statement may contain `[HIDDEN]` —
+writing the literal would overwrite the real credential with a placeholder. A
+dictionary is reconciled by rewriting it whole (`CREATE OR REPLACE DICTIONARY`,
+which is how *every* dictionary change is applied), and that rewrite includes
+the source credential; so if the target spec's secret is the marker, hclexp
+emits no DDL and reports the object as unsafe with the reason.
+
+**It compares as unknown, not as a value.** Both sides `[HIDDEN]` → equal
+(the normal `drift` case, where every node was dumped by the same user; two
+genuinely different hidden secrets do read as equal — no observer without the
+grant can do better). One side `[HIDDEN]` and the other a real value → the
+field is reported as unverifiable and excluded from the comparison, so an
+authored secret is not mistaken for a change on every run. `[HIDDEN]` versus
+*absent* is a real difference: present-vs-absent is visible even when the value
+is not.
+
+**You may write it deliberately.** `password = "[HIDDEN]"` in authored HCL
+declares a secret managed outside hclexp. It compares clean against a redacting
+cluster; the cost is that any *other* change to that dictionary is blocked (a
+whole-object rewrite cannot preserve a secret it does not know), so those are
+applied by hand.
+
+If a dictionary reports `source.password` on every run, pick one:
+
+1. Grant `displaySecretsInShowAndSelect` and set
+   `display_secrets_in_show_and_select=1` for the introspecting user — the
+   secret becomes visible, comparisons are exact, and rotating a credential
+   through hclexp works. Note that dumps then contain real secrets in
+   plaintext; treat the artifacts accordingly.
+2. Declare it unmanaged: `password = "[HIDDEN]"` (above).
+3. `-exclude` the dictionary entirely — the bluntest option.
+
+A passworded dictionary whose authored HCL simply *omits* the password is a
+genuine difference, and the generated `CREATE OR REPLACE` will **remove** the
+live password. Say what you mean: the real value, or the marker.
 
 ### `drift -format json`
 
