@@ -1,4 +1,7 @@
-# Example exclude config for `hclexp introspect -exclude` / `dump-cluster -exclude`.
+# Example exclude config for `hclexp introspect` / `dump-cluster` / `diff` /
+# `plan` / `drift`, all of which take `-exclude <this file>`. The comparison
+# commands filter BOTH sides before diffing, so an excluded object appears in no
+# output and no count.
 #
 # Objects whose name matches any glob (filepath.Match syntax: * ? [..]) are
 # skipped before their DDL is parsed, so transient tables/dictionaries neither
@@ -37,4 +40,10 @@ exclude {
     # "*_old",
     # "*_new",
   ]
+
+  # object_types drops a whole object class regardless of name — e.g. for a gate
+  # that manages named collections out of band:
+  #   object_types = ["named_collection"]
+  #
+  # Valid: table, materialized_view, view, dictionary, raw, named_collection.
 }

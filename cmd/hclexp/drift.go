@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -47,6 +49,8 @@ func runDrift(args []string) {
 	groupByFlag := fs.String("group-by", "hostClusterRole", "comma-separated keys to group nodes by: macro names, or the pseudo-keys role/shard/replica")
 	zkFlag := fs.String("zk-paths", "mask-uuid", "treat ReplicatedMergeTree zoo_path before diffing: keep | mask-uuid | ignore")
 	details := fs.Bool("details", false, "print the full change set of each drifting node against its group reference")
+	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects matching its patterns/object_types are dropped from every node before comparing")
+	formatFlag := fs.String("format", "text", "output format: text (default) or json")
 	_ = fs.Parse(args)
 
 	if *dirFlag == "" {
@@ -59,6 +63,12 @@ func runDrift(args []string) {
 		fmt.Fprintf(os.Stderr, "drift: invalid -zk-paths %q (want keep|mask-uuid|ignore)\n", *zkFlag)
 		os.Exit(2)
 	}
+	switch *formatFlag {
+	case "text", "json":
+	default:
+		fmt.Fprintf(os.Stderr, "drift: invalid -format %q (want text|json)\n", *formatFlag)
+		os.Exit(2)
+	}
 
 	nodes, err := loadDriftNodes(*dirFlag, *globFlag)
 	if err != nil {
@@ -68,60 +78,94 @@ func runDrift(args []string) {
 	for i := range nodes {
 		normalizeZKPaths(nodes[i].Schema, *zkFlag)
 	}
+	if m := loadExcludeFlag(*excludeFlag); m != nil {
+		for i := range nodes {
+			hclload.FilterSchema(nodes[i].Schema, m)
+		}
+	}
 	if len(nodes) == 0 {
 		fmt.Fprintf(os.Stderr, "drift: no .hcl files in %s match %q\n", *dirFlag, *globFlag)
 		os.Exit(1)
 	}
 
 	keys := splitList(*groupByFlag)
-	groups, order := groupNodes(nodes, keys)
+	doc := buildDriftDoc(nodes, keys)
 
-	totalDrift := 0
-	groupsWithDrift := 0
+	if *formatFlag == "json" {
+		out, err := json.MarshalIndent(doc, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "drift: render JSON: %v\n", err)
+			os.Exit(1)
+		}
+		fmt.Println(string(out))
+	} else {
+		renderDriftText(os.Stdout, doc, *details)
+	}
+	if doc.Summary.DriftingNodes > 0 {
+		os.Exit(1)
+	}
+}
+
+// buildDriftDoc groups nodes and diffs each group against its
+// lexically-first reference, returning the full drift document. Groups with
+// a single node get no drifters (nothing to compare against). Groups and
+// Drifters are non-nil so JSON emits [] (not null) — same contract as
+// DiffJSON.Objects.
+func buildDriftDoc(nodes []driftNode, keys []string) hclload.DriftJSON {
+	groups, order := groupNodes(nodes, keys)
+	doc := hclload.DriftJSON{
+		Groups:  []hclload.DriftGroup{},
+		Summary: hclload.DriftRunSummary{Nodes: len(nodes), Groups: len(order)},
+	}
 	for _, key := range order {
 		members := groups[key]
 		sort.Slice(members, func(i, j int) bool { return members[i].Name < members[j].Name })
-
-		if len(members) < 2 {
-			fmt.Printf("group %q — 1 node (no peers to compare): %s\n", key, members[0].Name)
-			continue
-		}
-
 		ref := members[0]
-		var drifters []driftNode
-		summaries := map[string]string{}
-		changeSets := map[string]hclload.ChangeSet{}
+		g := hclload.DriftGroup{Key: key, Reference: ref.Name, Nodes: len(members),
+			Drifters: []hclload.DriftNode{}}
 		for _, m := range members[1:] {
 			cs := hclload.Diff(ref.Schema, m.Schema)
 			if cs.IsEmpty() {
 				continue
 			}
-			drifters = append(drifters, m)
-			summaries[m.Name] = summarizeChanges(cs)
-			changeSets[m.Name] = cs
+			gen := hclload.GenerateSQL(cs)
+			objs := hclload.BuildObjectComparisons(cs, gen, ref.Schema, m.Schema)
+			g.Drifters = append(g.Drifters, hclload.DriftNode{
+				Node: m.Name, File: m.File, Macros: m.Macros,
+				Objects: objs, Summary: hclload.SummarizeComparisons(objs),
+			})
 		}
+		if len(g.Drifters) > 0 {
+			doc.Summary.GroupsWithDrift++
+			doc.Summary.DriftingNodes += len(g.Drifters)
+		}
+		doc.Groups = append(doc.Groups, g)
+	}
+	return doc
+}
 
-		fmt.Printf("group %q — %d nodes, reference %s", key, len(members), ref.Name)
-		if len(drifters) == 0 {
-			fmt.Printf(" — OK (all identical)\n")
+// renderDriftText prints the classic prose report from the drift document.
+func renderDriftText(w io.Writer, doc hclload.DriftJSON, details bool) {
+	for _, g := range doc.Groups {
+		if g.Nodes < 2 {
+			fmt.Fprintf(w, "group %q — 1 node (no peers to compare): %s\n", g.Key, g.Reference)
 			continue
 		}
-		groupsWithDrift++
-		fmt.Printf(" — %d drifting\n", len(drifters))
-		for _, d := range drifters {
-			totalDrift++
-			fmt.Printf("  ✗ %s: %s\n", d.Name, summaries[d.Name])
-			if *details {
-				renderChangeSet(prefixWriter(os.Stdout, "      "), changeSets[d.Name])
+		fmt.Fprintf(w, "group %q — %d nodes, reference %s", g.Key, g.Nodes, g.Reference)
+		if len(g.Drifters) == 0 {
+			fmt.Fprintf(w, " — OK (all identical)\n")
+			continue
+		}
+		fmt.Fprintf(w, " — %d drifting\n", len(g.Drifters))
+		for _, d := range g.Drifters {
+			fmt.Fprintf(w, "  ✗ %s: %s\n", d.Node, d.Summary.OneLiner())
+			if details {
+				hclload.RenderObjectComparisons(prefixWriter(w, "      "), d.Objects)
 			}
 		}
 	}
-
-	fmt.Printf("\nsummary: %d nodes, %d groups, %d groups with drift, %d drifting nodes\n",
-		len(nodes), len(order), groupsWithDrift, totalDrift)
-	if totalDrift > 0 {
-		os.Exit(1)
-	}
+	fmt.Fprintf(w, "\nsummary: %d nodes, %d groups, %d groups with drift, %d drifting nodes\n",
+		doc.Summary.Nodes, doc.Summary.Groups, doc.Summary.GroupsWithDrift, doc.Summary.DriftingNodes)
 }
 
 // loadDriftNodes parses and resolves every .hcl file in dir whose base name
@@ -291,52 +335,13 @@ func groupKey(n driftNode, keys []string) string {
 	return strings.Join(parts, "/")
 }
 
-// summarizeChanges renders a one-line count of a ChangeSet.
-func summarizeChanges(cs hclload.ChangeSet) string {
-	var addT, dropT, altT, addMV, dropMV, altMV, addD, dropD, altD, addV, dropV, altV int
-	for _, dc := range cs.Databases {
-		addT += len(dc.AddTables)
-		dropT += len(dc.DropTables)
-		altT += len(dc.AlterTables)
-		addMV += len(dc.AddMaterializedViews)
-		dropMV += len(dc.DropMaterializedViews)
-		altMV += len(dc.AlterMaterializedViews)
-		addD += len(dc.AddDictionaries)
-		dropD += len(dc.DropDictionaries)
-		altD += len(dc.AlterDictionaries)
-		addV += len(dc.AddViews)
-		dropV += len(dc.DropViews)
-		altV += len(dc.AlterViews)
-	}
-	var parts []string
-	add := func(label string, plus, minus, alt int) {
-		if plus > 0 {
-			parts = append(parts, fmt.Sprintf("+%d %s", plus, label))
-		}
-		if minus > 0 {
-			parts = append(parts, fmt.Sprintf("-%d %s", minus, label))
-		}
-		if alt > 0 {
-			parts = append(parts, fmt.Sprintf("~%d %s", alt, label))
-		}
-	}
-	add("table", addT, dropT, altT)
-	add("mv", addMV, dropMV, altMV)
-	add("dict", addD, dropD, altD)
-	add("view", addV, dropV, altV)
-	if len(parts) == 0 {
-		return "changed"
-	}
-	return strings.Join(parts, ", ")
-}
-
 // prefixWriter returns an io.Writer that prepends prefix to every line.
-func prefixWriter(w *os.File, prefix string) *linePrefixer {
+func prefixWriter(w io.Writer, prefix string) *linePrefixer {
 	return &linePrefixer{w: w, prefix: prefix, atLineStart: true}
 }
 
 type linePrefixer struct {
-	w           *os.File
+	w           io.Writer
 	prefix      string
 	atLineStart bool
 }
@@ -344,7 +349,7 @@ type linePrefixer struct {
 func (lp *linePrefixer) Write(p []byte) (int, error) {
 	for _, b := range p {
 		if lp.atLineStart {
-			if _, err := lp.w.WriteString(lp.prefix); err != nil {
+			if _, err := io.WriteString(lp.w, lp.prefix); err != nil {
 				return 0, err
 			}
 			lp.atLineStart = false

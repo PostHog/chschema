@@ -74,6 +74,7 @@ func runPlan(args []string) {
 	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under (e.g. a committed snapshot)")
 	dumpFlag := fs.String("dump", "", "directory of per-node current-state HCL dumps; nodes are matched to roles by their hostClusterRole macro")
 	formatFlag := fs.String("format", "json", "output format: json (default) or text")
+	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects matching its patterns/object_types are dropped from both sides before diffing")
 	_ = fs.Parse(args)
 
 	if *manifestFlag == "" || *dumpFlag == "" || *envFlag == "" {
@@ -97,6 +98,8 @@ func runPlan(args []string) {
 		os.Exit(1)
 	}
 
+	matcher := loadExcludeFlag(*excludeFlag)
+
 	roleDiffs := make([]hclload.RoleDiff, 0, len(manifest))
 	for _, mr := range manifest {
 		stack := make([]string, len(mr.Layers))
@@ -112,6 +115,8 @@ func runPlan(args []string) {
 		if cur == nil {
 			cur = &hclload.Schema{} // role absent from the dump: everything is a CREATE
 		}
+		hclload.FilterSchema(desired, matcher)
+		hclload.FilterSchema(cur, matcher)
 		roleDiffs = append(roleDiffs, hclload.RoleDiff{Role: mr.Role, Desired: desired, Current: cur})
 	}
 

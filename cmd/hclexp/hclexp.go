@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -96,6 +95,7 @@ Commands:
                single globally-ordered, cross-role operation list
   validate     check that MV and Distributed dependency references resolve
   drift        detect cross-node schema drift across per-node HCL dumps
+               (-format json for structured output)
   sql2hcl      apply SQL DDL edits (CREATE/ALTER/DROP/RENAME) to an HCL schema
   load         parse and resolve an HCL config, layer stack, or manifest role
                (default when flags are given)
@@ -824,6 +824,7 @@ func runDiff(args []string) {
 	rightFlag := fs.String("right", "", "right side: same forms as -left")
 	asSQL := fs.Bool("sql", false, "emit migration DDL (left -> right) instead of a change summary")
 	formatFlag := fs.String("format", "text", "output format: text (default) or json (structured, dependency-ordered operations)")
+	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects matching its patterns/object_types are dropped from both sides before diffing")
 	_ = fs.Parse(args)
 
 	if *leftFlag == "" || *rightFlag == "" {
@@ -845,12 +846,16 @@ func runDiff(args []string) {
 		slog.Error("failed to load right side", "spec", *rightFlag, "err", err)
 		os.Exit(1)
 	}
+	if m := loadExcludeFlag(*excludeFlag); m != nil {
+		hclload.FilterSchema(left, m)
+		hclload.FilterSchema(right, m)
+	}
 
 	cs := hclload.Diff(left, right)
+	gen := hclload.GenerateSQL(cs)
 
 	if *formatFlag == "json" {
-		gen := hclload.GenerateSQL(cs)
-		out, err := hclload.RenderDiffJSON(gen, left, right)
+		out, err := hclload.RenderDiffJSON(cs, gen, left, right)
 		if err != nil {
 			slog.Error("failed to render JSON diff", "err", err)
 			os.Exit(1)
@@ -860,7 +865,6 @@ func runDiff(args []string) {
 	}
 
 	if *asSQL {
-		gen := hclload.GenerateSQL(cs)
 		for _, u := range gen.Unsafe {
 			fmt.Printf("-- UNSAFE: %s.%s: %s\n", u.Database, u.Table, u.Reason)
 		}
@@ -881,7 +885,22 @@ func runDiff(args []string) {
 		fmt.Println("no differences")
 		return
 	}
-	renderChangeSet(os.Stdout, cs)
+	hclload.RenderObjectComparisons(os.Stdout,
+		hclload.BuildObjectComparisons(cs, gen, left, right))
+}
+
+// loadExcludeFlag loads an -exclude config, exiting on error. An empty path
+// yields nil (no filtering).
+func loadExcludeFlag(path string) *hclload.ExcludeMatcher {
+	if path == "" {
+		return nil
+	}
+	m, err := hclload.LoadExcludeConfig(path)
+	if err != nil {
+		slog.Error("failed to load exclude config", "file", path, "err", err)
+		os.Exit(1)
+	}
+	return m
 }
 
 // loadSide loads one diff operand. A spec starting with clickhouse:// is
@@ -1000,186 +1019,6 @@ func parseBoolQuery(v string) bool {
 	}
 }
 
-// renderChangeSet prints a ChangeSet as an indented, +/-/~ marked summary.
-func renderChangeSet(w io.Writer, cs hclload.ChangeSet) {
-	for _, dc := range cs.Databases {
-		fmt.Fprintf(w, "database %q\n", dc.Database)
-		for _, t := range dc.AddTables {
-			fmt.Fprintf(w, "  + table %s\n", t.Name)
-		}
-		for _, t := range dc.DropTables {
-			fmt.Fprintf(w, "  - table %s\n", t.Name)
-		}
-		for _, td := range dc.AlterTables {
-			fmt.Fprintf(w, "  ~ table %s\n", td.Table)
-			renderTableDiff(w, td)
-		}
-		for _, mv := range dc.AddMaterializedViews {
-			fmt.Fprintf(w, "  + materialized_view %s -> %s\n", mv.Name, mv.ToTable)
-		}
-		for _, name := range dc.DropMaterializedViews {
-			fmt.Fprintf(w, "  - materialized_view %s\n", name)
-		}
-		for _, mvd := range dc.AlterMaterializedViews {
-			fmt.Fprintf(w, "  ~ materialized_view %s\n", mvd.Name)
-			if mvd.Recreate {
-				fmt.Fprintf(w, "      ! requires recreation (to_table or columns changed)\n")
-			}
-			if mvd.QueryChange != nil {
-				fmt.Fprintf(w, "      ~ query changed\n")
-			}
-		}
-		for _, v := range dc.AddViews {
-			fmt.Fprintf(w, "  + view %s\n", v.Name)
-		}
-		for _, name := range dc.DropViews {
-			fmt.Fprintf(w, "  - view %s\n", name)
-		}
-		for _, vd := range dc.AlterViews {
-			fmt.Fprintf(w, "  ~ view %s\n", vd.Name)
-			if vd.Recreate {
-				fmt.Fprintf(w, "      ! requires recreation (column_aliases / sql_security / definer / cluster changed)\n")
-			}
-			if vd.QueryChange != nil {
-				fmt.Fprintf(w, "      ~ query changed\n")
-			}
-			if vd.Comment != nil {
-				fmt.Fprintf(w, "      ~ comment changed\n")
-			}
-		}
-		for _, d := range dc.AddDictionaries {
-			fmt.Fprintf(w, "  + dictionary %s\n", d.Name)
-		}
-		for _, name := range dc.DropDictionaries {
-			fmt.Fprintf(w, "  - dictionary %s\n", name)
-		}
-		for _, dd := range dc.AlterDictionaries {
-			fmt.Fprintf(w, "  ~ dictionary %s (changed: %s)\n", dd.Name, strings.Join(dd.Changed, ", "))
-		}
-		for _, r := range dc.AddRaws {
-			fmt.Fprintf(w, "  + raw %s %s\n", r.Kind, r.Name)
-		}
-		for _, r := range dc.DropRaws {
-			fmt.Fprintf(w, "  - raw %s %s\n", r.Kind, r.Name)
-		}
-		for _, rc := range dc.AlterRaws {
-			if rc.IsUnsafe() {
-				fmt.Fprintf(w, "  ~ raw %s %s (recreate) ! UNSAFE: destroys data\n", rc.Kind, rc.Name)
-			} else {
-				fmt.Fprintf(w, "  ~ raw %s %s (recreate)\n", rc.Kind, rc.Name)
-			}
-		}
-	}
-
-	if len(cs.NamedCollections) > 0 {
-		fmt.Fprintln(w, "named_collections")
-		for _, ncc := range cs.NamedCollections {
-			switch {
-			case ncc.Error != "":
-				fmt.Fprintf(w, "  ! named_collection %s: %s\n", ncc.Name, ncc.Error)
-			case ncc.Recreate:
-				fmt.Fprintf(w, "  ~ named_collection %s (recreate: ON CLUSTER changed)\n", ncc.Name)
-			case ncc.Add != nil:
-				fmt.Fprintf(w, "  + named_collection %s\n", ncc.Name)
-			case ncc.Drop:
-				fmt.Fprintf(w, "  - named_collection %s\n", ncc.Name)
-			default:
-				fmt.Fprintf(w, "  ~ named_collection %s\n", ncc.Name)
-				for _, p := range ncc.SetParams {
-					fmt.Fprintf(w, "      ~ param %s (set)\n", p.Key)
-				}
-				for _, k := range ncc.DeleteParams {
-					fmt.Fprintf(w, "      - param %s\n", k)
-				}
-				for _, k := range ncc.SkippedRedactedParams {
-					fmt.Fprintf(w, "      ? param %s (skipped: value is '[HIDDEN]' on at least one side; grant displaySecretsInShowAndSelect to compare)\n", k)
-				}
-				if ncc.CommentChange != nil {
-					fmt.Fprintln(w, "      ~ comment changed")
-				}
-			}
-		}
-	}
-}
-
-func renderTableDiff(w io.Writer, td hclload.TableDiff) {
-	for _, r := range td.RenameColumns {
-		fmt.Fprintf(w, "      ~ column %s (renamed from %s)\n", r.New, r.Old)
-	}
-	for _, c := range td.AddColumns {
-		fmt.Fprintf(w, "      + column %s %s\n", c.Name, c.Type)
-	}
-	for _, name := range td.DropColumns {
-		fmt.Fprintf(w, "      - column %s\n", name)
-	}
-	for _, c := range td.ModifyColumns {
-		unsafe := ""
-		if c.IsUnsafe() {
-			unsafe = " (UNSAFE)"
-		}
-		fmt.Fprintf(w, "      ~ column %s: %s -> %s%s\n", c.Name, colDesc(c.Old), colDesc(c.New), unsafe)
-	}
-	for _, idx := range td.AddIndexes {
-		fmt.Fprintf(w, "      + index %s\n", idx.Name)
-	}
-	for _, name := range td.DropIndexes {
-		fmt.Fprintf(w, "      - index %s\n", name)
-	}
-	if td.EngineChange != nil {
-		fmt.Fprintf(w, "      ~ engine: %s -> %s\n", engineKindName(td.EngineChange.Old), engineKindName(td.EngineChange.New))
-	}
-	if c := td.OrderByChange; c != nil {
-		fmt.Fprintf(w, "      ~ order_by: %v -> %v\n", c.Old, c.New)
-	}
-	if c := td.PartitionByChange; c != nil {
-		fmt.Fprintf(w, "      ~ partition_by: %s -> %s\n", strOrNone(c.Old), strOrNone(c.New))
-	}
-	if c := td.SampleByChange; c != nil {
-		fmt.Fprintf(w, "      ~ sample_by: %s -> %s\n", strOrNone(c.Old), strOrNone(c.New))
-	}
-	if c := td.TTLChange; c != nil {
-		fmt.Fprintf(w, "      ~ ttl: %s -> %s\n", strOrNone(c.Old), strOrNone(c.New))
-	}
-	for _, k := range sortedMapKeys(td.SettingsAdded) {
-		fmt.Fprintf(w, "      + setting %s = %s\n", k, td.SettingsAdded[k])
-	}
-	for _, k := range td.SettingsRemoved {
-		fmt.Fprintf(w, "      - setting %s\n", k)
-	}
-	for _, c := range td.SettingsChanged {
-		fmt.Fprintf(w, "      ~ setting %s: %s -> %s\n", c.Key, c.OldValue, c.NewValue)
-	}
-}
-
-// colDesc renders a compact one-line column descriptor for the diff summary:
-// type plus its default form and any codec/comment/ttl markers.
-func colDesc(c hclload.ColumnSpec) string {
-	t := c.Type
-	if c.Nullable {
-		t = "Nullable(" + t + ")"
-	}
-	switch {
-	case c.Alias != nil:
-		t += " ALIAS " + *c.Alias
-	case c.Materialized != nil:
-		t += " MATERIALIZED " + *c.Materialized
-	case c.Ephemeral != nil:
-		t += " EPHEMERAL"
-	case c.Default != nil:
-		t += " DEFAULT " + *c.Default
-	}
-	if c.Codec != nil {
-		t += " CODEC(" + *c.Codec + ")"
-	}
-	if c.TTL != nil {
-		t += " TTL " + *c.TTL
-	}
-	if c.Comment != nil {
-		t += " COMMENT " + *c.Comment
-	}
-	return t
-}
-
 func load(configFlag, layersFlag string) (*hclload.Schema, error) {
 	if layersFlag != "" {
 		layers := strings.Split(layersFlag, ",")
@@ -1242,32 +1081,9 @@ func splitList(s string) []string {
 	return out
 }
 
-func sortedMapKeys(m map[string]string) []string {
-	out := make([]string, 0, len(m))
-	for k := range m {
-		out = append(out, k)
-	}
-	sort.Strings(out)
-	return out
-}
-
-func strOrNone(s *string) string {
-	if s == nil {
-		return "(none)"
-	}
-	return *s
-}
-
 func engineKind(e *hclload.EngineSpec) string {
 	if e == nil {
 		return "(none)"
 	}
 	return e.Kind
-}
-
-func engineKindName(e hclload.Engine) string {
-	if e == nil {
-		return "(none)"
-	}
-	return e.Kind()
 }
