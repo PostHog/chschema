@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strings"
@@ -29,7 +28,7 @@ var webFS embed.FS
 func runWeb(args []string) {
 	flags := flag.NewFlagSet("hclexp web", flag.ExitOnError)
 	configFlag := flags.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
-	layersFlag := flags.String("layer", "", "comma-separated list of layer directories (loaded in order)")
+	layersFlag := flags.String("layer", "", "comma-separated layer stack: each entry a directory or a single .hcl file (loaded in order)")
 	manifestFlag := flags.String("manifest", "", "HCL manifest (role/env/layers, like `plan`): browse every composed schema")
 	envFlag := flags.String("env", "", "with -manifest: only browse this env (default: all envs)")
 	layerRootFlag := flags.String("layer-root", ".", "with -manifest: root directory the manifest's layer paths resolve under")
@@ -252,22 +251,18 @@ func (s *webServer) maybeReload() {
 	slog.Info("schema reloaded", "files", len(fp))
 }
 
-// sourceFiles returns the HCL files the loader reads: every *.hcl in the layer
-// dirs (re-globbed each call so added/removed files register), or the single
-// -config file.
+// sourceFiles returns the HCL files the loader reads: what each layer path
+// contributes (re-listed each call so files added to or removed from a layer
+// dir register), or the single -config file.
 func sourceFiles(configFlag, layersFlag string) ([]string, error) {
 	if layersFlag != "" {
 		var files []string
-		for _, dir := range strings.Split(layersFlag, ",") {
-			entries, err := os.ReadDir(dir)
+		for _, layer := range strings.Split(layersFlag, ",") {
+			f, err := hclload.LayerFiles(layer)
 			if err != nil {
 				return nil, err
 			}
-			for _, e := range entries {
-				if !e.IsDir() && filepath.Ext(e.Name()) == ".hcl" {
-					files = append(files, filepath.Join(dir, e.Name()))
-				}
-			}
+			files = append(files, f...)
 		}
 		return files, nil
 	}

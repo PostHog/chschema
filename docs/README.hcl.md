@@ -6,11 +6,12 @@ worked examples.
 
 ## File and layer model
 
-A schema is the result of merging an **ordered list of layer directories**.
-The loader walks each directory in order, reads every `*.hcl` file
-(lexically by filename), and merges them into one combined schema. The
-loader has no built-in notion of "base," "env," or "node" — layers are
-generic. A typical convention:
+A schema is the result of merging an **ordered list of layers**. A layer is
+either a **directory** — the loader reads every `*.hcl` file in it, lexically by
+filename — or a **single `.hcl` file**, which is simply a layer of one file. The
+loader walks the layers in order and merges them into one combined schema. It
+has no built-in notion of "base," "env," or "node" — layers are generic. A
+typical convention:
 
 ```
 schema/
@@ -20,6 +21,20 @@ schema/
 ```
 
 is just three layer directories passed to the loader in that order.
+
+A stack may mix the two forms, so a fine-grained addition (one node's extra
+table, one shared definition a role pulls in) needs no directory of its own:
+
+```
+hclexp validate -layer schema/base,schema/envs/us,schema/nodes/ingest/events.hcl
+```
+
+A file layer has the same merge semantics as a directory layer: `patch_table`,
+`extend`, and `override = true` behave identically, and its declarations are
+applied at its position in the stack. The file must have the `.hcl` extension —
+naming anything else is an error, as is naming a path that does not exist.
+Listing the same file both directly and through its parent directory declares it
+twice, which is the usual duplicate-declaration error.
 
 ## Top-level blocks
 
@@ -477,7 +492,7 @@ hclexp diff -left ./schema -right /tmp/updated.hcl -sql
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `-left`       | —      | HCL schema to modify: a single file, or comma-separated layer directories (required) |
+| `-left`       | —      | HCL schema to modify: a comma-separated layer stack of directories or `.hcl` files (required) |
 | `-in`         | stdin  | SQL file to apply (`-` also means stdin) |
 | `-out`        | stdout | empty → stdout; a directory → one `<db>.hcl` per database; else a single file |
 | `-database`   | —      | default database for unqualified object names (e.g. `CREATE TABLE foo`, not `db.foo`) |
@@ -528,13 +543,16 @@ role "ops" {
   env "prod-eu" { layers = ["base", "prod", "env/prod-eu"] }
 }
 role "data" {
-  env "prod-us" { layers = ["base", "env/prod-us"] }   # not in every env
+  # not in every env; "shared/events.hcl" is a single-file layer
+  env "prod-us" { layers = ["base", "env/prod-us", "shared/events.hcl"] }
 }
 ```
 
 - `-env` selects each role's matching `env` block; a role with no block for the
   env is not deployed there and is skipped. The composed stack is that role's
-  **desired** schema.
+  **desired** schema. As everywhere a layer stack is accepted, a `layers` entry
+  is a directory or a single `.hcl` file (see
+  [File and layer model](#file-and-layer-model)).
 - `-dump` is a directory of per-node current-state HCL (e.g. from
   [`dump-cluster`](#cross-node-drift--hclexp-drift)); nodes are matched to roles
   by their `hostClusterRole` macro, and replicas collapse to one representative

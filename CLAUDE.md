@@ -138,6 +138,10 @@ The `justfile` has the full recipe list.
 - ✅ Long view/MV `query` as a one-liner, HCL heredoc, or `file("x.sql")`;
   all normalize to a canonical beautified form so formatting never diffs as
   drift (see `docs/README.hcl.md`)
+- ✅ A layer stack entry is a directory (every `*.hcl` in it) **or a single
+  `.hcl` file** — same merge semantics either way (`hclload.LayerFiles` owns the
+  dir/file decision, so every `-layer`/`-left`/manifest `layers` path gets it);
+  a non-`.hcl` or missing entry errors
 - ✅ `patch_table` (strictly additive cross-layer column additions)
 - ✅ `extend` inheritance with `abstract` bases and cycle detection
 - ✅ `override = true` for cross-layer full replacement
@@ -189,7 +193,7 @@ The `justfile` has the full recipe list.
 - ✅ `CREATE TABLE/MV/VIEW/DICTIONARY` (add or replace by name); `ALTER TABLE`
   add/drop/modify/rename column, add/drop index, modify/remove TTL,
   modify/reset setting; `ALTER TABLE <mv> MODIFY QUERY`; `DROP …`; `RENAME TABLE`
-- ✅ `-left` (file or layer dirs), `-in` (file/stdin), `-out` (stdout/file/dir),
+- ✅ `-left` (layer stack: dirs or `.hcl` files), `-in` (file/stdin), `-out` (stdout/file/dir),
   `-database` (default DB for unqualified names), `-allow-raw` (capture
   unexpressible CREATE as a `raw{}` block, like `introspect`)
 - ✅ Schema DDL only — data/partition ops (`TRUNCATE`, `ALTER … DELETE`,

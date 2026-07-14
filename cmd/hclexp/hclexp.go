@@ -109,9 +109,10 @@ Run "hclexp <command> -h" for command-specific flags.
 }
 
 // clusterFlag collects repeatable -cluster NAME=STACK mappings. STACK is a
-// list of layer directories joined by the OS list separator (':' on unix), so
-// it never clashes with the comma that separates -layer dirs. The sentinel
-// STACK == "@absent" declares a cluster with no composition in this env.
+// layer stack (directories or single .hcl files) joined by the OS list
+// separator (':' on unix), so it never clashes with the comma that separates
+// -layer entries. The sentinel STACK == "@absent" declares a cluster with no
+// composition in this env.
 type clusterFlag struct {
 	entries []clusterEntry
 }
@@ -382,7 +383,7 @@ func validateManifest(path, env, layerRoot, role string, skip hclload.SkipSet, o
 func runValidate(args []string) {
 	fs := flag.NewFlagSet("hclexp validate", flag.ExitOnError)
 	configFlag := fs.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
-	layersFlag := fs.String("layer", "", "comma-separated list of layer directories (loaded in order)")
+	layersFlag := fs.String("layer", "", "comma-separated layer stack: each entry a directory or a single .hcl file (loaded in order)")
 	skipFlag := fs.String("skip-validation", "", "comma-separated dependent object names to skip, or \"*\" for all")
 	strictProxyCols := fs.Bool("strict-proxy-columns", false, "require Distributed proxy and remote to have exactly the same columns (default: proxy columns need only be a subset)")
 	strictClusters := fs.Bool("strict-clusters", false, "require every Distributed remote to resolve against a real composition; a remote on an @absent cluster is an error")
@@ -391,7 +392,7 @@ func runValidate(args []string) {
 	roleFlag := fs.String("role", "", "in manifest-driven mode, validate only this role (clusters are still derived from the whole manifest)")
 	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under")
 	var clusters clusterFlag
-	fs.Var(&clusters, "cluster", "repeatable NAME=STACK external cluster mapping for Distributed remotes; STACK is OS-list-separated (':') layer dirs, @absent, or @alias=BASE")
+	fs.Var(&clusters, "cluster", "repeatable NAME=STACK external cluster mapping for Distributed remotes; STACK is an OS-list-separated (':') layer stack of directories or .hcl files, @absent, or @alias=BASE")
 	_ = fs.Parse(args)
 
 	if (*manifestFlag == "") != (*envFlag == "") {
@@ -505,7 +506,7 @@ func runValidateManifest(manifestPath, env, layerRoot, role string, skip hclload
 func runLoad(args []string) {
 	fs := flag.NewFlagSet("hclexp", flag.ExitOnError)
 	configFlag := fs.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
-	layersFlag := fs.String("layer", "", "comma-separated list of layer directories (loaded in order)")
+	layersFlag := fs.String("layer", "", "comma-separated layer stack: each entry a directory or a single .hcl file (loaded in order)")
 	outFlag := fs.String("out", "", "if set, write the resolved schema to this file as canonical HCL ('-' for stdout); a directory in manifest mode")
 	manifestFlag := fs.String("manifest", "", "HCL role manifest to compose from; requires -env. Mutually exclusive with -layer/-config")
 	envFlag := fs.String("env", "", "environment selecting each role's layer stack in -manifest")
@@ -814,12 +815,12 @@ func shortHost(host string) string {
 }
 
 // runDiff loads a left and a right schema and reports the changes needed to
-// turn the left side into the right side. Each side is either an HCL source
-// (a file, or comma-separated layer directories) or a live ClickHouse
-// instance addressed as clickhouse://user:password@host:port/db1,db2.
+// turn the left side into the right side. Each side is either an HCL source (a
+// comma-separated layer stack of directories or .hcl files) or a live
+// ClickHouse instance addressed as clickhouse://user:password@host:port/db1,db2.
 func runDiff(args []string) {
 	fs := flag.NewFlagSet("hclexp diff", flag.ExitOnError)
-	leftFlag := fs.String("left", "", "left side: HCL file, comma-separated layer dirs, or clickhouse://user:pass@host:port/db")
+	leftFlag := fs.String("left", "", "left side: comma-separated layer stack (directories or .hcl files), or clickhouse://user:pass@host:port/db")
 	rightFlag := fs.String("right", "", "right side: same forms as -left")
 	asSQL := fs.Bool("sql", false, "emit migration DDL (left -> right) instead of a change summary")
 	formatFlag := fs.String("format", "text", "output format: text (default) or json (structured, dependency-ordered operations)")
@@ -884,28 +885,15 @@ func runDiff(args []string) {
 }
 
 // loadSide loads one diff operand. A spec starting with clickhouse:// is
-// introspected from a live instance; anything else is treated as a
-// filesystem HCL source (a single file, or comma-separated layer dirs) and
-// resolved.
+// introspected from a live instance; anything else is treated as a filesystem
+// HCL source — a comma-separated layer stack whose entries are directories or
+// single .hcl files — and resolved.
 func loadSide(spec string) (*hclload.Schema, error) {
 	if strings.HasPrefix(spec, "clickhouse://") {
 		return loadFromClickHouse(spec)
 	}
 
-	paths := splitList(spec)
-	var (
-		schema *hclload.Schema
-		err    error
-	)
-	if len(paths) == 1 {
-		if info, statErr := os.Stat(paths[0]); statErr == nil && !info.IsDir() {
-			schema, err = hclload.ParseFile(paths[0])
-		} else {
-			schema, err = hclload.LoadLayers(paths)
-		}
-	} else {
-		schema, err = hclload.LoadLayers(paths)
-	}
+	schema, err := hclload.LoadLayers(splitList(spec))
 	if err != nil {
 		return nil, err
 	}

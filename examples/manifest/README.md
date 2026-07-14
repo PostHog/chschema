@@ -10,7 +10,7 @@ It models **two node roles** (`ops`, `data`) across **three environments**
 ## Layout
 
 ```
-manifest.hcl              # role → env → ordered layer dirs
+manifest.hcl              # role → env → ordered layers
 layers/
   base/events.hcl         # shared by every role+env: events, events_daily, events_daily_mv
   ops/ops.hcl             # OPS role only: system_metrics
@@ -20,7 +20,9 @@ layers/
     prod-eu/prod-eu.hcl   # prod-eu: patch_table events → + region, + gdpr_redacted
 ```
 
-Each `(env, role)` is the ordered composition of layer dirs:
+Each `(env, role)` is the ordered composition of its layers. A layer is a
+directory (every `*.hcl` in it) or a single `.hcl` file, so a role can pull in
+one shared definition without a directory of its own:
 
 | Env / Role | Layers | Distinctive objects |
 | ---------- | ------ | ------------------- |
