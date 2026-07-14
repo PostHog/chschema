@@ -589,6 +589,51 @@ role "data" {
   deliberately **not** deduped (triage is per role, execution is global).
 - `-exclude` drops matching objects from both sides of every role's diff.
 
+## Locating declarations — `hclexp locate`
+
+`locate` answers two questions the layer tree makes hard to grep for:
+*where is object X declared?* and *is X declared more than once?* It is
+query-only — no diffing, no DDL.
+
+```bash
+# Every declaration site of a table, and which (role, env) stacks place it
+hclexp locate -manifest manifest.hcl -layer-root ./schema events
+
+# Globs work like exclude patterns: bare name or db.name qualified
+hclexp locate -manifest manifest.hcl -layer-root ./schema 'posthog.person_*'
+
+# Also search per-node dumps (introspect / dump-cluster output)
+hclexp locate -manifest manifest.hcl -layer-root ./schema -dump ./dumps events
+
+# CI guard: any object declared at more than one plain site exits 1
+hclexp locate -manifest manifest.hcl -layer-root ./schema -duplicates
+```
+
+For each matching object (tables, MVs, views, dictionaries, named
+collections, raw blocks), `locate` lists every declaration site as
+`file:line` plus its control flags (`[abstract]`, `[override]`,
+`[patch_table]`, `extends <parent>`, `[raw <kind>]`), and derives the
+**placements**: the (role, env) stacks whose manifest layer lists include
+the declaring layer. Unlike `plan`/`load`, the manifest is read across
+*all* envs. With `-dump DIR`, the per-node `.hcl` dump files declaring the
+object are listed too. `-format json` emits the same document
+structurally.
+
+Objects are grouped by `(database, name)` — the namespace ClickHouse
+object types share — so a stray `view "events"` next to a `table
+"events"` shows up as one entry with both types.
+
+`-duplicates` (no name argument) audits the once-only discipline:
+`load`/compose only reject a redeclaration when the two layers meet in one
+stack, so two layers that never co-compose can silently hold divergent
+copies of the same object. A site is a *plain* declaration unless it is a
+`patch_table` (additive), has `override = true` (deliberate replacement),
+or is `abstract` (dropped at resolve); any object with two or more plain
+sites is reported and the command exits 1.
+
+Exit codes: 0 found / no duplicates; 1 no match, duplicates found, or a
+load error; 2 usage.
+
 ## Structured comparison output
 
 `diff -format json`, `plan`, and `drift -format json` all describe a comparison

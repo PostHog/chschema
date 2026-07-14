@@ -265,6 +265,17 @@ The `justfile` has the full recipe list.
   (non-deduped) object comparisons with derived counts — triage is per
   (env, role), execution stays on the deduped global list
 
+### Locating declarations (`hclexp locate`)
+- ✅ `locate <name-or-glob>` lists every declaration site (`file:line` +
+  abstract/override/patch/extend flags) of matching objects across all
+  manifest layers, with derived (role, env) placements read from the
+  manifest across *every* env; `-dump DIR` also lists the per-node dump
+  files declaring the object; `-format text|json`
+- ✅ `-duplicates` (no name argument): exits 1 when any `(database, name)`
+  has two or more plain declarations (patch_table/override/abstract sites
+  are legitimate), so CI enforces once-only even for layers that never
+  co-compose; a plain query exits 1 on no match (scriptable existence check)
+
 ### Browse a schema (`hclexp web`)
 - ✅ Serves a read-only web UI to browse a resolved HCL schema (databases,
   objects, columns/engine/settings, dependency cross-links); `-config`/`-layer`
