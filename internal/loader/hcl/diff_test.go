@@ -913,6 +913,85 @@ func TestDiff_NamedCollections_HIDDEN_OnTargetSide(t *testing.T) {
 	assert.Equal(t, []string{"k"}, cs.NamedCollections[0].SkippedRedactedParams)
 }
 
+func TestDiff_NamedCollections_BothHIDDEN_Silent(t *testing.T) {
+	// Two dumps captured by a user without displaySecretsInShowAndSelect:
+	// byte-identical, secrets redacted on both sides. Every observer sees
+	// the same thing — this must NOT be a difference (issue #141: it
+	// previously reported SkippedRedactedParams forever, so dump↔dump
+	// drift of any secret-bearing collection never went green).
+	spec := func() *Schema {
+		return &Schema{NamedCollections: []NamedCollectionSpec{{
+			Name: "s3",
+			Params: []NamedCollectionParam{
+				{Key: "url", Value: "https://bucket"},
+				{Key: "password", Value: RedactedValue},
+			},
+		}}}
+	}
+	assert.True(t, Diff(spec(), spec()).IsEmpty())
+}
+
+func TestDiff_NamedCollections_BothHIDDEN_OverridableDiffers_Unverifiable(t *testing.T) {
+	// Both values hidden but the OVERRIDABLE flag differs: the difference
+	// is visible, the value needed to reconcile it is not — unverifiable.
+	over := true
+	from := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name:   "s3",
+		Params: []NamedCollectionParam{{Key: "password", Value: RedactedValue}},
+	}}}
+	to := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name:   "s3",
+		Params: []NamedCollectionParam{{Key: "password", Value: RedactedValue, Overridable: &over}},
+	}}}
+	cs := Diff(from, to)
+	require.Len(t, cs.NamedCollections, 1)
+	assert.Equal(t, NamedCollectionChange{
+		Name:                  "s3",
+		SkippedRedactedParams: []string{"password"},
+	}, cs.NamedCollections[0])
+}
+
+func TestDiff_NamedCollections_HIDDENOnlyOnRight_NoSetOfLiteral(t *testing.T) {
+	// The param exists only on the right, redacted. Today this falls
+	// through into SetParams and generates `SET password = '[HIDDEN]'`,
+	// overwriting the real secret with the placeholder (issue #141). It
+	// must be unverifiable instead: present-vs-absent is visible, the
+	// value is not.
+	from := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name:   "s3",
+		Params: []NamedCollectionParam{{Key: "url", Value: "https://b"}},
+	}}}
+	to := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name: "s3",
+		Params: []NamedCollectionParam{
+			{Key: "url", Value: "https://b"},
+			{Key: "password", Value: RedactedValue},
+		},
+	}}}
+	cs := Diff(from, to)
+	require.Len(t, cs.NamedCollections, 1)
+	assert.Equal(t, NamedCollectionChange{
+		Name:                  "s3",
+		SkippedRedactedParams: []string{"password"},
+	}, cs.NamedCollections[0])
+}
+
+func TestDiff_NamedCollections_HIDDENDropped_PlainDelete(t *testing.T) {
+	// Hidden on the left, absent on the right: deleting needs no value —
+	// a plain DELETE, no skip entry, no literal anywhere.
+	from := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name:   "s3",
+		Params: []NamedCollectionParam{{Key: "password", Value: RedactedValue}},
+	}}}
+	to := &Schema{NamedCollections: []NamedCollectionSpec{{Name: "s3"}}}
+	cs := Diff(from, to)
+	require.Len(t, cs.NamedCollections, 1)
+	assert.Equal(t, NamedCollectionChange{
+		Name:         "s3",
+		DeleteParams: []string{"password"},
+	}, cs.NamedCollections[0])
+}
+
 // --- Virtual-column diff guard -----------------------------------------
 
 // kafkaTable builds a Kafka-engined TableSpec for the virtual-column tests.
