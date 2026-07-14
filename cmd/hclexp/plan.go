@@ -262,7 +262,7 @@ func currentByRole(dir string) (map[string]*hclload.Schema, error) {
 // renderPlanText prints a human-readable, globally-ordered plan.
 func renderPlanText(w *os.File, plan hclload.PlanResult) {
 	for _, u := range plan.Unsafe {
-		fmt.Fprintf(w, "-- UNSAFE: %s.%s: %s\n", u.Database, u.Object, u.Reason)
+		fmt.Fprintf(w, "-- UNSAFE: %s: %s\n", qualifiedName(u.Database, u.Object), u.Reason)
 	}
 	if len(plan.Operations) == 0 {
 		fmt.Fprintln(w, "no changes")

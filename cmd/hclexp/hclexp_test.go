@@ -1160,3 +1160,9 @@ database "d" {
 	hclload.FilterSchema(right, m)
 	require.True(t, hclload.Diff(left, right).IsEmpty())
 }
+
+func TestQualifiedName(t *testing.T) {
+	require.Equal(t, "posthog.events", qualifiedName("posthog", "events"))
+	// Named collections are cluster-scoped, not database-scoped: no leading dot.
+	require.Equal(t, "s3", qualifiedName("", "s3"))
+}

@@ -284,3 +284,22 @@ func TestColumnDesc(t *testing.T) {
 		"Nullable(String) MATERIALIZED upper(s) CODEC(LZ4) TTL d + INTERVAL 1 DAY COMMENT c",
 		columnDesc(c))
 }
+
+// A blocked NC add still surfaces in the object view: status added, zero
+// operations, unsafe with the precise reason — same wiring dictionaries use.
+func TestBuildObjectComparisons_NamedCollectionRedactedAddBlocked(t *testing.T) {
+	cs := ChangeSet{NamedCollections: []NamedCollectionChange{{
+		Name: "nc",
+		Add: &NamedCollectionSpec{
+			Name:   "nc",
+			Params: []NamedCollectionParam{{Key: "password", Value: RedactedValue}},
+		},
+	}}}
+	gen := GenerateSQL(cs)
+	objs := BuildObjectComparisons(cs, gen, nil, nil)
+	require.Len(t, objs, 1)
+	assert.Equal(t, StatusAdded, objs[0].Status)
+	assert.Empty(t, objs[0].Operations)
+	assert.True(t, objs[0].Unsafe)
+	assert.Contains(t, objs[0].UnsafeReason, "param(s) [password]")
+}

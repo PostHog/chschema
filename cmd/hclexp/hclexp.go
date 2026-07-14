@@ -805,6 +805,15 @@ func dumpNode(ctx context.Context, cfg config.ClickHouseConfig, databases []stri
 	return nil
 }
 
+// qualifiedName renders an object as db.name, or bare when it has no database.
+// Named collections are cluster-scoped, so a naive "%s.%s" prints ".s3".
+func qualifiedName(database, object string) string {
+	if database == "" {
+		return object
+	}
+	return database + "." + object
+}
+
 // shortHost returns the first DNS label of host (everything before the first
 // '.'), used to name per-node dump files.
 func shortHost(host string) string {
@@ -866,7 +875,7 @@ func runDiff(args []string) {
 
 	if *asSQL {
 		for _, u := range gen.Unsafe {
-			fmt.Printf("-- UNSAFE: %s.%s: %s\n", u.Database, u.Table, u.Reason)
+			fmt.Printf("-- UNSAFE: %s: %s\n", qualifiedName(u.Database, u.Table), u.Reason)
 		}
 		for i, stmt := range gen.Statements {
 			if gen.Ops[i].Manual {
