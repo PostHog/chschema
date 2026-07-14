@@ -68,8 +68,6 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-func strPtr(s string) *string { return &s }
-
 // fieldChangesForTable flattens every TableDiff aspect into the documented
 // field vocabulary, in declaration order (columns, indexes, projections,
 // constraints, engine, order_by, primary_key, partition_by, sample_by, ttl,
@@ -148,8 +146,9 @@ func TestColumnDesc(t *testing.T) {
 
 If `ConstraintSpec`/`IndexSpec`/`ProjectionSpec` field names differ, fix the
 test literals against `internal/loader/hcl/types.go` — do not change the
-expected `FieldChange` values. If a `strPtr` helper already exists in the
-package tests, reuse it and drop the local definition.
+expected `FieldChange` values. Do NOT define a `strPtr` helper: one already
+exists in production code (`internal/loader/hcl/introspect.go:901`, package
+`hcl`), so a test-file definition is a redeclaration compile error.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -334,10 +333,17 @@ func columnDesc(c ColumnSpec) string {
 }
 ```
 
-`columnDesc` is a verbatim port of `colDesc` in `cmd/hclexp/hclexp.go:1161`
+`columnDesc` is a verbatim port of `colDesc` in `cmd/hclexp/hclexp.go:1156`
 (the cmd copy is deleted in Task 5). If `engineSQL`'s clause for
 `EngineMergeTree{}` includes an `ENGINE = ` prefix, the test's `engOld`
 derivation absorbs it — the assertion uses whatever `engineSQL` returns.
+
+Note `engineSQL`'s signature is
+`func engineSQL(e Engine) (clause string, extraSettings map[string]string)` —
+the discarded second value is engine-derived SETTINGS, not an error. Engines
+that push part of their config into SETTINGS will have that part omitted from
+the engine FieldChange's old/new values. Known, accepted limitation — do not
+"fix" it here.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -805,7 +811,9 @@ func BuildObjectComparisons(cs ChangeSet, gen GeneratedSQL, left, right *Schema)
 		opsByRef[k] = append(opsByRef[k], op)
 	}
 
-	var out []ObjectComparison
+	// Non-nil so an empty diff marshals as "objects": [] (the jq contract in
+	// check-live.sh is `.objects == []`), never null.
+	out := []ObjectComparison{}
 	add := func(db, name, objType, status string, changes []FieldChange) int {
 		oc := ObjectComparison{
 			Database: db, Object: name, ObjectType: objType, Status: status,
@@ -956,6 +964,12 @@ expected string there lists parts in struct traversal order
 (table, mv, dict, view, raw, named_collection). The Step 1 test expectation
 `"+1 table, ~1 table, -1 mv, ~1 raw, ~1 named_collection"` follows from it.
 
+Known accepted edge: `opsByRef` keys on `(database, object)` without the
+object type — the same granularity `unsafeFor` already uses. A raw block and
+a table sharing a name in one database would cross-attach ops. Do not extend
+the key here without first checking what `ObjectType` sqlgen emits for raw
+ops (`raw` vs the inner kind).
+
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `go test ./internal/loader/hcl/ -v`
@@ -981,7 +995,7 @@ named collections, closing the drift summarizeChanges gap."
 
 **Files:**
 - Modify: `internal/loader/hcl/render_json.go` (`DiffJSON`, `RenderDiffJSON`)
-- Modify: `cmd/hclexp/hclexp.go` (`runDiff`, ~line 813)
+- Modify: `cmd/hclexp/hclexp.go` (`runDiff`, ~line 821)
 - Test: `internal/loader/hcl/render_json_test.go`
 
 **Interfaces:**
@@ -1007,6 +1021,20 @@ existing unsafe checks:
 	assert.Equal(t, StatusAltered, objByName["events"].Status)
 	assert.True(t, objByName["sessions"].Unsafe)
 	assert.Equal(t, CompareSummary{TablesAdded: 1, TablesAltered: 2}, doc.Summary)
+```
+
+Also add a new test pinning the empty-diff JSON contract (check-live.sh will
+gate on `jq -e '.objects == []'`, and `null` fails that check):
+
+```go
+// An empty diff marshals objects as [], never null — downstream gates do
+// `jq -e '.objects == []'`.
+func TestRenderDiffJSON_EmptyDiff(t *testing.T) {
+	out, err := RenderDiffJSON(ChangeSet{}, GeneratedSQL{}, nil, nil)
+	require.NoError(t, err)
+	assert.Contains(t, string(out), `"objects": []`)
+	assert.Contains(t, string(out), `"operations": []`)
+}
 ```
 
 In `TestRenderDiffJSON_ManualMaterializeIndex`, keep `cs` from the `Diff`
@@ -1090,7 +1118,7 @@ string surgery on DDL."
 - Create: `internal/loader/hcl/render_text.go`
 - Test: `internal/loader/hcl/render_text_test.go`
 - Modify: `cmd/hclexp/hclexp.go` (`runDiff` text branch; delete
-  `renderChangeSet`, `renderTableDiff`, `colDesc` at ~lines 1008–1186)
+  `renderChangeSet`, `renderTableDiff`, `colDesc` at ~lines 1004–1181)
 - Modify: `cmd/hclexp/drift.go` (`-details` call, line 115)
 - Modify: `cmd/hclexp/hclexp_test.go` (7 `renderChangeSet` call sites)
 
@@ -1393,10 +1421,11 @@ exclude {
 }
 ```
 
-Reuse the existing temp-file helper in `exclude_test.go` for
-`writeTempExclude` (the file already writes temp exclude configs for
-`TestLoadExcludeConfig`; extract or mirror that helper — same package, same
-pattern). If `assert.Equal` fails only on `nil` vs empty-slice for untouched
+No named temp-file helper exists in `exclude_test.go` today — the current
+tests inline `t.TempDir()` + `os.WriteFile`. Write `writeTempExclude(t
+*testing.T, content string) string` as a new helper by extracting that inline
+pattern (and optionally switch the existing tests to it). If `assert.Equal`
+fails only on `nil` vs empty-slice for untouched
 collections, adjust the `want` literal to match `FilterSchema`'s in-place
 behavior (filtered slices become empty non-nil; untouched slices stay as
 built) — the object membership assertions are what matter.
@@ -1605,6 +1634,9 @@ database "d" {
 (Fixture syntax verified against `internal/loader/hcl/testdata/engines_all_kinds.hcl`:
 engine kind labels are snake_case, `order_by` is a string list.)
 
+`cmd/hclexp/hclexp_test.go` currently imports only `testify/require` — add
+the `testify/assert` import for this test.
+
 - [ ] **Step 2: Run to verify failure**
 
 Run: `go test ./cmd/hclexp/ -run TestDiffWithExcludeFilteredSchemas -v`
@@ -1666,10 +1698,11 @@ after `loadDriftNodes` and the `normalizeZKPaths` loop:
 	}
 ```
 
-Note: `loadExcludeFlag` uses slog; drift prints to stderr already via slog in
-other paths? It does not — drift uses `fmt.Fprintf(os.Stderr, ...)`. Keep
-`loadExcludeFlag` slog-based (it lives in hclexp.go beside runDiff); the
-behavioral contract (message + non-zero exit) is what matters.
+Note: drift.go's own error style is `fmt.Fprintf(os.Stderr, ...)` +
+`os.Exit` (it does not use slog), while `loadExcludeFlag` is slog-based.
+Keep `loadExcludeFlag` slog-based anyway — it lives in hclexp.go beside
+runDiff, and the behavioral contract (message on stderr + non-zero exit) is
+what matters, not the logger.
 
 - [ ] **Step 4: Run tests + build**
 
@@ -1941,15 +1974,21 @@ New functions in `drift.go` (add `"encoding/json"` to imports):
 ```go
 // buildDriftDoc groups nodes and diffs each group against its
 // lexically-first reference, returning the full drift document. Groups with
-// a single node get no drifters (nothing to compare against).
+// a single node get no drifters (nothing to compare against). Groups and
+// Drifters are non-nil so JSON emits [] (not null) — same contract as
+// DiffJSON.Objects.
 func buildDriftDoc(nodes []driftNode, keys []string) hclload.DriftJSON {
 	groups, order := groupNodes(nodes, keys)
-	doc := hclload.DriftJSON{Summary: hclload.DriftRunSummary{Nodes: len(nodes), Groups: len(order)}}
+	doc := hclload.DriftJSON{
+		Groups:  []hclload.DriftGroup{},
+		Summary: hclload.DriftRunSummary{Nodes: len(nodes), Groups: len(order)},
+	}
 	for _, key := range order {
 		members := groups[key]
 		sort.Slice(members, func(i, j int) bool { return members[i].Name < members[j].Name })
 		ref := members[0]
-		g := hclload.DriftGroup{Key: key, Reference: ref.Name, Nodes: len(members)}
+		g := hclload.DriftGroup{Key: key, Reference: ref.Name, Nodes: len(members),
+			Drifters: []hclload.DriftNode{}}
 		for _, m := range members[1:] {
 			cs := hclload.Diff(ref.Schema, m.Schema)
 			if cs.IsEmpty() {
@@ -2113,7 +2152,9 @@ In `BuildPlan`, restructure the per-role loop (plan.go:63) to keep the
 ChangeSet and collect comparisons:
 
 ```go
-	var roleComparisons []RoleComparison
+	// Non-nil so an empty plan marshals roles as [], not null (same contract
+	// as DiffJSON.Objects).
+	roleComparisons := make([]RoleComparison, 0, len(roles))
 	for _, rd := range roles {
 		cs := Diff(rd.Current, rd.Desired)
 		gen := GenerateSQL(cs)
@@ -2176,7 +2217,8 @@ derived counts, nested ops carrying the merged global order. Triage is per
 **Files:**
 - Modify: `docs/README.hcl.md`
 - Modify: `CLAUDE.md`
-- Modify: `cmd/hclexp/hclexp.go` (usage text, ~line 97 `drift` line)
+- Modify: `cmd/hclexp/hclexp.go` (usage text, ~line 98 `drift` line)
+- Modify: `docs/plans/2026-07-10-drift-json-output.md` (superseded marker)
 
 **Interfaces:** none (docs only).
 
@@ -2189,12 +2231,14 @@ docs) covering, with a JSON example built from Task 3's test scenario:
   has the object and the left does not; `diff`/`plan` put the desired schema
   on the right (so `added` will be CREATEd), `drift` puts the drifter on the
   right (descriptive, not a fix script)"*
-- the full `field` vocabulary table from the spec
-  (`docs/plans/2026-07-10-object-comparison.md`, "field vocabulary" section,
-  including the Task 2 addendum rows), plus `change` values and the
-  old/new rendering rules (columns as compact descriptors, engine as its SQL
-  clause, order_by/primary_key comma-joined, `param:` set-changes new-only,
-  redacted params `[HIDDEN]` both sides)
+- the full `field` vocabulary table, written from the IMPLEMENTATION
+  (Tasks 1–2 flatteners), not copied from the spec table — two known
+  divergences: dictionaries emit their raw `Changed` paths (`layout`,
+  `source.clickhouse.table`, …), not `column:<name>` entries; and `param:`
+  set-changes are always `modify` with `new` only (even for a param that is
+  new). Plus `change` values and the old/new rendering rules (columns as
+  compact descriptors, engine as its SQL clause, order_by/primary_key
+  comma-joined, redacted params `[HIDDEN]` both sides)
 - `summary` count keys
 - `-exclude` on `diff`/`plan`/`drift` and the `object_types` config attribute
 - `drift -format json` document shape (groups/reference/drifters/summary).
@@ -2218,6 +2262,17 @@ In `cmd/hclexp/hclexp.go` `usage()` the drift line becomes:
   drift        detect cross-node schema drift across per-node HCL dumps (-format json for structured output)
 ```
 
+- [ ] **Step 3b: mark the superseded plan**
+
+Prepend to `docs/plans/2026-07-10-drift-json-output.md` (under its title):
+
+```
+> **Superseded** by `2026-07-10-object-comparison.md` /
+> `2026-07-10-object-comparison-impl.md`. The direction decision and bug
+> analysis carry over; the flat per-drifter operation list is replaced by
+> the shared per-object comparison model.
+```
+
 - [ ] **Step 4: Verify docs build nothing is broken**
 
 Run: `go build ./... && go test ./cmd/hclexp/ -run TestUsage -v` (if a usage
@@ -2227,7 +2282,8 @@ docs-only changes.
 - [ ] **Step 5: Commit**
 
 ```bash
-git add docs/README.hcl.md CLAUDE.md cmd/hclexp/hclexp.go
+git add docs/README.hcl.md CLAUDE.md cmd/hclexp/hclexp.go \
+  docs/plans/2026-07-10-drift-json-output.md
 git commit -m "docs: structured per-object comparison output
 
 README.hcl.md documents the objects/summary JSON contract (field
