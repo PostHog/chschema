@@ -134,6 +134,75 @@ func fieldChangesForTable(td TableDiff) []FieldChange {
 	return out
 }
 
+// fieldChangesForMaterializedView flattens an MV diff. A structural change
+// (to_table / columns) implies recreation; query-only maps to MODIFY QUERY.
+func fieldChangesForMaterializedView(mvd MaterializedViewDiff) []FieldChange {
+	var out []FieldChange
+	if c := mvd.ToTableChange; c != nil {
+		out = append(out, stringChangeField("to_table", c))
+	}
+	if mvd.ColumnsChanged {
+		out = append(out, FieldChange{Field: "columns", Change: "modify"})
+	}
+	if c := mvd.QueryChange; c != nil {
+		out = append(out, stringChangeField("query", c))
+	}
+	return out
+}
+
+func fieldChangesForView(vd ViewDiff) []FieldChange {
+	var out []FieldChange
+	for _, attr := range vd.RecreateChanged {
+		out = append(out, FieldChange{Field: attr, Change: "modify"})
+	}
+	if c := vd.QueryChange; c != nil {
+		out = append(out, stringChangeField("query", c))
+	}
+	if c := vd.Comment; c != nil {
+		out = append(out, stringChangeField("comment", c))
+	}
+	return out
+}
+
+// fieldChangesForDictionary maps each changed field path to one modify entry
+// (ClickHouse dictionaries reconcile via CREATE OR REPLACE, so there are no
+// per-field old/new values in the diff).
+func fieldChangesForDictionary(dd DictionaryDiff) []FieldChange {
+	out := make([]FieldChange, 0, len(dd.Changed))
+	for _, path := range dd.Changed {
+		out = append(out, FieldChange{Field: path, Change: "modify"})
+	}
+	return out
+}
+
+// fieldChangesForRaw: raw SQL is opaque, the whole stored DDL is the value.
+func fieldChangesForRaw(rc RawChange) []FieldChange {
+	return []FieldChange{{Field: "sql", Change: "modify", Old: rc.OldSQL, New: rc.NewSQL}}
+}
+
+// fieldChangesForNamedCollection flattens the surgical NC changes. SetParams
+// has no old value (ALTER ... SET overwrites); a redacted param reports
+// [HIDDEN] on both sides — the diff could not verify equality.
+func fieldChangesForNamedCollection(ncc NamedCollectionChange) []FieldChange {
+	var out []FieldChange
+	if ncc.Recreate {
+		out = append(out, FieldChange{Field: "on_cluster", Change: "modify"})
+	}
+	for _, p := range ncc.SetParams {
+		out = append(out, FieldChange{Field: "param:" + p.Key, Change: "modify", New: p.Value})
+	}
+	for _, k := range ncc.DeleteParams {
+		out = append(out, FieldChange{Field: "param:" + k, Change: "drop"})
+	}
+	for _, k := range ncc.SkippedRedactedParams {
+		out = append(out, FieldChange{Field: "param:" + k, Change: "modify", Old: RedactedValue, New: RedactedValue})
+	}
+	if c := ncc.CommentChange; c != nil {
+		out = append(out, stringChangeField("comment", c))
+	}
+	return out
+}
+
 // stringChangeField maps an optional-string transition to a FieldChange; a
 // nil side stays empty and is omitted from JSON.
 func stringChangeField(field string, c *StringChange) FieldChange {

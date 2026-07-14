@@ -116,9 +116,10 @@ expression string, a query as its canonical beautified form.
 | `index:<name>`, `projection:<name>`, `constraint:<name>` | table |
 | `setting:<name>` | table |
 | `engine`, `order_by`, `partition_by`, `sample_by`, `primary_key`, `ttl` | table |
-| `comment` | table, named collection |
+| `comment` | table, view, named collection |
 | `query` | view, materialized view |
 | `to_table`, `columns` | materialized view (structural → recreate) |
+| `column_aliases`, `sql_security`, `definer`, `cluster` | view (each forces a recreate) |
 | `param:<name>`, `on_cluster` | named collection |
 | `sql` | raw block |
 
@@ -130,6 +131,23 @@ change; `SetParams`/`DeleteParams` → `param:<name>` add/modify/drop; a
 `SkippedRedactedParams` entry surfaces as `param:<name>` with `Old`/`New` =
 `[HIDDEN]` (the diff could not verify equality — same signal the CLI prints
 today); `NamedCollectionChange.Error` fills `ObjectComparison.Error`.
+
+Implementation notes (discovered while building the flatteners):
+
+- A `param:<name>` set-change always carries `new` only, and always as
+  `Change: "modify"` — even for a param that is new on the right side.
+  `ALTER NAMED COLLECTION … SET` overwrites unconditionally, so the diff holds
+  no old value to report.
+- The diff engine had to grow three fields, because it already computed the
+  distinctions below and threw them away:
+  `MaterializedViewDiff.ToTableChange` / `.ColumnsChanged` (which structural
+  attribute forced the recreate) and `ViewDiff.RecreateChanged` (the
+  recreate-forcing attributes, by name). `Recreate` keeps its meaning and
+  `IsEmpty`/`IsUnsafe` are unchanged — the additions are purely descriptive.
+- `ObjectComparison` also carries `raw_kind` for `raw{}` blocks (the inner
+  `table` / `view` / `dictionary` kind). Only a raw *table* holds rows on disk,
+  so its DROP+CREATE recreate is the destructive one; dropping the kind from
+  the output would hide exactly the case that matters most.
 
 ## `diff` integration
 

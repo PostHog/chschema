@@ -72,6 +72,83 @@ func TestFieldChangesForTable(t *testing.T) {
 	assert.Equal(t, want, fieldChangesForTable(td))
 }
 
+func TestFieldChangesForMaterializedView(t *testing.T) {
+	// Structural change: to_table and columns both differ.
+	mvd := diffMaterializedView(
+		&MaterializedViewSpec{Name: "mv", ToTable: "t_old", Query: "SELECT 1",
+			Columns: []ColumnSpec{{Name: "a", Type: "UInt8"}}},
+		&MaterializedViewSpec{Name: "mv", ToTable: "t_new", Query: "SELECT 1",
+			Columns: []ColumnSpec{{Name: "b", Type: "UInt8"}}},
+	)
+	assert.True(t, mvd.Recreate)
+	assert.Equal(t, []FieldChange{
+		{Field: "to_table", Change: "modify", Old: "t_old", New: "t_new"},
+		{Field: "columns", Change: "modify"},
+	}, fieldChangesForMaterializedView(mvd))
+
+	// Query-only change.
+	mvd = diffMaterializedView(
+		&MaterializedViewSpec{Name: "mv", ToTable: "t", Query: "SELECT 1"},
+		&MaterializedViewSpec{Name: "mv", ToTable: "t", Query: "SELECT 2"},
+	)
+	assert.False(t, mvd.Recreate)
+	assert.Equal(t, []FieldChange{
+		{Field: "query", Change: "modify", Old: "SELECT 1", New: "SELECT 2"},
+	}, fieldChangesForMaterializedView(mvd))
+}
+
+func TestFieldChangesForView(t *testing.T) {
+	// Recreate: sql_security and cluster changed; each surfaces by name.
+	vd := diffView(
+		&ViewSpec{Name: "v", Query: "SELECT 1", SQLSecurity: strPtr("DEFINER")},
+		&ViewSpec{Name: "v", Query: "SELECT 1", Cluster: strPtr("main")},
+	)
+	assert.True(t, vd.Recreate)
+	assert.Equal(t, []FieldChange{
+		{Field: "sql_security", Change: "modify"},
+		{Field: "cluster", Change: "modify"},
+	}, fieldChangesForView(vd))
+
+	// In-place: query + comment.
+	vd = diffView(
+		&ViewSpec{Name: "v", Query: "SELECT 1", Comment: strPtr("a")},
+		&ViewSpec{Name: "v", Query: "SELECT 2", Comment: strPtr("b")},
+	)
+	assert.Equal(t, []FieldChange{
+		{Field: "query", Change: "modify", Old: "SELECT 1", New: "SELECT 2"},
+		{Field: "comment", Change: "modify", Old: "a", New: "b"},
+	}, fieldChangesForView(vd))
+}
+
+func TestFieldChangesForDictionaryRawNamedCollection(t *testing.T) {
+	assert.Equal(t, []FieldChange{
+		{Field: "layout", Change: "modify"},
+		{Field: "source.clickhouse.table", Change: "modify"},
+	}, fieldChangesForDictionary(DictionaryDiff{Name: "d", Changed: []string{"layout", "source.clickhouse.table"}}))
+
+	assert.Equal(t, []FieldChange{
+		{Field: "sql", Change: "modify", Old: "CREATE TABLE a", New: "CREATE TABLE b"},
+	}, fieldChangesForRaw(RawChange{Kind: "table", Name: "r", OldSQL: "CREATE TABLE a", NewSQL: "CREATE TABLE b"}))
+
+	ncc := NamedCollectionChange{
+		Name:                  "s3",
+		SetParams:             []NamedCollectionParam{{Key: "url", Value: "https://b"}},
+		DeleteParams:          []string{"token"},
+		SkippedRedactedParams: []string{"secret"},
+		CommentChange:         &StringChange{Old: strPtr("a"), New: strPtr("b")},
+	}
+	assert.Equal(t, []FieldChange{
+		{Field: "param:url", Change: "modify", New: "https://b"},
+		{Field: "param:token", Change: "drop"},
+		{Field: "param:secret", Change: "modify", Old: "[HIDDEN]", New: "[HIDDEN]"},
+		{Field: "comment", Change: "modify", Old: "a", New: "b"},
+	}, fieldChangesForNamedCollection(ncc))
+
+	assert.Equal(t, []FieldChange{
+		{Field: "on_cluster", Change: "modify"},
+	}, fieldChangesForNamedCollection(NamedCollectionChange{Name: "s3", Recreate: true}))
+}
+
 func TestColumnDesc(t *testing.T) {
 	c := ColumnSpec{Name: "v", Type: "String", Nullable: true,
 		Materialized: strPtr("upper(s)"), Codec: strPtr("LZ4"),

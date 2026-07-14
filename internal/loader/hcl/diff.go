@@ -72,6 +72,10 @@ type MaterializedViewDiff struct {
 	Name        string
 	QueryChange *StringChange // the AS SELECT body changed
 	Recreate    bool          // to_table or the column list changed
+
+	// Set alongside Recreate so consumers can tell WHAT forced it.
+	ToTableChange  *StringChange
+	ColumnsChanged bool
 }
 
 func (mvd MaterializedViewDiff) IsEmpty() bool {
@@ -95,6 +99,10 @@ type ViewDiff struct {
 	QueryChange *StringChange
 	Comment     *StringChange
 	Recreate    bool
+
+	// RecreateChanged names the attributes that forced Recreate, in a fixed
+	// order, so consumers can report which one moved.
+	RecreateChanged []string
 }
 
 func (vd ViewDiff) IsEmpty() bool {
@@ -600,10 +608,19 @@ func indexViews(views []ViewSpec) map[string]*ViewSpec {
 // Cluster changes require DROP + CREATE.
 func diffView(from, to *ViewSpec) ViewDiff {
 	vd := ViewDiff{Name: to.Name}
-	if !reflect.DeepEqual(from.ColumnAliases, to.ColumnAliases) ||
-		!reflect.DeepEqual(from.SQLSecurity, to.SQLSecurity) ||
-		!reflect.DeepEqual(from.Definer, to.Definer) ||
-		!reflect.DeepEqual(from.Cluster, to.Cluster) {
+	if !reflect.DeepEqual(from.ColumnAliases, to.ColumnAliases) {
+		vd.RecreateChanged = append(vd.RecreateChanged, "column_aliases")
+	}
+	if !reflect.DeepEqual(from.SQLSecurity, to.SQLSecurity) {
+		vd.RecreateChanged = append(vd.RecreateChanged, "sql_security")
+	}
+	if !reflect.DeepEqual(from.Definer, to.Definer) {
+		vd.RecreateChanged = append(vd.RecreateChanged, "definer")
+	}
+	if !reflect.DeepEqual(from.Cluster, to.Cluster) {
+		vd.RecreateChanged = append(vd.RecreateChanged, "cluster")
+	}
+	if len(vd.RecreateChanged) > 0 {
 		vd.Recreate = true
 		return vd
 	}
@@ -632,7 +649,14 @@ func indexMaterializedViews(mvs []MaterializedViewSpec) map[string]*Materialized
 // QueryChange — the two are mutually exclusive.
 func diffMaterializedView(from, to *MaterializedViewSpec) MaterializedViewDiff {
 	mvd := MaterializedViewDiff{Name: to.Name}
-	if from.ToTable != to.ToTable || !reflect.DeepEqual(from.Columns, to.Columns) {
+	if from.ToTable != to.ToTable {
+		o, n := from.ToTable, to.ToTable
+		mvd.ToTableChange = &StringChange{Old: &o, New: &n}
+	}
+	if !reflect.DeepEqual(from.Columns, to.Columns) {
+		mvd.ColumnsChanged = true
+	}
+	if mvd.ToTableChange != nil || mvd.ColumnsChanged {
 		mvd.Recreate = true
 		return mvd
 	}
