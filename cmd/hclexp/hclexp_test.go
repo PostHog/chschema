@@ -333,20 +333,35 @@ func renderComparisons(w io.Writer, cs hclload.ChangeSet, left, right *hclload.S
 }
 
 func TestRenderChangeSet_Dictionaries(t *testing.T) {
+	rebuilt := hclload.DictionarySpec{
+		Name:       "rebuild_dict",
+		PrimaryKey: []string{"k"},
+		Attributes: []hclload.DictionaryAttribute{{Name: "k", Type: "UInt64"}},
+		Source:     &hclload.DictionarySourceSpec{Kind: "null", Decoded: hclload.SourceNull{}},
+		Layout:     &hclload.DictionaryLayoutSpec{Kind: "hashed", Decoded: hclload.LayoutHashed{}},
+	}
 	cs := hclload.ChangeSet{Databases: []hclload.DatabaseChange{{
-		Database:          "posthog",
-		AddDictionaries:   []hclload.DictionarySpec{{Name: "new_dict"}},
-		DropDictionaries:  []string{"old_dict"},
-		AlterDictionaries: []hclload.DictionaryDiff{{Name: "rebuild_dict", Changed: []string{"layout", "source"}}},
+		Database:         "posthog",
+		AddDictionaries:  []hclload.DictionarySpec{{Name: "new_dict"}},
+		DropDictionaries: []string{"old_dict"},
+		AlterDictionaries: []hclload.DictionaryDiff{{
+			Name:    "rebuild_dict",
+			Changed: []string{"layout", "source"},
+			New:     rebuilt,
+		}},
 	}}}
 
 	var buf bytes.Buffer
 	renderComparisons(&buf, cs, nil, nil)
 
+	// No UNSAFE annotation: a dictionary is reconciled by CREATE OR REPLACE,
+	// which loses nothing (it reloads from its source). Before #140 this line
+	// carried "(UNSAFE: dictionary change requires CREATE OR REPLACE ...)" —
+	// and no such statement was ever emitted.
 	want := `database "posthog"
   + dictionary new_dict
   - dictionary old_dict
-  ~ dictionary rebuild_dict (UNSAFE: dictionary change requires CREATE OR REPLACE DICTIONARY (changed: layout, source))
+  ~ dictionary rebuild_dict
       ~ layout changed
       ~ source changed
 `

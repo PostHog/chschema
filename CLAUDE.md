@@ -91,13 +91,12 @@ The `justfile` has the full recipe list.
 # Testing
 
 ## Unit Tests
-- Run with: `go test ./internal/... -v`
-- Located in each internal package
+- Run with: `go test ./internal/... ./cmd/... -v`
+- Located in each internal package, plus `cmd/hclexp` (CLI wiring and the
+  text/JSON renderers — CI runs these, so `./internal/...` alone is not enough)
 
-## Integration Tests (Snapshot-based)
+## Integration Tests
 - Run with: `go test ./test -v`
-- SQL snapshot tests validate generated DDL
-- Update snapshots: `go test ./test -update-snapshots`
 
 ## Live ClickHouse Integration Tests
 - Run with: `go test ./test -v -clickhouse`
@@ -318,7 +317,10 @@ is modified.
 
 - always write the plan to markdown plan, when a plan changes, update the md file
 - in go.mod never change module name or go version
-- run tests with: `go test ./test -v` and `go test ./internal/... -v`
+- run tests with: `go test ./...` — CI runs `./internal/... ./cmd/...` (with
+  `-race`) and `./test/...`, so never trust `./internal/...` alone: the CLI
+  wiring and the text/JSON renderers live in `cmd/hclexp` and do assert on
+  rendered output
 - run live tests with: `go test ./test -v -clickhouse` (requires docker compose up -d)
 - you can run clickhouse client directly: clickhouse client
 - use gopls-io mcp when possible
