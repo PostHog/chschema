@@ -46,6 +46,9 @@ func main() {
 	case "drift":
 		runDrift(os.Args[2:])
 		return
+	case "locate":
+		runLocate(os.Args[2:])
+		return
 	case "sql2hcl":
 		runSQL2HCL(os.Args[2:])
 		return
@@ -96,6 +99,8 @@ Commands:
   validate     check that MV and Distributed dependency references resolve
   drift        detect cross-node schema drift across per-node HCL dumps
                (-format json for structured output)
+  locate       find every declaration site of an object across manifest
+               layers and dump directories (-duplicates audits the once-only rule)
   sql2hcl      apply SQL DDL edits (CREATE/ALTER/DROP/RENAME) to an HCL schema
   load         parse and resolve an HCL config, layer stack, or manifest role
                (default when flags are given)
