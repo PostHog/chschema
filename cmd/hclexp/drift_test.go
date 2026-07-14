@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -42,19 +44,6 @@ func TestGroupKey(t *testing.T) {
 	assert.Equal(t, "ingestion-events", groupKey(n, []string{"role"}))
 	assert.Equal(t, "3/a", groupKey(n, []string{"shard", "replica"}))
 	assert.Equal(t, "(none)", groupKey(n, []string{"missingMacro"}))
-}
-
-func TestSummarizeChanges(t *testing.T) {
-	cs := hclload.ChangeSet{
-		Databases: []hclload.DatabaseChange{{
-			Database:             "posthog",
-			AddTables:            []hclload.TableSpec{{Name: "a"}},
-			AlterTables:          []hclload.TableDiff{{Table: "b"}, {Table: "c"}},
-			AddMaterializedViews: []hclload.MaterializedViewSpec{{Name: "mv"}},
-		}},
-	}
-	assert.Equal(t, "+1 table, ~2 table, +1 mv", summarizeChanges(cs))
-	assert.Equal(t, "changed", summarizeChanges(hclload.ChangeSet{}))
 }
 
 func TestLoadDriftNodes_Glob(t *testing.T) {
@@ -158,4 +147,159 @@ func TestLoadAndGroupDriftNodes(t *testing.T) {
 	// Identity is parsed from the node name.
 	assert.Equal(t, "3", drifted.Shard)
 	assert.Equal(t, "role1", drifted.Role)
+}
+
+// writeDriftNode writes one per-node dump file into dir.
+func writeDriftNode(t *testing.T, dir, name, hcl string) {
+	t.Helper()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, name+".hcl"), []byte(hcl), 0o644))
+}
+
+const driftBaseHCL = `
+database "d" {
+  table "events" {
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+    order_by = ["id"]
+  }
+}
+`
+
+// An MV present only on the drifter surfaces as status "added" with a CREATE
+// operation — pinning the descriptive reference -> drifter direction.
+func TestBuildDriftDoc_Direction(t *testing.T) {
+	dir := t.TempDir()
+	writeDriftNode(t, dir, "node-a", driftBaseHCL)
+	writeDriftNode(t, dir, "node-b", driftBaseHCL+`
+database "d" {
+  materialized_view "mv_events" {
+    to_table = "events"
+    query    = "SELECT id FROM d.events"
+    column "id" { type = "UInt64" }
+  }
+}
+`)
+	nodes, err := loadDriftNodes(dir, "*")
+	require.NoError(t, err)
+	doc := buildDriftDoc(nodes, []string{"role"})
+
+	require.Len(t, doc.Groups, 1)
+	g := doc.Groups[0]
+	assert.Equal(t, "node-a", g.Reference)
+	assert.Equal(t, 2, g.Nodes)
+	require.Len(t, g.Drifters, 1)
+	d := g.Drifters[0]
+	assert.Equal(t, "node-b", d.Node)
+	require.Len(t, d.Objects, 1)
+	assert.Equal(t, hclload.StatusAdded, d.Objects[0].Status)
+	assert.Equal(t, hclload.KindMaterializedView, d.Objects[0].ObjectType)
+	require.NotEmpty(t, d.Objects[0].Operations)
+	assert.Equal(t, hclload.OpCreate, d.Objects[0].Operations[0].Kind)
+	assert.Equal(t, hclload.CompareSummary{MVsAdded: 1}, d.Summary)
+	assert.Equal(t, "+1 mv", d.Summary.OneLiner())
+
+	assert.Equal(t, hclload.DriftRunSummary{
+		Nodes: 2, Groups: 1, GroupsWithDrift: 1, DriftingNodes: 1,
+	}, doc.Summary)
+}
+
+// A node drifting ONLY in a raw block yields non-zero raw counts and a
+// non-"changed" one-liner — regression for the summarizeChanges gap.
+func TestBuildDriftDoc_RawOnlyDrift(t *testing.T) {
+	dir := t.TempDir()
+	writeDriftNode(t, dir, "node-a", driftBaseHCL+`
+database "d" {
+  raw "table" "legacy" {
+    sql = "CREATE TABLE d.legacy (id UInt64) ENGINE = MergeTree ORDER BY id"
+  }
+}
+`)
+	writeDriftNode(t, dir, "node-b", driftBaseHCL+`
+database "d" {
+  raw "table" "legacy" {
+    sql = "CREATE TABLE d.legacy (id UInt32) ENGINE = MergeTree ORDER BY id"
+  }
+}
+`)
+	nodes, err := loadDriftNodes(dir, "*")
+	require.NoError(t, err)
+	doc := buildDriftDoc(nodes, []string{"role"})
+
+	require.Len(t, doc.Groups, 1)
+	require.Len(t, doc.Groups[0].Drifters, 1)
+	d := doc.Groups[0].Drifters[0]
+	assert.Equal(t, hclload.CompareSummary{RawsAltered: 1}, d.Summary)
+	assert.Equal(t, "~1 raw", d.Summary.OneLiner())
+	assert.Equal(t, "table", d.Objects[0].RawKind)
+}
+
+// A node drifting ONLY in a named collection: same regression, other kind.
+func TestBuildDriftDoc_NamedCollectionOnlyDrift(t *testing.T) {
+	dir := t.TempDir()
+	writeDriftNode(t, dir, "node-a", driftBaseHCL+`
+named_collection "s3_creds" {
+  param "url" { value = "https://a" }
+}
+`)
+	writeDriftNode(t, dir, "node-b", driftBaseHCL+`
+named_collection "s3_creds" {
+  param "url" { value = "https://b" }
+}
+`)
+	nodes, err := loadDriftNodes(dir, "*")
+	require.NoError(t, err)
+	doc := buildDriftDoc(nodes, []string{"role"})
+
+	require.Len(t, doc.Groups, 1)
+	require.Len(t, doc.Groups[0].Drifters, 1)
+	d := doc.Groups[0].Drifters[0]
+	assert.Equal(t, hclload.CompareSummary{NamedCollectionsChanged: 1}, d.Summary)
+	assert.Equal(t, "~1 named_collection", d.Summary.OneLiner())
+	require.Len(t, d.Objects, 1)
+	assert.Equal(t, hclload.StatusAltered, d.Objects[0].Status)
+	assert.Equal(t, []hclload.FieldChange{
+		{Field: "param:url", Change: "modify", New: "https://b"},
+	}, d.Objects[0].Changes)
+}
+
+// No drift: groups populated, drifters empty, zero summary counts.
+func TestBuildDriftDoc_Clean(t *testing.T) {
+	dir := t.TempDir()
+	writeDriftNode(t, dir, "node-a", driftBaseHCL)
+	writeDriftNode(t, dir, "node-b", driftBaseHCL)
+	nodes, err := loadDriftNodes(dir, "*")
+	require.NoError(t, err)
+	doc := buildDriftDoc(nodes, []string{"role"})
+	require.Len(t, doc.Groups, 1)
+	assert.Empty(t, doc.Groups[0].Drifters)
+	assert.Equal(t, hclload.DriftRunSummary{Nodes: 2, Groups: 1}, doc.Summary)
+}
+
+// The text report derives its one-liner from the same CompareSummary the JSON
+// carries, so a raw-only drifter can no longer print the bare "changed".
+func TestRenderDriftText(t *testing.T) {
+	doc := hclload.DriftJSON{
+		Groups: []hclload.DriftGroup{{
+			Key: "ops", Reference: "node-a", Nodes: 2,
+			Drifters: []hclload.DriftNode{{
+				Node:    "node-b",
+				Summary: hclload.CompareSummary{RawsAltered: 1},
+				Objects: []hclload.ObjectComparison{{
+					Database: "d", Object: "legacy", ObjectType: hclload.KindRaw,
+					RawKind: "table", Status: hclload.StatusAltered,
+				}},
+			}},
+		}},
+		Summary: hclload.DriftRunSummary{Nodes: 2, Groups: 1, GroupsWithDrift: 1, DriftingNodes: 1},
+	}
+
+	var buf bytes.Buffer
+	renderDriftText(&buf, doc, true)
+	assert.Equal(t, `group "ops" — 2 nodes, reference node-a — 1 drifting
+  ✗ node-b: ~1 raw
+      database "d"
+        ~ raw table legacy
+
+summary: 2 nodes, 1 groups, 1 groups with drift, 1 drifting nodes
+`, buf.String())
 }
