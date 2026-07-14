@@ -35,10 +35,21 @@ type PlanOperation struct {
 	UnsafeReason string   `json:"unsafe_reason"`
 }
 
+// RoleComparison is one role's per-object view of its diff. Unlike the
+// merged Operations list it is deliberately NOT deduped across roles —
+// triage is per (env, role), so a shared object drifting on two roles
+// appears under both.
+type RoleComparison struct {
+	Role    string             `json:"role"`
+	Objects []ObjectComparison `json:"objects"`
+	Summary CompareSummary     `json:"summary"`
+}
+
 // PlanResult is the merged, globally-ordered plan across every role.
 type PlanResult struct {
-	Operations []PlanOperation `json:"operations"`
-	Unsafe     []JSONUnsafe    `json:"unsafe,omitempty"`
+	Operations []PlanOperation  `json:"operations"`
+	Unsafe     []JSONUnsafe     `json:"unsafe,omitempty"`
+	Roles      []RoleComparison `json:"roles"`
 }
 
 // BuildPlan diffs every role, unions the per-role operations into one global
@@ -60,8 +71,16 @@ func BuildPlan(roles []RoleDiff) PlanResult {
 	byKey := make(map[opKey]*PlanOperation)
 	unsafeByRef := make(map[ObjectRef]string)
 
+	// Non-nil so an empty plan marshals roles as [], not null (same contract
+	// as DiffJSON.Objects).
+	roleComparisons := make([]RoleComparison, 0, len(roles))
 	for _, rd := range roles {
-		gen := GenerateSQL(Diff(rd.Current, rd.Desired))
+		cs := Diff(rd.Current, rd.Desired)
+		gen := GenerateSQL(cs)
+		objs := BuildObjectComparisons(cs, gen, rd.Current, rd.Desired)
+		roleComparisons = append(roleComparisons, RoleComparison{
+			Role: rd.Role, Objects: objs, Summary: SummarizeComparisons(objs),
+		})
 		for _, op := range gen.Ops {
 			k := opKey{op.Kind, op.Database, op.Object, op.SQL}
 			po, ok := byKey[k]
@@ -135,6 +154,23 @@ func BuildPlan(roles []RoleDiff) PlanResult {
 		}
 		return result.Unsafe[i].Object < result.Unsafe[j].Object
 	})
+
+	// Each role's ops were numbered against that role's own diff. Renumber them
+	// to the merged global order so an object's nested operations and the flat
+	// execution list agree on sequencing.
+	orderByKey := map[opKey]int{}
+	for _, po := range result.Operations {
+		orderByKey[opKey{po.Kind, po.Database, po.Object, po.SQL}] = po.Order
+	}
+	for ri := range roleComparisons {
+		for oi := range roleComparisons[ri].Objects {
+			ops := roleComparisons[ri].Objects[oi].Operations
+			for pi := range ops {
+				ops[pi].Order = orderByKey[opKey{ops[pi].Kind, ops[pi].Database, ops[pi].Object, ops[pi].SQL}]
+			}
+		}
+	}
+	result.Roles = roleComparisons
 	return result
 }
 

@@ -158,3 +158,37 @@ func TestBuildPlan_ManualMaterializeIndexPropagates(t *testing.T) {
 	assert.Contains(t, byManual[false].SQL, "ADD INDEX idx_id")
 	assert.Equal(t, "ALTER TABLE posthog.events MATERIALIZE INDEX idx_id", byManual[true].SQL)
 }
+
+// Each role gets its own (non-deduped) object comparison list; a shared
+// object drifting on two roles appears under both, and nested op orders
+// reference the merged global list.
+func TestBuildPlanRoleComparisons(t *testing.T) {
+	idCol := ColumnSpec{Name: "id", Type: "UInt64"}
+	shared := mkTable("shared_t", EngineMergeTree{}, idCol)
+	shared.OrderBy = []string{"id"}
+
+	empty := &Schema{}
+	desired := &Schema{Databases: []DatabaseSpec{mkDB("d", shared)}}
+
+	plan := BuildPlan([]RoleDiff{
+		{Role: "ops", Desired: desired, Current: empty},
+		{Role: "logs", Desired: desired, Current: empty},
+	})
+
+	require.Len(t, plan.Roles, 2)
+	for i, role := range []string{"ops", "logs"} {
+		rc := plan.Roles[i]
+		assert.Equal(t, role, rc.Role)
+		assert.Equal(t, CompareSummary{TablesAdded: 1}, rc.Summary)
+		require.Len(t, rc.Objects, 1)
+		assert.Equal(t, StatusAdded, rc.Objects[0].Status)
+		require.Len(t, rc.Objects[0].Operations, 1)
+	}
+
+	// The identical CREATE dedupes to ONE global operation; both roles' nested
+	// op carries that operation's global order.
+	require.Len(t, plan.Operations, 1)
+	assert.Equal(t, []string{"ops", "logs"}, plan.Operations[0].Roles)
+	assert.Equal(t, plan.Operations[0].Order, plan.Roles[0].Objects[0].Operations[0].Order)
+	assert.Equal(t, plan.Operations[0].Order, plan.Roles[1].Objects[0].Operations[0].Order)
+}
