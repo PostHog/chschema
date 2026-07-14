@@ -1,5 +1,7 @@
 # `hclexp locate` Implementation Plan (issue #144)
 
+**Status: DONE** — implemented and merged as `5756e98` (PR #145), 2026-07-15.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** A read-only `hclexp locate` command that finds every declaration site of an object across manifest layers and dump directories, derives which (role, env) stacks place each site, and (via `-duplicates`) lists objects declared at more than one plain site so CI can enforce the once-only rule even for layers that never co-compose.
@@ -53,7 +55,7 @@
   - `func ScanDeclarations(files []string) ([]Declaration, error)`
   - `func MatchesPattern(pattern, database, name string) bool`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `internal/loader/hcl/locate_test.go`:
 
@@ -167,12 +169,12 @@ func TestMatchesPattern(t *testing.T) {
 
 Note on line numbers: the heredoc content starts with a newline, so `database` is line 2, the first `table` block line 3, etc. If an assertion fails on lines, recount against the literal — do not loosen the assertion.
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `go test ./internal/loader/hcl/ -run 'TestScanDeclarations|TestMatchesPattern' -v`
 Expected: compile error — `undefined: ScanDeclarations`, `undefined: Declaration`, `undefined: MatchesPattern`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `internal/loader/hcl/locate.go`:
 
@@ -340,12 +342,12 @@ func MatchesPattern(pattern, database, name string) bool {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `go test ./internal/loader/hcl/ -run 'TestScanDeclarations|TestMatchesPattern' -v`
 Expected: PASS (3 tests). If go-cty was somehow not a direct dep, `go mod tidy` would fix it — go.mod line 12 already lists `github.com/zclconf/go-cty v1.16.3`, so no change expected; **do not touch the module name or go version**.
 
-- [ ] **Step 5: Run the package suite and commit**
+- [x] **Step 5: Run the package suite and commit**
 
 Run: `go test ./internal/loader/hcl/`
 Expected: ok.
@@ -376,7 +378,7 @@ name and db.name qualified form). Groundwork for hclexp locate (#144)."
   - `type DuplicateGroup struct { Database, Name string; Declarations []Declaration }`
   - `func FindDuplicates(decls []Declaration) []DuplicateGroup`
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Append to `internal/loader/hcl/locate_test.go`:
 
@@ -427,12 +429,12 @@ func TestFindDuplicates(t *testing.T) {
 
 (Expected order: groups sorted by database then name — `kafka_creds` has the empty database, so it sorts first; declarations within a group sorted by file then line.)
 
-- [ ] **Step 2: Run the test to verify it fails**
+- [x] **Step 2: Run the test to verify it fails**
 
 Run: `go test ./internal/loader/hcl/ -run TestFindDuplicates -v`
 Expected: compile error — `undefined: FindDuplicates`.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Append to `internal/loader/hcl/locate.go` (add `"sort"` to the imports):
 
@@ -488,12 +490,12 @@ func FindDuplicates(decls []Declaration) []DuplicateGroup {
 }
 ```
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [x] **Step 4: Run the test to verify it passes**
 
 Run: `go test ./internal/loader/hcl/ -run TestFindDuplicates -v`
 Expected: PASS.
 
-- [ ] **Step 5: Run the package suite and commit**
+- [x] **Step 5: Run the package suite and commit**
 
 Run: `go test ./internal/loader/hcl/`
 Expected: ok.
@@ -528,7 +530,7 @@ co-compose, which LoadLayers alone cannot see (#144)."
   - `func renderLocateText(w io.Writer, doc locateDoc)` and `func renderDuplicatesText(w io.Writer, doc locateDoc)`
   - JSON doc types `locateDoc`, `locateObject`, `locateDecl`, `locateDump`, `locatePlacement` (shapes below).
 
-- [ ] **Step 1: Write the failing tests**
+- [x] **Step 1: Write the failing tests**
 
 Create `cmd/hclexp/locate_test.go`:
 
@@ -753,12 +755,12 @@ func TestRenderLocateText(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the tests to verify they fail**
+- [x] **Step 2: Run the tests to verify they fail**
 
 Run: `go test ./cmd/hclexp/ -run 'TestLocate|TestParseManifestAllEnvs|TestBuildLocateDoc|TestRenderLocate' -v`
 Expected: compile error — `undefined: locateFlagsError` etc.
 
-- [ ] **Step 3: Write the implementation**
+- [x] **Step 3: Write the implementation**
 
 Create `cmd/hclexp/locate.go`:
 
@@ -1112,12 +1114,12 @@ func renderDuplicatesText(w io.Writer, doc locateDoc) {
 
 (`runLocate` comes in Task 4; keeping it out of this task means this task compiles and tests as a unit. `flag`, `json`, `slog`, `os` imports arrive with Task 4 — drop them from the import block here and let Task 4 add them, or add them now and reference them in Task 4; either way `gofmt`/`go vet` must be clean at commit time, so remove any unused import before committing.)
 
-- [ ] **Step 4: Run the tests to verify they pass**
+- [x] **Step 4: Run the tests to verify they pass**
 
 Run: `go test ./cmd/hclexp/ -run 'TestLocate|TestParseManifestAllEnvs|TestBuildLocateDoc|TestRenderLocate' -v`
 Expected: PASS (7 tests). Line-number assertions count lines in the heredoc literals (leading newline makes `database` line 2).
 
-- [ ] **Step 5: Run the package suite and commit**
+- [x] **Step 5: Run the package suite and commit**
 
 Run: `go test ./cmd/hclexp/ ./internal/loader/hcl/`
 Expected: ok.
@@ -1147,7 +1149,7 @@ shape, so the two formats cannot disagree (#144)."
 - Consumes: everything from Task 3; `isDir` (cmd/hclexp/load_manifest.go:197).
 - Produces: `func runLocate(args []string)`, `locate` subcommand.
 
-- [ ] **Step 1: Append `runLocate` to `cmd/hclexp/locate.go`**
+- [x] **Step 1: Append `runLocate` to `cmd/hclexp/locate.go`**
 
 ```go
 // runLocate answers "where is object X declared?" across a manifest's layer
@@ -1217,7 +1219,7 @@ func runLocate(args []string) {
 
 Add the now-needed imports to `cmd/hclexp/locate.go`: `encoding/json`, `flag`, `log/slog`, `os`.
 
-- [ ] **Step 2: Wire the dispatch and usage**
+- [x] **Step 2: Wire the dispatch and usage**
 
 In `cmd/hclexp/hclexp.go`, add to the `switch os.Args[1]` (keep alphabetical-ish grouping; after the `"drift"` case is fine):
 
@@ -1234,7 +1236,7 @@ In `usage()`, after the `drift` line:
                layers and dump directories (-duplicates audits the once-only rule)
 ```
 
-- [ ] **Step 3: Build and verify against the test tree by hand**
+- [x] **Step 3: Build and verify against the test tree by hand**
 
 ```bash
 go build -o hclexp ./cmd/hclexp && go vet ./cmd/... ./internal/...
@@ -1251,12 +1253,12 @@ Smoke-run against a throwaway tree (mirror the `locateTree` layout in the scratc
 ```
 Expected: sites with `file:line`, placements per stack; `-duplicates` prints `duplicate table posthog.person (2 sites)` and exits 1; the no-match run prints `locate: no objects match "nosuch"` and exits 1.
 
-- [ ] **Step 4: Run the full suite**
+- [x] **Step 4: Run the full suite**
 
 Run: `go test ./...`
 Expected: all packages ok (live tests skip without `-clickhouse`).
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add cmd/hclexp/locate.go cmd/hclexp/hclexp.go
@@ -1278,7 +1280,7 @@ that matched nothing, so existence checks are scriptable (#144)."
 - Modify: `docs/README.hcl.md` (insert a new `##` section after `## Cross-role planning — hclexp plan`, before whatever follows it)
 - Modify: `CLAUDE.md` (Supported Features)
 
-- [ ] **Step 1: Add the README section**
+- [x] **Step 1: Add the README section**
 
 Insert into `docs/README.hcl.md`:
 
@@ -1329,7 +1331,7 @@ Exit codes: 0 found / no duplicates; 1 no match, duplicates found, or a
 load error; 2 usage.
 ````
 
-- [ ] **Step 2: Add the CLAUDE.md bullet**
+- [x] **Step 2: Add the CLAUDE.md bullet**
 
 In `CLAUDE.md`, add a subsection after `### Cross-role planning (hclexp plan)`:
 
@@ -1346,7 +1348,7 @@ In `CLAUDE.md`, add a subsection after `### Cross-role planning (hclexp plan)`:
   co-compose; a plain query exits 1 on no match (scriptable existence check)
 ```
 
-- [ ] **Step 3: Final verification and commit**
+- [x] **Step 3: Final verification and commit**
 
 Run: `go test ./...` and `git status` (per project rule, before writing any PR description).
 Expected: all ok; only the intended files changed.
