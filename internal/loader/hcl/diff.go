@@ -59,9 +59,26 @@ func (rc RawChange) IsUnsafe() bool { return rc.Kind == "table" }
 type DictionaryDiff struct {
 	Name    string
 	Changed []string
+
+	// New is the target spec. The CREATE OR REPLACE DICTIONARY that
+	// reconciles the change is rendered from it.
+	New DictionarySpec
+
+	// SkippedRedactedSecrets names source fields (the DDL argument name, e.g.
+	// "password") whose comparison was suppressed because one side holds the
+	// RedactedValue marker and the other a real value. hclexp cannot tell
+	// whether they differ, so it says so rather than guessing. Mirrors
+	// NamedCollectionChange.SkippedRedactedParams.
+	SkippedRedactedSecrets []string
 }
 
-func (d DictionaryDiff) IsEmpty() bool  { return len(d.Changed) == 0 }
+// IsEmpty counts a skipped secret as a difference: a dictionary whose only
+// divergence is an unverifiable credential is reported (with no DDL) rather
+// than certified equal.
+func (d DictionaryDiff) IsEmpty() bool {
+	return len(d.Changed) == 0 && len(d.SkippedRedactedSecrets) == 0
+}
+
 func (d DictionaryDiff) IsUnsafe() bool { return false }
 
 // MaterializedViewDiff is the set of mutations to a single existing
@@ -550,16 +567,18 @@ func indexDictionaries(ds []DictionarySpec) map[string]*DictionarySpec {
 // path that differs. Source/layout comparison uses reflect.DeepEqual on
 // the decoded typed value (Body and Kind are diff-skipped artifacts).
 func diffDictionary(from, to *DictionarySpec) DictionaryDiff {
-	d := DictionaryDiff{Name: to.Name}
+	d := DictionaryDiff{Name: to.Name, New: *to}
 	if !reflect.DeepEqual(from.PrimaryKey, to.PrimaryKey) {
 		d.Changed = append(d.Changed, "primary_key")
 	}
 	if !reflect.DeepEqual(from.Attributes, to.Attributes) {
 		d.Changed = append(d.Changed, "attributes")
 	}
-	if !dictSourceEqual(from.Source, to.Source) {
+	sourceEqual, unverifiable := compareDictSources(from.Source, to.Source)
+	if !sourceEqual {
 		d.Changed = append(d.Changed, "source")
 	}
+	d.SkippedRedactedSecrets = unverifiable
 	if !dictLayoutEqual(from.Layout, to.Layout) {
 		d.Changed = append(d.Changed, "layout")
 	}
@@ -581,11 +600,50 @@ func diffDictionary(from, to *DictionarySpec) DictionaryDiff {
 	return d
 }
 
-func dictSourceEqual(a, b *DictionarySourceSpec) bool {
+// compareDictSources compares two dictionary sources, accounting for a
+// credential neither observer may be able to see (RedactedValue, "[HIDDEN]").
+// It returns whether the sources are equal, plus the DDL argument names of any
+// secret whose equality could not be established.
+//
+// Per secret field, three verdicts:
+//
+//	[HIDDEN] vs [HIDDEN] — equal, silently. Both sides are equally blind, which
+//	  is the normal drift case (every node dumped by the same user). The blind
+//	  spot is real and unfixable from here: two genuinely different hidden
+//	  secrets read as equal. No observer without displaySecretsInShowAndSelect
+//	  can do better.
+//	[HIDDEN] vs a real value — unverifiable. The field is masked out of the
+//	  equality check and reported, so an authored secret is never mistaken for
+//	  a change against a cluster that would not show its own.
+//	[HIDDEN] vs absent — a real difference. Present-vs-absent is visible even
+//	  when the value is not.
+//
+// Every other field compares exactly as before.
+func compareDictSources(a, b *DictionarySourceSpec) (equal bool, unverifiable []string) {
 	if a == nil || b == nil {
-		return a == b
+		return a == b, nil
 	}
-	return a.Kind == b.Kind && reflect.DeepEqual(a.Decoded, b.Decoded)
+	if a.Kind != b.Kind {
+		return false, nil
+	}
+
+	da, db := a.Decoded, b.Decoded
+	if da != nil && db != nil {
+		field, aRedacted := dictSecretIsRedacted(da)
+		_, bRedacted := dictSecretIsRedacted(db)
+		_, av := dictSecret(da)
+		_, bv := dictSecret(db)
+		// Asymmetric redaction with a value on the other side: mask the field on
+		// both copies so the rest of the source still compares, and report it.
+		// (Redacted-vs-absent falls through: the marker differs from nil, so it
+		// stays a genuine difference.)
+		if aRedacted != bRedacted && av != nil && bv != nil {
+			unverifiable = append(unverifiable, field)
+			da = withDictSecret(da, nil)
+			db = withDictSecret(db, nil)
+		}
+	}
+	return reflect.DeepEqual(da, db), unverifiable
 }
 
 func dictLayoutEqual(a, b *DictionaryLayoutSpec) bool {

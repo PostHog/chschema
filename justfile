@@ -32,23 +32,19 @@ coverage:
     go test -race -coverprofile=coverage.out ./internal/... ./cmd/...
     go tool cover -func=coverage.out
 
-# Run unit and snapshot tests
+# Run every test CI runs (unit + integration)
 test:
-    go test ./internal/... -v
+    go test ./internal/... ./cmd/... -v
     go test ./test -v
 
-# Run unit tests only
+# Run unit tests only (./cmd/... included: its renderers assert on output)
 test-unit:
-    go test ./internal/... -v
+    go test ./internal/... ./cmd/... -v
 
-# Run snapshot/integration tests only
+# Run integration tests only
 test-integration:
     go test ./test -v
 
 # Run live ClickHouse integration tests (requires: docker compose up -d)
 test-live:
     go test ./test -v -clickhouse
-
-# Update SQL snapshot fixtures
-test-update-snapshots:
-    go test ./test -update-snapshots

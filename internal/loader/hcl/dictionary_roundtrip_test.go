@@ -2,6 +2,8 @@ package hcl
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -40,6 +42,48 @@ func rtDumpDictHCL(t *testing.T, d DictionarySpec) string {
 // hclwrite's `=` column alignment.
 func rtFlatWS(s string) string {
 	return strings.Join(strings.Fields(s), " ")
+}
+
+// The redaction marker must survive introspect → dump file → load, because
+// that is the path nearly every comparison actually takes: `drift` diffs
+// per-node HCL dumps, and the golden gate diffs against a dump written
+// earlier. If introspection dropped the redacted password (as it did before
+// #140), the dump would merely have NO password — indistinguishable from a
+// dictionary that genuinely has none — and the authored golden would diff as
+// a phantom `source` change on every run, forever.
+func TestDictionaryRT_RedactionMarkerSurvivesDumpAndLoad(t *testing.T) {
+	introspected := rtDictFromDDL(t, "CREATE DICTIONARY db.d (k UInt64, v String) PRIMARY KEY k "+
+		"SOURCE(MYSQL(HOST 'h' USER 'u' PASSWORD '[HIDDEN]')) LIFETIME(0) LAYOUT(HASHED())")
+
+	var buf strings.Builder
+	require.NoError(t, Write(&buf, &Schema{
+		Databases: []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{introspected}}},
+	}))
+	assert.Contains(t, rtFlatWS(buf.String()), `password = "[HIDDEN]"`)
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "dump.hcl")
+	require.NoError(t, os.WriteFile(path, []byte(buf.String()), 0o644))
+	dumped, err := LoadLayers([]string{path})
+	require.NoError(t, err)
+	require.Len(t, dumped.Databases[0].Dictionaries, 1)
+
+	// The authored golden holds the real secret. Against the dump file, that is
+	// unverifiable — not a change.
+	authored := rtDictFromDDL(t, "CREATE DICTIONARY db.d (k UInt64, v String) PRIMARY KEY k "+
+		"SOURCE(MYSQL(HOST 'h' USER 'u' PASSWORD 's3cret')) LIFETIME(0) LAYOUT(HASHED())")
+	golden := &Schema{Databases: []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{authored}}}}
+
+	cs := Diff(dumped, golden)
+	require.Len(t, cs.Databases[0].AlterDictionaries, 1)
+	dd := cs.Databases[0].AlterDictionaries[0]
+	assert.Empty(t, dd.Changed, "no phantom source change against a dump file")
+	assert.Equal(t, []string{"password"}, dd.SkippedRedactedSecrets)
+	assert.Empty(t, GenerateSQL(cs).Statements)
+
+	// dump ↔ dump (the drift case): both nodes equally blind, so they compare
+	// clean rather than showing permanent drift.
+	assert.True(t, Diff(dumped, dumped).IsEmpty())
 }
 
 // Unknown layout/source args must abort, not silently drop (#115) — the

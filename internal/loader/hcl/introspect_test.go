@@ -502,8 +502,10 @@ COMMENT 'fx rates by date'`
 	assert.Equal(t, SourceClickHouse{
 		Query: ptr("SELECT currency, start_date, end_date, rate FROM db.exchange_rate"),
 		User:  ptr("default"),
-		// Password '[HIDDEN]' is redacted by ClickHouse and intentionally dropped
-		// on introspect so it is never re-emitted (issue #52).
+		// ClickHouse redacted the password; the marker is kept so the diff can
+		// tell "unknown secret" from "no secret". It is blocked at emission,
+		// never written back (see TestBuildDictionarySource_KeepsRedactedPassword).
+		Password: ptr(RedactedValue),
 	}, got.Source.Decoded)
 
 	require.NotNil(t, got.Layout)
@@ -586,10 +588,12 @@ func TestBuildDictionaryFromAST_RegexpTreeLayout(t *testing.T) {
 	assert.Contains(t, createDictionarySQL("posthog", d), "LAYOUT(REGEXP_TREE())")
 }
 
-func TestBuildDictionarySource_DropsRedactedPassword(t *testing.T) {
-	// ClickHouse redacts secrets to [HIDDEN] in create_table_query; introspect
-	// must not capture or re-emit it, or applying a dump would overwrite the
-	// real password with "[HIDDEN]" (issue #52).
+func TestBuildDictionarySource_KeepsRedactedPassword(t *testing.T) {
+	// ClickHouse redacts secrets to [HIDDEN] in create_table_query. Introspect
+	// KEEPS the marker (so a dump can still say "this dictionary has a secret I
+	// cannot see" — otherwise it is indistinguishable from having none), and
+	// issue #52's guarantee is enforced at emission instead: no generated
+	// statement may carry the marker back to a cluster.
 	const sql = "CREATE DICTIONARY db.d (`k` UInt64, `v` String) PRIMARY KEY k " +
 		"SOURCE(CLICKHOUSE(TABLE 't' DB 'db' USER 'default' PASSWORD '[HIDDEN]')) " +
 		"LAYOUT(HASHED()) LIFETIME(0)"
@@ -597,10 +601,16 @@ func TestBuildDictionarySource_DropsRedactedPassword(t *testing.T) {
 	require.NoError(t, err)
 	src, ok := d.Source.Decoded.(SourceClickHouse)
 	require.True(t, ok)
-	assert.Nil(t, src.Password, "redacted [HIDDEN] password must not be captured")
-	assert.NotContains(t, createDictionarySQL("db", d), "[HIDDEN]")
-	// a non-redacted password is still captured
-	assert.NotNil(t, src.User)
+	assert.Equal(t, ptr(RedactedValue), src.Password, "the redaction marker must survive introspection")
+	assert.NotNil(t, src.User, "a non-secret arg is still captured")
+
+	// #52, restated: the marker never reaches a cluster.
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{{
+		Database: "db", AddDictionaries: []DictionarySpec{d},
+	}}})
+	assert.Empty(t, out.Statements)
+	require.Len(t, out.Unsafe, 1)
+	assert.Contains(t, out.Unsafe[0].Reason, `dictionary source secret "password" is unknown to hclexp`)
 }
 
 func TestBuildDictionaryFromAST_UnsupportedLayout(t *testing.T) {

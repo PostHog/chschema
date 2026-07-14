@@ -621,6 +621,66 @@ func TestDictionaryDiff_EmptyAndUnsafe(t *testing.T) {
 	d := DictionaryDiff{Name: "d", Changed: []string{"query"}}
 	assert.False(t, d.IsEmpty())
 	assert.False(t, d.IsUnsafe())
+
+	// An unverifiable secret is a difference hclexp cannot resolve, not an
+	// absence of one: the object is reported (with no DDL) rather than
+	// certified equal.
+	skipped := DictionaryDiff{Name: "d", SkippedRedactedSecrets: []string{"password"}}
+	assert.False(t, skipped.IsEmpty())
+	assert.False(t, skipped.IsUnsafe())
+}
+
+// compareDictSources decides what a secret neither observer may be able to see
+// means for equality. The three verdicts are the whole reason dictionaries can
+// now be reconciled with CREATE OR REPLACE without clobbering credentials.
+func TestCompareDictSources_RedactedSecret(t *testing.T) {
+	src := func(password *string) *DictionarySourceSpec {
+		return &DictionarySourceSpec{
+			Kind:    "mysql",
+			Decoded: SourceMySQL{Host: ptr("h"), User: ptr("u"), Password: password},
+		}
+	}
+	hidden, real1, real2 := ptr(RedactedValue), ptr("s3cret"), ptr("rotated")
+
+	t.Run("both hidden: equal, and silent", func(t *testing.T) {
+		// The normal drift case — every node dumped by the same user. Two nodes
+		// whose hidden passwords genuinely differ read as equal; no observer
+		// without displaySecretsInShowAndSelect can do better.
+		equal, unverifiable := compareDictSources(src(hidden), src(hidden))
+		assert.True(t, equal)
+		assert.Empty(t, unverifiable)
+	})
+
+	t.Run("hidden vs real: masked out and reported", func(t *testing.T) {
+		// Authored HCL holds the real secret; the cluster would not show its
+		// own. Without this, every run would report a phantom source change.
+		equal, unverifiable := compareDictSources(src(hidden), src(real1))
+		assert.True(t, equal, "the rest of the source still compares")
+		assert.Equal(t, []string{"password"}, unverifiable)
+	})
+
+	t.Run("hidden vs absent: a real difference", func(t *testing.T) {
+		// Present-vs-absent is visible even when the value is not.
+		equal, unverifiable := compareDictSources(src(hidden), src(nil))
+		assert.False(t, equal)
+		assert.Empty(t, unverifiable)
+	})
+
+	t.Run("both visible: a rotation still diffs", func(t *testing.T) {
+		equal, unverifiable := compareDictSources(src(real1), src(real2))
+		assert.False(t, equal)
+		assert.Empty(t, unverifiable)
+	})
+
+	t.Run("a non-secret field still diffs while a secret is unverifiable", func(t *testing.T) {
+		other := &DictionarySourceSpec{
+			Kind:    "mysql",
+			Decoded: SourceMySQL{Host: ptr("elsewhere"), User: ptr("u"), Password: real1},
+		}
+		equal, unverifiable := compareDictSources(src(hidden), other)
+		assert.False(t, equal, "masking the secret must not mask the host")
+		assert.Equal(t, []string{"password"}, unverifiable)
+	})
 }
 
 func TestDatabaseChange_IsEmpty_CoversDictionaries(t *testing.T) {
@@ -681,6 +741,36 @@ func TestDiff_Dictionaries(t *testing.T) {
 	t.Run("identical produces no change", func(t *testing.T) {
 		dbs := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
 		assert.True(t, Diff(&Schema{Databases: dbs}, &Schema{Databases: dbs}).IsEmpty())
+	})
+
+	t.Run("the diff carries the target spec, so sqlgen can render it", func(t *testing.T) {
+		changed := base
+		changed.Lifetime = &DictionaryLifetime{Min: ptr(int64(60)), Max: ptr(int64(600))}
+		from := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{base}}}
+		to := []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{changed}}}
+		cs := Diff(&Schema{Databases: from}, &Schema{Databases: to})
+		require.Len(t, cs.Databases[0].AlterDictionaries, 1)
+		dd := cs.Databases[0].AlterDictionaries[0]
+		assert.Equal(t, []string{"lifetime"}, dd.Changed)
+		assert.Equal(t, changed, dd.New, "the target spec IS the CREATE OR REPLACE")
+	})
+
+	t.Run("an unverifiable secret is the whole difference", func(t *testing.T) {
+		// The live side was introspected by a user who could not see the secret.
+		live := mkDict("d", SourceMySQL{Host: ptr("h"), Password: ptr(RedactedValue)}, LayoutHashed{},
+			DictionaryAttribute{Name: "k", Type: "UInt64"})
+		authored := mkDict("d", SourceMySQL{Host: ptr("h"), Password: ptr("s3cret")}, LayoutHashed{},
+			DictionaryAttribute{Name: "k", Type: "UInt64"})
+		cs := Diff(
+			&Schema{Databases: []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{live}}}},
+			&Schema{Databases: []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{authored}}}},
+		)
+		require.Len(t, cs.Databases[0].AlterDictionaries, 1)
+		dd := cs.Databases[0].AlterDictionaries[0]
+		assert.Empty(t, dd.Changed, "no phantom source change")
+		assert.Equal(t, []string{"password"}, dd.SkippedRedactedSecrets)
+		assert.False(t, dd.IsEmpty(), "reported, but with nothing to reconcile")
+		assert.Empty(t, GenerateSQL(cs).Statements)
 	})
 }
 

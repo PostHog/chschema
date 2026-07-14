@@ -331,10 +331,17 @@ func fieldChangesForView(vd ViewDiff) []FieldChange {
 // fieldChangesForDictionary maps each changed field path to one modify entry
 // (ClickHouse dictionaries reconcile via CREATE OR REPLACE, so there are no
 // per-field old/new values in the diff).
+//
+// A source secret hclexp could not verify is reported as [HIDDEN] on BOTH
+// sides even though one side's real value is known: diff output lands in CI
+// logs, and a real credential must never be printed there.
 func fieldChangesForDictionary(dd DictionaryDiff) []FieldChange {
-	out := make([]FieldChange, 0, len(dd.Changed))
+	out := make([]FieldChange, 0, len(dd.Changed)+len(dd.SkippedRedactedSecrets))
 	for _, path := range dd.Changed {
 		out = append(out, FieldChange{Field: path, Change: "modify"})
+	}
+	for _, field := range dd.SkippedRedactedSecrets {
+		out = append(out, FieldChange{Field: "source." + field, Change: "modify", Old: RedactedValue, New: RedactedValue})
 	}
 	return out
 }

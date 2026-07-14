@@ -61,6 +61,50 @@ func TestBuildObjectComparisons(t *testing.T) {
 	}
 }
 
+// The object view of a dictionary change: an altered dictionary carries the
+// CREATE OR REPLACE that reconciles it (before #140 it carried nothing and was
+// flagged unsafe), while a dictionary whose only divergence is an unverifiable
+// secret is reported with zero operations.
+func TestBuildObjectComparisons_Dictionaries(t *testing.T) {
+	attr := DictionaryAttribute{Name: "k", Type: "UInt64"}
+	dictDB := func(ds ...DictionarySpec) []DatabaseSpec {
+		return []DatabaseSpec{{Name: "posthog", Dictionaries: ds}}
+	}
+
+	rates := mkDict("rates", SourceNull{}, LayoutHashed{}, attr)
+	ratesNew := rates
+	ratesNew.Lifetime = &DictionaryLifetime{Min: ptr(int64(60)), Max: ptr(int64(600))}
+
+	// Introspected: the server would not show this password. Authored: it does.
+	usersLive := mkDict("users", SourceMySQL{Host: ptr("h"), Password: ptr(RedactedValue)}, LayoutHashed{}, attr)
+	usersAuthored := mkDict("users", SourceMySQL{Host: ptr("h"), Password: ptr("s3cret")}, LayoutHashed{}, attr)
+
+	left := &Schema{Databases: dictDB(rates, usersLive)}
+	right := &Schema{Databases: dictDB(ratesNew, usersAuthored)}
+
+	cs := Diff(left, right)
+	gen := GenerateSQL(cs)
+	byName := map[string]ObjectComparison{}
+	for _, o := range BuildObjectComparisons(cs, gen, left, right) {
+		byName[o.Object] = o
+	}
+
+	altered := byName["rates"]
+	assert.Equal(t, StatusAltered, altered.Status)
+	assert.Equal(t, KindDictionary, altered.ObjectType)
+	assert.False(t, altered.Unsafe, "a dictionary reloads from its source; replacing it loses nothing")
+	assert.Equal(t, []FieldChange{{Field: "lifetime", Change: "modify"}}, altered.Changes)
+	require.Len(t, altered.Operations, 1)
+	assert.Contains(t, altered.Operations[0].SQL, "CREATE OR REPLACE DICTIONARY posthog.rates")
+
+	unverifiable := byName["users"]
+	assert.Equal(t, StatusAltered, unverifiable.Status)
+	assert.Empty(t, unverifiable.Operations, "hclexp cannot rewrite a dictionary around a secret it does not know")
+	assert.Equal(t, []FieldChange{
+		{Field: "source.password", Change: "modify", Old: RedactedValue, New: RedactedValue},
+	}, unverifiable.Changes)
+}
+
 func TestSummarizeComparisonsAndOneLiner(t *testing.T) {
 	objs := []ObjectComparison{
 		{ObjectType: KindTable, Status: StatusAdded},
@@ -197,6 +241,17 @@ func TestFieldChangesForDictionaryRawNamedCollection(t *testing.T) {
 		{Field: "layout", Change: "modify"},
 		{Field: "source.clickhouse.table", Change: "modify"},
 	}, fieldChangesForDictionary(DictionaryDiff{Name: "d", Changed: []string{"layout", "source.clickhouse.table"}}))
+
+	// An unverifiable secret reports [HIDDEN] on BOTH sides even though the
+	// authored side's real value is known — diff output lands in CI logs.
+	assert.Equal(t, []FieldChange{
+		{Field: "lifetime", Change: "modify"},
+		{Field: "source.password", Change: "modify", Old: "[HIDDEN]", New: "[HIDDEN]"},
+	}, fieldChangesForDictionary(DictionaryDiff{
+		Name:                   "d",
+		Changed:                []string{"lifetime"},
+		SkippedRedactedSecrets: []string{"password"},
+	}))
 
 	assert.Equal(t, []FieldChange{
 		{Field: "sql", Change: "modify", Old: "CREATE TABLE a", New: "CREATE TABLE b"},

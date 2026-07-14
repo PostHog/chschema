@@ -47,6 +47,29 @@ func dropDictionarySQL(database, name string) string {
 	return fmt.Sprintf("DROP DICTIONARY %s.%s", database, name)
 }
 
+// redactedSecretBlock reports why no DDL may be generated from d, or "" when
+// there is no obstacle.
+//
+// A dictionary is reconciled by rewriting it whole (CREATE OR REPLACE), which
+// means every attribute of the target spec is written — including the source
+// credential. If that credential is the RedactedValue marker, hclexp does not
+// know the real one, so the statement would install the dictionary without it
+// (or, worse, with the literal placeholder). There is no partial form to fall
+// back on, so the whole object is handed to the operator instead.
+func redactedSecretBlock(d DictionarySpec) string {
+	if d.Source == nil || d.Source.Decoded == nil {
+		return ""
+	}
+	field, redacted := dictSecretIsRedacted(d.Source.Decoded)
+	if !redacted {
+		return ""
+	}
+	return fmt.Sprintf("dictionary source secret %q is unknown to hclexp (%s: redacted by the server at introspection, "+
+		"or declared unmanaged in HCL); CREATE OR REPLACE DICTIONARY would write the dictionary without the real value. "+
+		"Grant displaySecretsInShowAndSelect AND set display_secrets_in_show_and_select=1, or apply this change manually",
+		field, RedactedValue)
+}
+
 func dictionaryAttributeSQL(a DictionaryAttribute) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "`%s` %s", a.Name, a.Type)

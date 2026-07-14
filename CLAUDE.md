@@ -49,14 +49,11 @@ The `hclexp` binary is composed of these packages:
 # Build the active binary
 go build -o hclexp ./cmd/hclexp
 
-# Run unit + snapshot tests
+# Run every test CI runs (./internal/... ./cmd/... and ./test)
 just test
 
 # Live ClickHouse integration tests (needs: docker compose up -d)
 just test-live
-
-# Update snapshot fixtures
-just test-update-snapshots
 ```
 
 The `justfile` has the full recipe list.
@@ -91,13 +88,12 @@ The `justfile` has the full recipe list.
 # Testing
 
 ## Unit Tests
-- Run with: `go test ./internal/... -v`
-- Located in each internal package
+- Run with: `go test ./internal/... ./cmd/... -v`
+- Located in each internal package, plus `cmd/hclexp` (CLI wiring and the
+  text/JSON renderers — CI runs these, so `./internal/...` alone is not enough)
 
-## Integration Tests (Snapshot-based)
+## Integration Tests
 - Run with: `go test ./test -v`
-- SQL snapshot tests validate generated DDL
-- Update snapshots: `go test ./test -update-snapshots`
 
 ## Live ClickHouse Integration Tests
 - Run with: `go test ./test -v -clickhouse`
@@ -135,6 +131,19 @@ The `justfile` has the full recipe list.
   explicit `column` list, `cluster`, `comment`
 - ✅ `view` and `dictionary` top-level blocks (parsed, resolved, diffed,
   and emitted as DDL)
+- ✅ A changed `dictionary` reconciles via `CREATE OR REPLACE DICTIONARY` — one
+  atomic statement rewriting the whole object, safe (a dictionary holds no
+  persistent data; it reloads from its source) and never flagged unsafe
+- ✅ Secrets: ClickHouse redacts a credential to `[HIDDEN]` unless the
+  introspecting user has `displaySecretsInShowAndSelect`. The marker is kept
+  **in-band** (dictionary sources and named-collection params alike) so it
+  round-trips through a dump and a comparison can tell "secret I cannot see"
+  from "no secret". It compares as unknown (both sides hidden → equal; hidden
+  vs a real value → reported unverifiable, excluded from the diff; hidden vs
+  absent → a real difference), and `sqlgen` refuses to emit any statement
+  containing it — a whole-object rewrite would otherwise install the dictionary
+  without its credential. Authored `password = "[HIDDEN]"` declares a secret
+  managed outside hclexp. See `docs/README.hcl.md`
 - ✅ Long view/MV `query` as a one-liner, HCL heredoc, or `file("x.sql")`;
   all normalize to a canonical beautified form so formatting never diffs as
   drift (see `docs/README.hcl.md`)
@@ -305,7 +314,10 @@ is modified.
 
 - always write the plan to markdown plan, when a plan changes, update the md file
 - in go.mod never change module name or go version
-- run tests with: `go test ./test -v` and `go test ./internal/... -v`
+- run tests with: `go test ./...` — CI runs `./internal/... ./cmd/...` (with
+  `-race`) and `./test/...`, so never trust `./internal/...` alone: the CLI
+  wiring and the text/JSON renderers live in `cmd/hclexp` and do assert on
+  rendered output
 - run live tests with: `go test ./test -v -clickhouse` (requires docker compose up -d)
 - you can run clickhouse client directly: clickhouse client
 - use gopls-io mcp when possible
