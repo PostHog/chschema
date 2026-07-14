@@ -49,14 +49,11 @@ The `hclexp` binary is composed of these packages:
 # Build the active binary
 go build -o hclexp ./cmd/hclexp
 
-# Run unit + snapshot tests
+# Run every test CI runs (./internal/... ./cmd/... and ./test)
 just test
 
 # Live ClickHouse integration tests (needs: docker compose up -d)
 just test-live
-
-# Update snapshot fixtures
-just test-update-snapshots
 ```
 
 The `justfile` has the full recipe list.
