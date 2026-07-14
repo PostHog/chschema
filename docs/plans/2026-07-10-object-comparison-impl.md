@@ -16,6 +16,39 @@ Spec: `docs/plans/2026-07-10-object-comparison.md`.
 
 **Tech Stack:** Go, HCL (hashicorp/hcl v2), testify.
 
+## Deviations recorded during implementation
+
+The plan below is what was executed, with these changes (all of them discovered
+by running the code, not by re-reading the spec):
+
+1. **`ObjectComparison` gained `RawKind`** (`json:"raw_kind,omitempty"`), the
+   inner kind of a `raw{}` block. Only a raw *table* holds rows on disk, so its
+   DROP+CREATE recreate is the destructive one — dropping the kind from the
+   output (as Task 5's table originally did) would hide exactly the case that
+   matters most. Text renders `~ raw table legacy`.
+2. **Multi-line field values render as `~ <field> changed`.** Raw DDL is stored
+   canonicalized (multi-line), so `~ sql: <old> -> <new>` spilled across lines
+   and wrecked the layout under `drift -details`' indentation. Any value
+   containing a newline is now treated like `query`: presence is the signal, and
+   the JSON carries the full text. (`render_text.go`, regression test in
+   `render_text_test.go`.)
+3. **Task 5's expected-string table was wrong in three rows** — expectations were
+   re-derived from actual output: an added column renders `+ column x = T` (not
+   `+ column x T`); an altered raw table's unsafe reason comes from `gen.Unsafe`
+   ("raw table change requires DROP + CREATE, which destroys the table's data"),
+   not the fallback string; and an altered **dictionary** now renders
+   `(UNSAFE: dictionary change requires CREATE OR REPLACE DICTIONARY (…))`,
+   because sqlgen pushes every altered dictionary into `gen.Unsafe` even though
+   `DictionaryDiff.IsUnsafe()` is false. That last one is a pre-existing
+   inconsistency already visible in today's `diff -format json`; it is preserved
+   here, not fixed.
+4. **`prefixWriter`/`linePrefixer` widened from `*os.File` to `io.Writer`**, so
+   `renderDriftText` takes an `io.Writer` and the drift text path has a test.
+5. **No snapshot refresh was needed** — `test/` holds no diff-JSON fixtures.
+6. Commit granularity: Tasks 4 and 5 landed as one commit (both edit
+   `render_json.go`/`hclexp.go`, and the signing agent locked mid-run, so the
+   working tree could not be split cleanly).
+
 ## Global Constraints
 
 - Never change the module name or go version in `go.mod`.

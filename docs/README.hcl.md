@@ -431,6 +431,8 @@ hclexp drift -dir prod/eu -group-by role -details      # finer grouping + full d
 | `-group-by` | `hostClusterRole` | comma-separated grouping keys: macro names, or the pseudo-keys `role`/`shard`/`replica` parsed from the node name |
 | `-zk-paths` | `mask-uuid`       | ReplicatedMergeTree `zoo_path` handling: `mask-uuid` (replace the literal table UUID with `{uuid}`), `keep` (verbatim), or `ignore` (blank path + replica) |
 | `-details`  | off               | print each drifting node's full change set, not just a one-line summary |
+| `-format`   | `text`            | `text` (prose report) or `json` (see [Structured comparison output](#structured-comparison-output)) |
+| `-exclude`  | —                 | exclude config; matching objects are dropped from every node before comparing |
 
 ClickHouse expands the `{uuid}` macro to the table's literal UUID at
 `CREATE` time (while keeping `{shard}`/`{replica}` as macros), so the same
@@ -441,6 +443,13 @@ so only genuine path differences register.
 A drifting node is printed as `✗ <name>: <summary>` (e.g. `+16 table, -8
 table, +8 mv`); a fully consistent group prints `OK (all identical)`. The
 command exits non-zero when any drift is found, so it works as a CI guard.
+`-format json` emits the same comparison as structured data (see
+[Structured comparison output](#structured-comparison-output)).
+
+Direction is descriptive, not prescriptive: a drifter's changes describe how it
+differs **from its reference**, and the reference is merely the group's
+lexically-first member — not a source of truth. For desired state, diff against
+the HCL with `plan`/`diff`.
 
 `hostClusterRole` is coarse and can merge distinct pools (`ingestion`
 spans ingestion-events / -medium / -small; `data` spans online and offline
@@ -454,23 +463,35 @@ committed dump: ClickHouse's atomic-replace temporaries (`_tmp_replace_*`),
 migration/DAG scratch tables (`tmp_*`), backups, staging, and backfills. Their
 DDL also often can't be parsed, which would otherwise abort introspection.
 
-`introspect` and `dump-cluster` take `-exclude <file>`, an HCL config:
+`introspect`, `dump-cluster`, `diff`, `plan`, and `drift` all take
+`-exclude <file>`, an HCL config:
 
 ```hcl
 exclude {
-  patterns = ["_tmp_replace_*", "tmp_*", "*_backup", "*_backup_*", "*_staging", "*_backfill"]
+  patterns     = ["_tmp_replace_*", "tmp_*", "*_backup", "*_backup_*", "*_staging", "*_backfill"]
+  object_types = ["named_collection"]   # optional: drop a whole class, whatever its name
 }
 ```
 
 ```bash
 hclexp introspect   -database posthog -exclude exclude.hcl -out posthog.hcl
 hclexp dump-cluster -cluster ops -out-dir ./prod -exclude exclude.hcl
+hclexp diff  -left ./schema -right clickhouse://... -exclude exclude.hcl
+hclexp drift -dir ./prod -exclude exclude.hcl
 ```
 
 Patterns are globs (`*` `?` `[..]`), matched against both the bare object name
 and the `<database>.<name>` qualified form (so `posthog.*_staging` scopes to one
-database). Matching objects are **skipped before their DDL is parsed**, so they
-neither appear in the dump nor break introspection. A starter config is at
+database). `object_types` excludes a whole class regardless of name — valid
+values are `table`, `materialized_view`, `view`, `dictionary`, `raw`, and
+`named_collection` (useful when, say, named collections hold secrets managed out
+of band).
+
+On `introspect`/`dump-cluster` a matching object is **skipped before its DDL is
+parsed**, so it neither appears in the dump nor breaks introspection. On the
+comparison commands (`diff`, `plan`, `drift`) **both sides** are filtered before
+the diff runs, so an excluded object appears in no output, no operation, and no
+count — no post-filtering of the JSON needed. A starter config is at
 [`examples/exclude.hcl`](../examples/exclude.hcl).
 
 ## SQL → HCL edits — `hclexp sql2hcl`
@@ -562,7 +583,115 @@ role "data" {
 - Output: `-format json` (default) or `text`. CREATE and widening ALTERs flow in
   dependency order (a referenced object before its referrers — storage → proxies
   → MV); DROP runs in reverse. Identical statements across roles dedupe to one
-  operation carrying the union of contributing `roles`.
+  operation carrying the union of contributing `roles`. Alongside the merged
+  `operations`, the JSON carries a `roles` list: each role's own
+  [object comparisons](#structured-comparison-output) with derived counts,
+  deliberately **not** deduped (triage is per role, execution is global).
+- `-exclude` drops matching objects from both sides of every role's diff.
+
+## Structured comparison output
+
+`diff -format json`, `plan`, and `drift -format json` all describe a comparison
+with the same per-object model, so an agent or CI gate never has to parse DDL
+strings to learn what changed.
+
+```bash
+hclexp diff -left ./schema -right clickhouse://... -format json | jq '.summary'
+```
+
+```json
+{
+  "objects": [
+    {
+      "database": "posthog", "object": "events", "object_type": "table",
+      "status": "altered",
+      "changes": [
+        {"field": "column:event",   "change": "add",    "new": "String"},
+        {"field": "column:team_id", "change": "modify", "old": "UInt32", "new": "UInt64"}
+      ],
+      "operations": [
+        {"order": 1, "kind": "ALTER", "object_type": "table",
+         "database": "posthog", "object": "events", "engine": "MergeTree",
+         "sql": "ALTER TABLE posthog.events ADD COLUMN event String, MODIFY COLUMN team_id UInt64",
+         "manual": false, "unsafe": false}
+      ],
+      "unsafe": false
+    }
+  ],
+  "operations": [ "… the same ops, flat and dependency-ordered — the execution view" ],
+  "summary": {"tables_added": 1, "tables_altered": 1, "…": 0}
+}
+```
+
+`objects` is the per-object view and `operations` the flat execution view of the
+**same** diff; an object's nested `operations` carry their index into the global
+list as `order`, so the two can never disagree about sequencing. `summary` counts
+are derived from `objects` (keys: `tables_added`/`_dropped`/`_altered`, same for
+`mvs_`, `views_`, `dicts_`, `raws_`, plus `named_collections_changed`).
+
+**`status` is right-relative:** `added` means the right side of the comparison
+has the object and the left does not. `diff` and `plan` put the *desired* schema
+on the right (so `added` will be CREATEd), while `drift` puts the *drifter* on
+the right — its output describes how that node differs from its group reference,
+and is **not** a fix script.
+
+An object with an unsafe change carries `unsafe: true` and `unsafe_reason`, and
+may have **no** operations at all: an in-place-impossible change (ORDER BY,
+engine, a raw table recreate) is reported, never auto-emitted. Raw blocks also
+carry `raw_kind` (`table`/`view`/`dictionary`/…) — only a raw *table* holds rows,
+so its DROP+CREATE is the destructive one.
+
+### `field` vocabulary
+
+`changes` is only present on `altered` objects. Each entry has a `field`, a
+`change` (`add` | `drop` | `modify` | `rename`), and the `old`/`new` values
+(omitted when a side is unset).
+
+| `field` | Applies to |
+|---|---|
+| `column:<name>` | table |
+| `index:<name>`, `projection:<name>`, `constraint:<name>` | table |
+| `setting:<name>` | table |
+| `engine`, `order_by`, `primary_key`, `partition_by`, `sample_by`, `ttl` | table |
+| `comment` | table, view, named collection |
+| `query` | view, materialized view |
+| `to_table`, `columns` | materialized view (either forces a recreate) |
+| `column_aliases`, `sql_security`, `definer`, `cluster` | view (each forces a recreate) |
+| `param:<name>`, `on_cluster` | named collection |
+| `sql` | raw block |
+| a dotted config path (`layout`, `source.clickhouse.table`, …) | dictionary |
+
+How values render: a column as a compact descriptor (`Nullable(String) MATERIALIZED
+upper(s) CODEC(LZ4)`), an engine as its SQL clause, `order_by`/`primary_key`
+comma-joined. A rename is reported on the **new** name (`column:<new>`, with `old`
+= the previous name). Two cases carry no per-field values, because the diff holds
+none: a dictionary reconciles via `CREATE OR REPLACE`, so it emits one `modify`
+per changed config path; and a named-collection `param:` set is always `modify`
+with `new` only (`ALTER … SET` overwrites, even for a param that is new). A param
+whose value is redacted on either side reports `[HIDDEN]` on both — hclexp could
+not verify equality (grant `displaySecretsInShowAndSelect` to compare).
+
+### `drift -format json`
+
+Same objects, wrapped per node:
+
+```json
+{
+  "groups": [{
+    "key": "ops", "reference": "node-a", "nodes": 2,
+    "drifters": [{
+      "node": "node-b", "file": "prod/node-b.hcl", "macros": {"…": "…"},
+      "objects": [ "… ObjectComparison, reference -> this node …" ],
+      "summary": {"raws_altered": 1, "…": 0}
+    }]
+  }],
+  "summary": {"nodes": 2, "groups": 1, "groups_with_drift": 1, "drifting_nodes": 1}
+}
+```
+
+The text report's one-liner (`✗ node-b: ~1 raw`) is rendered from the same
+`summary`, so every object kind counts — a node drifting only in a `raw` block or
+a named collection is reported as such.
 
 ## Browsing a schema — `hclexp web`
 

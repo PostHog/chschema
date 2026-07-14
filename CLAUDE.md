@@ -156,11 +156,15 @@ The `justfile` has the full recipe list.
 ### Introspection & Dumping
 - ✅ **Tables** — `hclexp introspect` round-trips tables (columns,
   indexes, constraints, engine, ORDER/PARTITION/SAMPLE/TTL/SETTINGS)
-- ✅ **Exclude patterns** — `introspect`/`dump-cluster` take `-exclude <file>`,
-  an HCL config with an `exclude { patterns = [...] }` glob list. Objects whose
-  name (or `db.name`) matches are skipped *before* their DDL is parsed, so
-  transient tables (`_tmp_replace_*`, migration `tmp_*`, `*_backup`, `*_staging`,
-  …) neither land in the dump nor abort introspection. See `examples/exclude.hcl`.
+- ✅ **Exclude patterns** — `introspect`/`dump-cluster`/`diff`/`plan`/`drift` take
+  `-exclude <file>`, an HCL config with an `exclude { patterns = [...] }` glob
+  list plus an optional `object_types = [...]` (drop a whole class, e.g.
+  `named_collection`). Objects whose name (or `db.name`) matches are skipped
+  *before* their DDL is parsed, so transient tables (`_tmp_replace_*`, migration
+  `tmp_*`, `*_backup`, `*_staging`, …) neither land in the dump nor abort
+  introspection. On the comparison commands `FilterSchema` drops them from *both*
+  sides before the diff, so they appear in no output and no count. See
+  `examples/exclude.hcl`.
 - ✅ **Materialized Views** — TO-form only; inner-engine, refreshable,
   and window views are rejected with a clear error
 - ✅ **Views & Dictionaries** — round-tripped as HCL
@@ -181,10 +185,15 @@ The `justfile` has the full recipe list.
 - ✅ Compares per-node HCL dumps in a directory; groups nodes and diffs
   each group against its lexically-first reference node
 - ✅ `-dir`, `-glob` (filename filter), `-group-by` (macro names or the
-  pseudo-keys `role`/`shard`/`replica`), `-details`; exits non-zero on
-  drift (CI guard)
+  pseudo-keys `role`/`shard`/`replica`), `-details`, `-exclude`; exits non-zero
+  on drift (CI guard)
 - ✅ `-zk-paths` (default `mask-uuid`) normalizes ReplicatedMergeTree
   `zoo_path` (table UUID → `{uuid}`) so per-shard path noise isn't drift
+- ✅ `-format text|json`: JSON emits groups → drifters, each carrying the same
+  per-object comparisons `diff` emits plus derived counts. Direction is
+  descriptive (reference → drifter), NOT a fix script. The text one-liner is
+  rendered from the same counts, so raw-block and named-collection drift are
+  counted instead of printing the bare `changed` fallback
 
 ### SQL → HCL edits (`hclexp sql2hcl`)
 - ✅ Applies ClickHouse DDL to a left-side HCL schema and emits updated HCL,
@@ -201,10 +210,23 @@ The `justfile` has the full recipe list.
   schema, pair with `hclexp diff -sql` to preview the migration
 - ❌ Does not rewrite layered source files in place
 
-### Structured diff output (`hclexp diff -format json`)
-- ✅ `-format text` (default) or `json`; JSON emits a dependency-ordered
-  `operations` list (kind, object_type, database, object, engine, replicated,
-  sql, unsafe) plus a top-level `unsafe` list, for migration generators / CI
+### Structured comparison output (`diff -format json`, `plan`, `drift -format json`)
+- ✅ One shared model (`internal/loader/hcl/compare.go`): `ObjectComparison` =
+  one differing object, with attribute-level `FieldChange`s (old/new) and the
+  DDL ops that reconcile it. It is a *serialization of the existing ChangeSet* —
+  `BuildObjectComparisons(cs, gen, left, right)` — never a second diff engine
+- ✅ `diff -format json` emits `objects` + `summary` (counts derived from
+  `objects`) alongside the unchanged flat `operations`/`unsafe` lists; an
+  object's nested ops carry their index into the global list, so the object view
+  and the execution view can't disagree. `-exclude` filters both sides
+- ✅ Text mode renders from the same `[]ObjectComparison`
+  (`RenderObjectComparisons`), so text/JSON/counts cannot contradict each other
+- ✅ `status` is right-relative: `added` = present only on the right side of the
+  `Diff(left, right)` call. `diff`/`plan` put desired on the right; `drift` puts
+  the drifter on the right
+- ✅ The `field` vocabulary (`column:`/`index:`/`projection:`/`constraint:`/
+  `setting:`/`param:`/`engine`/`order_by`/…) is a public contract, documented in
+  `docs/README.hcl.md`
 
 ### Composing a node from the manifest (`hclexp load`)
 - ✅ `-manifest`/`-env` compose a node straight from the same role manifest
@@ -226,7 +248,10 @@ The `justfile` has the full recipe list.
   before its Distributed/Buffer proxies before the MV), with `roles` provenance
 - ✅ Manifest is role-first HCL with nested `env` blocks selected by `-env`;
   dump nodes match roles by `hostClusterRole` macro, replicas collapse to one
-  representative; `-format json|text`
+  representative; `-format json|text`; `-exclude` filters both sides
+- ✅ Alongside the merged `operations`, emits `roles`: each role's own
+  (non-deduped) object comparisons with derived counts — triage is per
+  (env, role), execution stays on the deduped global list
 
 ### Browse a schema (`hclexp web`)
 - ✅ Serves a read-only web UI to browse a resolved HCL schema (databases,
