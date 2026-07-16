@@ -149,7 +149,7 @@ func TestRunLoadManifest_SingleRoleToFile(t *testing.T) {
 	composed, err := composeManifestRoles(roles, root)
 	require.NoError(t, err)
 	require.NoError(t, checkOutTarget(out, len(composed)))
-	require.NoError(t, writeComposedRoles(out, "dev", composed))
+	require.NoError(t, writeComposedRoles(out, "dev", defaultOutName, composed))
 
 	body, err := os.ReadFile(out)
 	require.NoError(t, err)
@@ -168,7 +168,7 @@ func TestRunLoadManifest_AllRolesToDir(t *testing.T) {
 	composed, err := composeManifestRoles(roles, root)
 	require.NoError(t, err)
 	require.NoError(t, checkOutTarget(out, len(composed)))
-	require.NoError(t, writeComposedRoles(out, "dev", composed))
+	require.NoError(t, writeComposedRoles(out, "dev", defaultOutName, composed))
 
 	for _, name := range []string{"dev-data.hcl", "dev-aux.hcl"} {
 		_, err := os.Stat(filepath.Join(out, name))
@@ -181,7 +181,7 @@ func TestRunLoadManifest_AllRolesToDir(t *testing.T) {
 	require.NoError(t, err)
 	stagingComposed, err := composeManifestRoles(stagingRoles, root)
 	require.NoError(t, err)
-	require.NoError(t, writeComposedRoles(stagingOut, "staging", stagingComposed))
+	require.NoError(t, writeComposedRoles(stagingOut, "staging", defaultOutName, stagingComposed))
 
 	entries, err := os.ReadDir(stagingOut)
 	require.NoError(t, err)
@@ -298,16 +298,18 @@ func TestWriteLoadJSON_RoleFilter(t *testing.T) {
 
 func TestLoadFlagsError(t *testing.T) {
 	tests := []struct {
-		name                                string
-		manifest, env, role, format, layers string
-		configSet                           bool
-		wantErr                             string
+		name                                         string
+		manifest, env, role, format, layers, outName string
+		configSet                                    bool
+		wantErr                                      string
 	}{
 		{name: "layer mode", format: "hcl"},
 		{name: "layer mode with layers", format: "hcl", layers: "a,b"},
 		{name: "manifest mode", manifest: "m.hcl", env: "dev", format: "hcl"},
 		{name: "manifest mode with role", manifest: "m.hcl", env: "dev", role: "ops", format: "hcl"},
 		{name: "manifest json", manifest: "m.hcl", env: "dev", format: "json"},
+		{name: "manifest out-name", manifest: "m.hcl", env: "dev", format: "hcl", outName: "{env}/{role}"},
+		{name: "manifest static out-name", manifest: "m.hcl", env: "dev", format: "hcl", outName: "{env}/schema"},
 
 		{name: "manifest without env", manifest: "m.hcl", format: "hcl",
 			wantErr: "-manifest and -env must be used together"},
@@ -323,10 +325,19 @@ func TestLoadFlagsError(t *testing.T) {
 			wantErr: "-manifest is mutually exclusive with -layer and -config"},
 		{name: "manifest and config", manifest: "m.hcl", env: "dev", format: "hcl", configSet: true,
 			wantErr: "-manifest is mutually exclusive with -layer and -config"},
+		{name: "out-name without manifest", format: "hcl", outName: "{env}/{role}",
+			wantErr: "-out-name requires -manifest"},
+		{name: "out-name with json", manifest: "m.hcl", env: "dev", format: "json", outName: "{env}/{role}",
+			wantErr: "-out-name applies to hcl output"},
+		{name: "out-name unknown placeholder", manifest: "m.hcl", env: "dev", format: "hcl", outName: "{env}/{rolle}",
+			wantErr: "unknown placeholder {rolle}"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := loadFlagsError(tc.manifest, tc.env, tc.role, tc.format, tc.layers, tc.configSet)
+			if tc.outName == "" {
+				tc.outName = defaultOutName
+			}
+			err := loadFlagsError(tc.manifest, tc.env, tc.role, tc.format, tc.layers, tc.outName, tc.configSet)
 			if tc.wantErr == "" {
 				require.NoError(t, err)
 				return
@@ -334,6 +345,79 @@ func TestLoadFlagsError(t *testing.T) {
 			require.ErrorContains(t, err, tc.wantErr)
 		})
 	}
+}
+
+// -out-name '{env}/{role}' writes the per-env directory layout directly, so
+// golden-tree generators need no host-side mv reshaping (issue #146).
+func TestWriteComposedRoles_OutNamePerEnvLayout(t *testing.T) {
+	root, manifest := twoRoleManifest(t)
+	out := t.TempDir()
+
+	roles, err := parseManifest(manifest, "dev")
+	require.NoError(t, err)
+	composed, err := composeManifestRoles(roles, root)
+	require.NoError(t, err)
+	require.NoError(t, writeComposedRoles(out, "dev", "{env}/{role}", composed))
+
+	for _, name := range []string{"dev/data.hcl", "dev/aux.hcl"} {
+		_, err := os.Stat(filepath.Join(out, name))
+		require.NoError(t, err, "expected %s", name)
+	}
+
+	// The written file still round-trips to the composed schema.
+	reloaded, err := loadSide(filepath.Join(out, "dev", "aux.hcl"))
+	require.NoError(t, err)
+	require.True(t, hclload.Diff(composed[1].Schema, reloaded).IsEmpty())
+}
+
+// A single role with a static template is the union case from #146
+// (-role all -out-name '{env}/schema'); two roles colliding on one path is
+// an error naming both, never a silent overwrite.
+func TestWriteComposedRoles_OutNameStaticAndCollision(t *testing.T) {
+	root, manifest := twoRoleManifest(t)
+	out := t.TempDir()
+
+	roles, err := parseManifest(manifest, "dev")
+	require.NoError(t, err)
+	composed, err := composeManifestRoles(roles, root)
+	require.NoError(t, err)
+
+	err = writeComposedRoles(out, "dev", "{env}/schema", composed)
+	require.ErrorContains(t, err, `roles "data" and "aux" both render`)
+
+	single := composed[:1]
+	require.NoError(t, writeComposedRoles(out, "dev", "{env}/schema", single))
+	_, err = os.Stat(filepath.Join(out, "dev", "schema.hcl"))
+	require.NoError(t, err)
+}
+
+// Rendered names may not leave the -out directory.
+func TestWriteComposedRoles_OutNameEscapes(t *testing.T) {
+	root, manifest := twoRoleManifest(t)
+	out := t.TempDir()
+
+	roles, err := parseManifest(manifest, "dev")
+	require.NoError(t, err)
+	composed, err := composeManifestRoles(roles, root)
+	require.NoError(t, err)
+
+	require.ErrorContains(t, writeComposedRoles(out, "dev", "../{role}", composed),
+		"escapes the -out directory")
+	require.ErrorContains(t, writeComposedRoles(out, "dev", "/abs/{role}", composed),
+		"must be relative to -out")
+}
+
+func TestRenderOutName(t *testing.T) {
+	got, err := renderOutName("{env}/{role}", "prod-us", "ops")
+	require.NoError(t, err)
+	require.Equal(t, "prod-us/ops", got)
+
+	got, err = renderOutName(defaultOutName, "dev", "aux")
+	require.NoError(t, err)
+	require.Equal(t, "dev-aux", got)
+
+	_, err = renderOutName("{env}/{shard}", "dev", "aux")
+	require.ErrorContains(t, err, "unknown placeholder {shard}")
 }
 
 // A composed role written out as canonical HCL reloads to the same schema the
@@ -348,7 +432,7 @@ func TestRunLoadManifest_RoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	composed, err := composeManifestRoles(roles, root)
 	require.NoError(t, err)
-	require.NoError(t, writeComposedRoles(out, "dev", composed))
+	require.NoError(t, writeComposedRoles(out, "dev", defaultOutName, composed))
 
 	reloaded, err := loadSide(out)
 	require.NoError(t, err)

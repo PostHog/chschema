@@ -247,6 +247,11 @@ The `justfile` has the full recipe list.
 - ✅ `-role <name>` composes one role; without it every role deployed in `-env`
   is composed and `-out` must name a directory (one `<env>-<role>.hcl` each).
   Several roles cannot go to stdout — their `database` blocks would collide
+- ✅ `-out-name` templates the file names written into the `-out` directory
+  (default `{env}-{role}`); `{env}`/`{role}` expand, `.hcl` is appended, and
+  template subdirectories are created — `-out-name '{env}/{role}'` writes the
+  per-env tree `golden/<env>/<role>.hcl` directly. Unknown placeholders,
+  paths escaping `-out`, and two roles rendering to one path are errors
 - ✅ `-format json` emits each role's declared and resolved layer stack, for
   callers that need the stack itself rather than the composed schema; the
   stacks come from the manifest alone (no composition), so it answers "what

@@ -518,14 +518,15 @@ func runLoad(args []string) {
 	roleFlag := fs.String("role", "", "compose only this role from -manifest (default: every role deployed in -env)")
 	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under")
 	formatFlag := fs.String("format", "hcl", "output format: hcl (default) or json (the resolved layer stack per role, from the manifest alone — the layer dirs need not exist; requires -manifest)")
+	outNameFlag := fs.String("out-name", defaultOutName, "file name template for composed roles written into the -out directory; {env} and {role} expand, .hcl is appended, subdirectories are created (e.g. '{env}/{role}')")
 	_ = fs.Parse(args)
 
-	if err := loadFlagsError(*manifestFlag, *envFlag, *roleFlag, *formatFlag, *layersFlag, flagWasSet(fs, "config")); err != nil {
+	if err := loadFlagsError(*manifestFlag, *envFlag, *roleFlag, *formatFlag, *layersFlag, *outNameFlag, flagWasSet(fs, "config")); err != nil {
 		slog.Error("invalid flags", "err", err)
 		os.Exit(2)
 	}
 	if *manifestFlag != "" {
-		runLoadManifest(*manifestFlag, *envFlag, *roleFlag, *layerRootFlag, *formatFlag, *outFlag)
+		runLoadManifest(*manifestFlag, *envFlag, *roleFlag, *layerRootFlag, *formatFlag, *outFlag, *outNameFlag)
 		return
 	}
 
