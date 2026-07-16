@@ -93,6 +93,37 @@ func TestScanDeclarationsParseError(t *testing.T) {
 	require.Error(t, err)
 }
 
+// ScanFileDeclarations additionally reports the file's node{} identity, so
+// dump sites can be attributed to their host; a file without one reports "".
+func TestScanFileDeclarationsNode(t *testing.T) {
+	dir := t.TempDir()
+
+	withNode := writeHCL(t, dir, "dump.hcl", `
+node "prod-ch-1a" { macros = { shard = "1" } }
+database "posthog" {
+  table "events" {
+    column "uuid" { type = "UUID" }
+  }
+}
+`)
+	decls, node, err := ScanFileDeclarations(withNode)
+	require.NoError(t, err)
+	assert.Equal(t, "prod-ch-1a", node)
+	require.Len(t, decls, 1)
+	assert.Equal(t, "events", decls[0].Name)
+
+	withoutNode := writeHCL(t, dir, "plain.hcl", `
+database "posthog" {
+  table "person" {
+    column "id" { type = "UInt64" }
+  }
+}
+`)
+	_, node, err = ScanFileDeclarations(withoutNode)
+	require.NoError(t, err)
+	assert.Empty(t, node)
+}
+
 func TestMatchesPattern(t *testing.T) {
 	assert.True(t, MatchesPattern("events", "posthog", "events"))
 	assert.True(t, MatchesPattern("events*", "posthog", "events_mv"))

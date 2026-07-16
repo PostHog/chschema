@@ -454,11 +454,15 @@ for the full reference.
 # Every declaration site of an object, plus where those layers deploy
 hclexp locate -manifest manifest.hcl -layer-root ./schema posthog.events
 
-# Globs match the bare name and the db.name qualified form
-hclexp locate -manifest manifest.hcl -layer-root ./schema 'events*'
+# Globs match the bare name and the db.name qualified form; several
+# patterns are independent existence checks (exit 1 if any finds nothing)
+hclexp locate -manifest manifest.hcl -layer-root ./schema 'events*' person
 
 # Also report which per-node dump files declare it
 hclexp locate -manifest manifest.hcl -layer-root ./schema -dump prod/eu events
+
+# Ad-hoc layer dirs or files, before a manifest exists (no placement info)
+hclexp locate -layer roles/shared,roles/ops/prod events
 
 # CI guard: every object declared at more than one plain site, even
 # across layers that never co-compose into one stack
@@ -475,12 +479,14 @@ table posthog.events
       (ops, prod-us), (ops, prod-eu)
   roles/ops/prod/events.hcl:9  [patch_table]
       (ops, prod-us), (ops, prod-eu)
-  dump: dumps/node1.hcl:2
+  dump: dumps/node1.hcl:2  (node prod-ch-1a)
 ```
 
 Each site is marked when it is `[abstract]`, an `[override]`
 redeclaration, a `[patch_table]`, an `extends <parent>` child, or a
-`[raw <kind>]` block.
+`[raw <kind>]` block. An object extended by others lists its children
+(`extended by: ...`), and each dump site names its node (from the dump's
+`node {}` block, else the filename).
 
 **Flags:**
 
@@ -490,21 +496,24 @@ redeclaration, a `[patch_table]`, an `extends <parent>` child, or a
   all of them.
 - `-layer-root` — root directory the manifest's layer paths resolve
   under (default `.`)
+- `-layer` — comma-separated ad-hoc layer dirs or `.hcl` files to search
+  too (or instead of a manifest); resolved as given, no placement info,
+  deduped against the manifest's layers
 - `-dump` — directory of per-node `.hcl` dumps (as written by
   `introspect`/`dump-cluster`); reports which node files also declare
   each matching object
-- `-format` — `text` (default) or `json` (an `{"objects": [...]}` /
-  `{"duplicates": [...]}` document with per-site
+- `-format` — `text` (default) or `json` (a `{"patterns": [...],
+  "objects": [...]}` / `{"duplicates": [...]}` document with per-site
   file/line/layer/markers/placements)
-- `-duplicates` — takes no name argument and requires `-manifest`
-  (mutually exclusive with `-dump`); lists every object declared at more
-  than one *plain* site and exits non-zero when any is found.
+- `-duplicates` — takes no name argument and requires `-manifest` or
+  `-layer` (mutually exclusive with `-dump`); lists every object declared
+  at more than one *plain* site and exits non-zero when any is found.
   `override = true` redeclarations, additive `patch_table` blocks, and
   `abstract` declarations (dropped at resolve) are exempt — so what
   remains is exactly the accidental-duplication class that `load` only
   catches when the two layers co-occur in one stack.
 
-Exit codes: `0` on success, `1` when the pattern matches nothing (a
+Exit codes: `0` on success, `1` when any pattern matches nothing (a
 scriptable existence check) or `-duplicates` finds any, `2` on usage
 errors.
 
