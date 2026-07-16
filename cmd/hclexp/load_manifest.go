@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -30,10 +31,14 @@ type loadJSON struct {
 	Roles []loadRoleJSON `json:"roles"`
 }
 
+// defaultOutName is the -out-name template preserving the flat
+// <env>-<role>.hcl layout load has always written.
+const defaultOutName = "{env}-{role}"
+
 // loadFlagsError reports the usage error in a `load` invocation, if any. It is
 // pure so the exit-2 paths are testable without a subprocess. configSet says
 // whether -config was given explicitly (it has a non-empty default).
-func loadFlagsError(manifest, env, role, format, layers string, configSet bool) error {
+func loadFlagsError(manifest, env, role, format, layers, outName string, configSet bool) error {
 	if (manifest == "") != (env == "") {
 		return fmt.Errorf("-manifest and -env must be used together")
 	}
@@ -43,6 +48,9 @@ func loadFlagsError(manifest, env, role, format, layers string, configSet bool) 
 	if manifest == "" {
 		if role != "" {
 			return fmt.Errorf("-role requires -manifest")
+		}
+		if outName != defaultOutName {
+			return fmt.Errorf("-out-name requires -manifest (it names composed role files)")
 		}
 		// Without a manifest the layer stack is the flag value itself, so
 		// there is nothing for -format json to resolve.
@@ -54,7 +62,45 @@ func loadFlagsError(manifest, env, role, format, layers string, configSet bool) 
 	if layers != "" || configSet {
 		return fmt.Errorf("-manifest is mutually exclusive with -layer and -config")
 	}
+	if outName != defaultOutName {
+		if format == "json" {
+			return fmt.Errorf("-out-name applies to hcl output, not -format json")
+		}
+		if _, err := renderOutName(outName, "env", "role"); err != nil {
+			return err
+		}
+	}
 	return nil
+}
+
+// outNamePlaceholderRe matches a {placeholder} left over after expansion, so
+// a typo like {rolle} fails loudly instead of producing literal braces in
+// filenames.
+var outNamePlaceholderRe = regexp.MustCompile(`\{[^{}/]*\}`)
+
+// renderOutName expands the {env} and {role} placeholders in an -out-name
+// template. Any other placeholder is an error.
+func renderOutName(template, env, role string) (string, error) {
+	s := strings.ReplaceAll(template, "{env}", env)
+	s = strings.ReplaceAll(s, "{role}", role)
+	if m := outNamePlaceholderRe.FindString(s); m != "" {
+		return "", fmt.Errorf("unknown placeholder %s in -out-name %q (want {env} or {role})", m, template)
+	}
+	return s, nil
+}
+
+// outNamePath places a rendered -out-name (plus the .hcl extension) under the
+// -out directory, rejecting names that escape it.
+func outNamePath(dir, rendered string) (string, error) {
+	if filepath.IsAbs(rendered) {
+		return "", fmt.Errorf("-out-name %q must be relative to -out", rendered)
+	}
+	path := filepath.Join(dir, rendered+".hcl")
+	rel, err := filepath.Rel(dir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("-out-name %q escapes the -out directory", rendered)
+	}
+	return path, nil
 }
 
 // checkOutTarget reports whether out can receive nRoles composed schemas.
@@ -76,9 +122,10 @@ func checkOutTarget(out string, nRoles int) error {
 
 // runLoadManifest composes the manifest's roles for env (filtered to role when
 // non-empty) and writes them out. In hcl format a single role goes to a file or
-// stdout and multiple roles go to the -out directory as one <env>-<role>.hcl
-// each; in json format the resolved layer stacks go to stdout or -out.
-func runLoadManifest(manifestPath, env, role, layerRoot, format, out string) {
+// stdout and multiple roles go to the -out directory, each named by the
+// -out-name template (default <env>-<role>.hcl); in json format the resolved
+// layer stacks go to stdout or -out.
+func runLoadManifest(manifestPath, env, role, layerRoot, format, out, outName string) {
 	roles, err := parseManifest(manifestPath, env)
 	if err != nil {
 		slog.Error("failed to parse manifest", "file", manifestPath, "env", env, "err", err)
@@ -110,8 +157,15 @@ func runLoadManifest(manifestPath, env, role, layerRoot, format, out string) {
 		slog.Error("invalid output target", "env", env, "err", err)
 		os.Exit(2)
 	}
+	// The template names files inside a directory; a single role headed for
+	// stdout or a plain file has nothing for it to name.
+	if outName != defaultOutName && !isDir(out) {
+		slog.Error("invalid output target", "env", env, "err",
+			fmt.Errorf("-out-name requires -out to be an existing directory"))
+		os.Exit(2)
+	}
 
-	if err := writeComposedRoles(out, env, composed); err != nil {
+	if err := writeComposedRoles(out, env, outName, composed); err != nil {
 		slog.Error("failed to write composed schema", "err", err)
 		os.Exit(1)
 	}
@@ -166,16 +220,33 @@ func writeLoadJSON(out, env string, composed []composedRole) error {
 
 // writeComposedRoles writes each composed role as canonical HCL. A single role
 // goes to stdout, to the -out file, or (when -out is an existing directory) to
-// <env>-<role>.hcl inside it; several roles always go to the -out directory.
-func writeComposedRoles(out, env string, composed []composedRole) error {
+// its outName-templated path inside it; several roles always go to the -out
+// directory. Template subdirectories (e.g. '{env}/{role}') are created; two
+// roles rendering to the same path is an error rather than a silent overwrite.
+func writeComposedRoles(out, env, outName string, composed []composedRole) error {
 	if len(composed) == 1 && stdoutTarget(out) {
 		return hclload.Write(os.Stdout, composed[0].Schema)
 	}
 	if len(composed) == 1 && !isDir(out) {
 		return writeSchemaFile(out, composed[0].Schema)
 	}
+	pathRole := map[string]string{}
 	for _, c := range composed {
-		path := filepath.Join(out, fmt.Sprintf("%s-%s.hcl", env, c.Role))
+		rendered, err := renderOutName(outName, env, c.Role)
+		if err != nil {
+			return err
+		}
+		path, err := outNamePath(out, rendered)
+		if err != nil {
+			return err
+		}
+		if prev, ok := pathRole[path]; ok {
+			return fmt.Errorf("roles %q and %q both render -out-name %q to %s (add {role} to the template)", prev, c.Role, outName, path)
+		}
+		pathRole[path] = c.Role
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return fmt.Errorf("role %q: %w", c.Role, err)
+		}
 		if err := writeSchemaFile(path, c.Schema); err != nil {
 			return fmt.Errorf("role %q: %w", c.Role, err)
 		}

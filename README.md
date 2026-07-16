@@ -155,6 +155,39 @@ hclexp -config ./schema/posthog.hcl -out ./resolved.hcl
   (mutually exclusive with `-config`)
 - `-out` — if set, write the resolved schema as canonical HCL to this path
 
+### Compose from a manifest
+
+With `-manifest`/`-env` the layer stack comes from the same role manifest
+`validate` and `plan` consume, so callers never rebuild it by hand
+(mutually exclusive with `-layer`/`-config`):
+
+```bash
+# One role to stdout (or -out FILE)
+hclexp load -manifest manifest.hcl -env prod-us -layer-root ./schema -role ops
+
+# Every role deployed in the env, one file per role into -out (a directory)
+hclexp load -manifest manifest.hcl -env prod-us -layer-root ./schema -out ./golden
+
+# Per-env tree instead of the flat default: golden/prod-us/ops.hcl
+hclexp load -manifest manifest.hcl -env prod-us -layer-root ./schema \
+  -out ./golden -out-name '{env}/{role}'
+
+# The resolved layer stacks themselves (no composition; works before the
+# layer dirs exist)
+hclexp load -manifest manifest.hcl -env prod-us -format json
+```
+
+- `-role` — compose only this role (default: every role deployed in `-env`)
+- `-layer-root` — root directory the manifest's layer paths resolve under
+- `-out-name` — file name template for roles written into the `-out`
+  directory (default `{env}-{role}`, i.e. the flat `<env>-<role>.hcl`
+  layout). `{env}` and `{role}` expand, `.hcl` is appended, and template
+  subdirectories are created, so `'{env}/{role}'` writes
+  `golden/<env>/<role>.hcl` directly. Unknown placeholders, paths escaping
+  `-out`, and two roles rendering to the same path are errors.
+- `-format json` — emit each role's declared and resolved layer stack
+  instead of composing
+
 ## Diff two schemas
 
 `hclexp diff` reports the changes needed to turn a **left** schema into a
