@@ -11,8 +11,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/hashicorp/hcl/v2/gohcl"
-	"github.com/hashicorp/hcl/v2/hclparse"
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
 
@@ -105,14 +103,9 @@ func locateFlagsError(manifest, dump, format string, duplicates bool, nargs int,
 // (role, env) pair across every environment — unlike parseManifest, which
 // selects a single env — with the same duplicate-role/env checks.
 func parseManifestAllEnvs(path string) ([]locateStack, error) {
-	parser := hclparse.NewParser()
-	f, diags := parser.ParseHCLFile(path)
-	if diags.HasErrors() {
-		return nil, fmt.Errorf("%s", diags)
-	}
-	var m planManifest
-	if diags := gohcl.DecodeBody(f.Body, nil, &m); diags.HasErrors() {
-		return nil, fmt.Errorf("%s", diags)
+	m, err := decodeManifest(path)
+	if err != nil {
+		return nil, err
 	}
 	if len(m.Roles) == 0 {
 		return nil, fmt.Errorf("manifest declares no roles")

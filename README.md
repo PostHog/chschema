@@ -439,6 +439,75 @@ summary: 58 nodes, 8 groups, 2 groups with drift, 28 drifting nodes
 > finer deployment role from the node name and usually isolates genuine
 > drift.
 
+## Locate declarations
+
+`hclexp locate` answers "where does a name live?" across a manifest's
+whole layer tree: every declaration site of each matching object
+(tables, materialized views, views, dictionaries, named collections,
+raw blocks), with its inheritance markers and the `(role, env)` stacks
+whose layer lists include each declaring layer. It is query-only:
+nothing is resolved or diffed. See
+**[Locating declarations](docs/README.hcl.md#locating-declarations--hclexp-locate)**
+for the full reference.
+
+```sh
+# Every declaration site of an object, plus where those layers deploy
+hclexp locate -manifest manifest.hcl -layer-root ./schema posthog.events
+
+# Globs match the bare name and the db.name qualified form
+hclexp locate -manifest manifest.hcl -layer-root ./schema 'events*'
+
+# Also report which per-node dump files declare it
+hclexp locate -manifest manifest.hcl -layer-root ./schema -dump prod/eu events
+
+# CI guard: every object declared at more than one plain site, even
+# across layers that never co-compose into one stack
+hclexp locate -manifest manifest.hcl -layer-root ./schema -duplicates
+```
+
+Example output:
+
+```
+table posthog.events
+  roles/shared/events.hcl:7  extends events_base
+      (ops, prod-us), (ops, prod-eu), (ingest, prod-us)
+  roles/ops/prod/events.hcl:2  [override]
+      (ops, prod-us), (ops, prod-eu)
+  roles/ops/prod/events.hcl:9  [patch_table]
+      (ops, prod-us), (ops, prod-eu)
+  dump: dumps/node1.hcl:2
+```
+
+Each site is marked when it is `[abstract]`, an `[override]`
+redeclaration, a `[patch_table]`, an `extends <parent>` child, or a
+`[raw <kind>]` block.
+
+**Flags:**
+
+- `-manifest` — the same role manifest `plan`/`validate`/`load` consume.
+  Unlike those commands there is no `-env`: locate scans the union of
+  every layer named by any `(role, env)` stack and derives placement for
+  all of them.
+- `-layer-root` — root directory the manifest's layer paths resolve
+  under (default `.`)
+- `-dump` — directory of per-node `.hcl` dumps (as written by
+  `introspect`/`dump-cluster`); reports which node files also declare
+  each matching object
+- `-format` — `text` (default) or `json` (an `{"objects": [...]}` /
+  `{"duplicates": [...]}` document with per-site
+  file/line/layer/markers/placements)
+- `-duplicates` — takes no name argument and requires `-manifest`
+  (mutually exclusive with `-dump`); lists every object declared at more
+  than one *plain* site and exits non-zero when any is found.
+  `override = true` redeclarations, additive `patch_table` blocks, and
+  `abstract` declarations (dropped at resolve) are exempt — so what
+  remains is exactly the accidental-duplication class that `load` only
+  catches when the two layers co-occur in one stack.
+
+Exit codes: `0` on success, `1` when the pattern matches nothing (a
+scriptable existence check) or `-duplicates` finds any, `2` on usage
+errors.
+
 ## Verify round-trip fidelity
 
 `hclexp dump-sql` captures a database's `CREATE` statements (the `SHOW CREATE`

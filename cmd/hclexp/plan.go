@@ -134,11 +134,9 @@ func runPlan(args []string) {
 	renderPlanText(os.Stdout, plan)
 }
 
-// parseManifest decodes the HCL manifest and resolves each role to the layer
-// stack for the selected environment. A role with no env block for env is not
-// deployed there and is skipped. Duplicate role names, or duplicate env labels
-// within a role, are rejected.
-func parseManifest(path, env string) ([]manifestRole, error) {
+// decodeManifest parses a manifest file into its raw block structure. Every
+// manifest consumer (parseManifest, parseManifestClusters, locate) shares it.
+func decodeManifest(path string) (*planManifest, error) {
 	parser := hclparse.NewParser()
 	f, diags := parser.ParseHCLFile(path)
 	if diags.HasErrors() {
@@ -147,6 +145,18 @@ func parseManifest(path, env string) ([]manifestRole, error) {
 	var m planManifest
 	if diags := gohcl.DecodeBody(f.Body, nil, &m); diags.HasErrors() {
 		return nil, fmt.Errorf("%s", diags)
+	}
+	return &m, nil
+}
+
+// parseManifest decodes the HCL manifest and resolves each role to the layer
+// stack for the selected environment. A role with no env block for env is not
+// deployed there and is skipped. Duplicate role names, or duplicate env labels
+// within a role, are rejected.
+func parseManifest(path, env string) ([]manifestRole, error) {
+	m, err := decodeManifest(path)
+	if err != nil {
+		return nil, err
 	}
 	if len(m.Roles) == 0 {
 		return nil, fmt.Errorf("manifest declares no roles")
@@ -193,14 +203,9 @@ func parseManifest(path, env string) ([]manifestRole, error) {
 // cluster with no roles, are rejected. Returns an empty slice when the manifest
 // declares no clusters.
 func parseManifestClusters(path string) ([]manifestClusterBlock, error) {
-	parser := hclparse.NewParser()
-	f, diags := parser.ParseHCLFile(path)
-	if diags.HasErrors() {
-		return nil, fmt.Errorf("%s", diags)
-	}
-	var m planManifest
-	if diags := gohcl.DecodeBody(f.Body, nil, &m); diags.HasErrors() {
-		return nil, fmt.Errorf("%s", diags)
+	m, err := decodeManifest(path)
+	if err != nil {
+		return nil, err
 	}
 	declaredRoles := make(map[string]bool, len(m.Roles))
 	for _, rb := range m.Roles {
