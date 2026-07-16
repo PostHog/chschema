@@ -35,7 +35,7 @@ type Declaration struct {
 func ScanDeclarations(files []string) ([]Declaration, error) {
 	var out []Declaration
 	for _, path := range files {
-		decls, err := scanDeclarationFile(path)
+		decls, _, err := ScanFileDeclarations(path)
 		if err != nil {
 			return nil, err
 		}
@@ -44,17 +44,22 @@ func ScanDeclarations(files []string) ([]Declaration, error) {
 	return out, nil
 }
 
-func scanDeclarationFile(path string) ([]Declaration, error) {
+// ScanFileDeclarations scans one file and additionally returns the label of
+// its first node{} block ("" when the file has none). Per-node dumps carry
+// exactly one node block, so the name attributes the file's declarations to
+// their host.
+func ScanFileDeclarations(path string) ([]Declaration, string, error) {
 	parser := hclparse.NewParser()
 	f, diags := parser.ParseHCLFile(path)
 	if diags.HasErrors() {
-		return nil, formatDiagnostics(parser, diags)
+		return nil, "", formatDiagnostics(parser, diags)
 	}
 	body, ok := f.Body.(*hclsyntax.Body)
 	if !ok {
-		return nil, fmt.Errorf("%s: not native HCL syntax", path)
+		return nil, "", fmt.Errorf("%s: not native HCL syntax", path)
 	}
 	var out []Declaration
+	node := ""
 	for _, blk := range body.Blocks {
 		switch blk.Type {
 		case "database":
@@ -77,9 +82,13 @@ func scanDeclarationFile(path string) ([]Declaration, error) {
 				Line:       blk.DefRange().Start.Line,
 				Override:   boolAttr(blk.Body, "override"),
 			})
+		case "node":
+			if node == "" && len(blk.Labels) == 1 {
+				node = blk.Labels[0]
+			}
 		}
 	}
-	return out, nil
+	return out, node, nil
 }
 
 // objectDeclaration converts one block nested in a database{} into a

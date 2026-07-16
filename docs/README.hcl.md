@@ -599,11 +599,15 @@ query-only — no diffing, no DDL.
 # Every declaration site of a table, and which (role, env) stacks place it
 hclexp locate -manifest manifest.hcl -layer-root ./schema events
 
-# Globs work like exclude patterns: bare name or db.name qualified
-hclexp locate -manifest manifest.hcl -layer-root ./schema 'posthog.person_*'
+# Globs work like exclude patterns: bare name or db.name qualified.
+# Several patterns are independent existence checks (exit 1 if any misses).
+hclexp locate -manifest manifest.hcl -layer-root ./schema 'posthog.person_*' events
 
 # Also search per-node dumps (introspect / dump-cluster output)
 hclexp locate -manifest manifest.hcl -layer-root ./schema -dump ./dumps events
+
+# Ad-hoc layer dirs or .hcl files, no manifest required (no placements)
+hclexp locate -layer ./schema/shared,./schema/ingestion events
 
 # CI guard: any object declared at more than one plain site exits 1
 hclexp locate -manifest manifest.hcl -layer-root ./schema -duplicates
@@ -615,24 +619,32 @@ collections, raw blocks), `locate` lists every declaration site as
 `[patch_table]`, `extends <parent>`, `[raw <kind>]`), and derives the
 **placements**: the (role, env) stacks whose manifest layer lists include
 the declaring layer. Unlike `plan`/`load`, the manifest is read across
-*all* envs. With `-dump DIR`, the per-node `.hcl` dump files declaring the
-object are listed too. `-format json` emits the same document
-structurally.
+*all* envs. An object extended by others cross-links its children
+(`extended by: ...`), computed over every authored declaration — the
+children need not match the pattern themselves. `-layer` adds ad-hoc
+layer dirs or files (searched after the manifest's layers, deduped
+against them, no placements), so the same queries work before a manifest
+exists. With `-dump DIR`, the per-node `.hcl` dump files declaring the
+object are listed too, each attributed to its node (the dump's `node {}`
+block, else the filename stem — the same identity `drift` uses).
+`-format json` emits the same document structurally, with the queried
+`patterns` echoed back.
 
 Objects are grouped by `(database, name)` — the namespace ClickHouse
 object types share — so a stray `view "events"` next to a `table
 "events"` shows up as one entry with both types.
 
-`-duplicates` (no name argument) audits the once-only discipline:
-`load`/compose only reject a redeclaration when the two layers meet in one
-stack, so two layers that never co-compose can silently hold divergent
-copies of the same object. A site is a *plain* declaration unless it is a
-`patch_table` (additive), has `override = true` (deliberate replacement),
-or is `abstract` (dropped at resolve); any object with two or more plain
-sites is reported and the command exits 1.
+`-duplicates` (no name argument; requires `-manifest` or `-layer`) audits
+the once-only discipline: `load`/compose only reject a redeclaration when
+the two layers meet in one stack, so two layers that never co-compose can
+silently hold divergent copies of the same object. A site is a *plain*
+declaration unless it is a `patch_table` (additive), has `override =
+true` (deliberate replacement), or is `abstract` (dropped at resolve);
+any object with two or more plain sites is reported and the command
+exits 1.
 
-Exit codes: 0 found / no duplicates; 1 no match, duplicates found, or a
-load error; 2 usage.
+Exit codes: 0 found / no duplicates; 1 any pattern without a match,
+duplicates found, or a load error; 2 usage.
 
 ## Structured comparison output
 
