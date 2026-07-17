@@ -109,12 +109,17 @@ type ViewSpec struct {
 	Comment       *string  `hcl:"comment,optional"`
 }
 
-// PatchTableSpec is a strictly additive cross-layer modification of a table.
-// Only column additions are allowed; gohcl rejects any other attribute or
-// block by struct shape. Consumed during resolution.
+// PatchTableSpec is a cross-layer modification of a table: the table stays
+// declared once, and an env layer patches just its delta. Columns are
+// strictly additive (a duplicate errors); Settings merge into the target's
+// map with the patch winning on key collision — an env overlay that retunes
+// a base setting is the point (#152). Anything else (engine, order_by,
+// index, ...) is rejected at parse time by struct shape. Consumed during
+// resolution.
 type PatchTableSpec struct {
-	Name    string       `hcl:"name,label"`
-	Columns []ColumnSpec `hcl:"column,block"`
+	Name     string            `hcl:"name,label"`
+	Columns  []ColumnSpec      `hcl:"column,block"`
+	Settings map[string]string `hcl:"settings,optional"`
 }
 
 type TableSpec struct {

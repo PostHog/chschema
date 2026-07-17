@@ -154,7 +154,9 @@ The `justfile` has the full recipe list.
   `.hcl` file** — same merge semantics either way (`hclload.LayerFiles` owns the
   dir/file decision, so every `-layer`/`-left`/manifest `layers` path gets it);
   a non-`.hcl` or missing entry errors
-- ✅ `patch_table` (strictly additive cross-layer column additions)
+- ✅ `patch_table` (cross-layer table modification: columns strictly additive,
+  `settings` merged patch-wins — a one-setting env delta needs no full
+  redeclaration)
 - ✅ `extend` inheritance with `abstract` bases and cycle detection
 - ✅ `override = true` for cross-layer full replacement
 - ✅ `node` top-level blocks (introspection metadata: hostname +

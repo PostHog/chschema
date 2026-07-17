@@ -1094,15 +1094,18 @@ database "posthog" {
 }
 ```
 
-**Patching** — a `patch_table` block is a strictly additive cross-layer
-modification. Only column additions are allowed; it is the safe way for an
-environment layer to add columns to a base table:
+**Patching** — a `patch_table` block modifies a table declared elsewhere,
+so the table itself stays declared once. Columns are strictly additive
+(a duplicate errors); `settings` merges into the target's map with the
+patch winning on key collision, so an environment layer can retune one
+setting without redeclaring the table:
 
 ```hcl
 # env_us/events_patch.hcl
 database "posthog" {
   patch_table "events_local" {
     column "us_session_id" { type = "String" }
+    settings = { default_compression_codec = "lz4" }
   }
 }
 ```

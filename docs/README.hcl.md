@@ -238,20 +238,28 @@ samples {
 
 ## `patch_table`
 
-Strictly additive cross-layer modification of an existing table.
+Cross-layer modification of an existing table: the table stays declared
+once, and an env layer patches just its delta.
 
 ```hcl
 database "posthog" {
   patch_table "events" {
     column "us_session_id" { type = "String" }
+    settings = { default_compression_codec = "lz4" }
   }
 }
 ```
 
 - The target table must exist somewhere in the merged config.
-- Only `column` blocks are accepted. `engine`, `order_by`, `settings`, `index`,
-  etc. are rejected at parse time.
-- Adding a column that already exists on the target is an error.
+- `column` blocks are strictly additive: adding a column that already exists
+  on the target is an error.
+- `settings` merges into the target's map, **patch wins** on key collision —
+  an env overlay that retunes a base setting is the point. A table whose
+  envs differ by one setting stays declared once; the env layer carries a
+  one-line patch. Patches accumulate in layer order, so a later layer's
+  patch wins over an earlier one.
+- Anything else — `engine`, `order_by`, `index`, etc. — is rejected at
+  parse time.
 - `patch_table` lives at any layer.
 
 ## Inheritance — `extend = "Y"`
@@ -366,7 +374,8 @@ When the loader processes a layered set, this pipeline runs:
 1. **Parse** every `.hcl` file in every layer (ordered).
 2. **Merge** databases by name. Tables collide on name unless the later one
    sets `override = true`. `patch_table` blocks accumulate.
-3. **Apply `patch_table`s** — additively, in layer order, against their targets.
+3. **Apply `patch_table`s** — in layer order, against their targets: columns
+   additively, settings patch-wins.
 4. **Resolve `extend` chains** — DFS with cycle detection; children see the
    post-patch parent.
 5. **Drop abstract tables** from the emit set.
@@ -378,6 +387,7 @@ When the loader processes a layered set, this pipeline runs:
 | ------------------------------------------------- | -------------- |
 | Two tables share most columns; different engines  | `extend` + `abstract` parent |
 | Add a column to the same table in one environment | `patch_table`  |
+| Change one setting on the same table in one environment | `patch_table` with `settings` |
 | Replace a table entirely in one environment       | `override = true` |
 
 ## Dependency validation — `hclexp validate`
