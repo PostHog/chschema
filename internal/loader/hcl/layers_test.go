@@ -299,8 +299,11 @@ func TestResolve_PatchColumnCollision(t *testing.T) {
 	assert.Contains(t, err.Error(), "already exists")
 }
 
+// primary_key stands in for the fields patch_table still rejects by struct
+// shape (engine/order_by/index/settings/columns are all patchable since
+// #153/#154).
 func TestParseFile_PatchDisallowedAttribute(t *testing.T) {
 	_, err := ParseFile(filepath.Join("testdata", "patch_disallowed_attr.hcl"))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "engine")
+	assert.Contains(t, err.Error(), "primary_key")
 }

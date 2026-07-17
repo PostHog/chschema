@@ -246,23 +246,81 @@ declared once, and the patch is a modification, not a declaration
 | Aspect            | `table X { extend = "Y" }`                | `patch_table "Y" { ... }`               |
 | ----------------- | ------------------------------------------ | ---------------------------------------- |
 | Creates new table | Yes (`X` is a new, distinct table)        | No (modifies `Y` in place)               |
-| Engine identity   | `X` has its own engine                     | `Y`'s engine is unchanged                |
-| Can override anything? | Yes — engine, order_by, ttl, settings | Columns (additive) and settings (merged) only |
+| Engine identity   | `X` has its own engine                     | Unchanged unless the patch carries an `engine` block (wholesale replace) |
+| Can override anything? | Yes — engine, order_by, ttl, settings | Columns (add/modify/drop), indexes (add/drop), `order_by`/`partition_by`/`sample_by`/`ttl`, engine, settings — not `primary_key`/constraints/projections |
 | `settings` semantics | **Replace wholesale** — a child that sets one key loses every inherited one | **Merge, patch wins per key** — the base keeps its other keys |
 | Declaration count | One per child (env-per-child breaks once-only) | Target stays declared once |
 | Where it lives    | Same layer, typical                        | Any layer (commonly higher overlays)     |
-| Use case          | "Similar but different" tables             | Per-environment column / setting deltas  |
+| Use case          | "Similar but different" tables             | Per-environment deltas on the same table |
 
 In short: `extend` creates a *new* table; `patch_table` modifies an *existing*
 one.
 
 ## Can `patch_table` change the engine or `order_by`?
 
-No. `patch_table` carries `column` blocks (strictly additive) and `settings`
-(merged, patch wins per key) — nothing else. If one environment needs a
-different engine, `order_by`, or to drop a column, that table genuinely
-differs there: use a full `table` declaration with `override = true` in that
-environment's layer.
+Yes. A patch replaces `engine` wholesale and `order_by` / `partition_by` /
+`sample_by` / `ttl` when set, alongside column add/modify/drop, index
+add/drop, and merged `settings` — see the
+[`patch_table` reference](./README.hcl.md#patch_table). What it cannot touch
+(`primary_key`, `comment`, constraints, projections) marks a table that
+genuinely differs: use `override = true` there.
+
+## How do I vary a Distributed table's target per environment?
+
+The common case: dev is single-cluster while prod has satellite clusters, so
+the proxy's cluster (and sometimes target table) moves with the topology.
+Declare the table once and patch the engine block per env:
+
+```hcl
+# cloud/raw_sessions.hcl — declared once (prod shape)
+database "posthog" {
+  table "raw_sessions" {
+    order_by = ["session_id_v7"]
+    column "session_id_v7" { type = "UInt128" }
+    engine "distributed" {
+      cluster_name    = "sessions"
+      remote_database = "posthog"
+      remote_table    = "raw_sessions"
+      sharding_key    = "cityHash64(session_id_v7)"
+    }
+  }
+}
+
+# envs/dev/patch.hcl — the whole env difference
+database "posthog" {
+  patch_table "raw_sessions" {
+    engine "distributed" {
+      cluster_name    = "posthog"
+      remote_database = "posthog"
+      remote_table    = "sharded_raw_sessions"
+      sharding_key    = "cityHash64(session_id_v7)"
+    }
+  }
+}
+```
+
+The engine block replaces wholesale — restate every engine argument, not
+just the changed one. Columns, `order_by`, and everything else stay
+inherited from the single declaration.
+
+## How do I vary a view's query or a dictionary's source per environment?
+
+`patch_view` and `patch_dictionary` — same shape as `patch_table`:
+
+```hcl
+patch_view "user_sessions" {
+  query = file("sql/user_sessions_dev.sql")   # replaces; normalized like any view query
+}
+
+patch_dictionary "geoip" {
+  source "clickhouse" { table = "geoip_dev" } # replaces wholesale
+  settings = { max_threads = "2" }            # merges, patch wins
+}
+```
+
+The object stays declared once; unknown targets error. (Materialized views
+have no patch form — an MV differing per env is replaced with
+`override = true`.)
 
 ## How do I change one table setting in only one environment?
 

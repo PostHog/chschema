@@ -169,21 +169,55 @@ func canonicalize(db *DatabaseSpec) {
 	normalizeQueries(db)
 	for ti := range db.Tables {
 		t := &db.Tables[ti]
-		for ci := range t.Columns {
-			c := &t.Columns[ci]
-			normalizeExprPtr(&c.Default)
-			normalizeExprPtr(&c.Materialized)
-			normalizeExprPtr(&c.Alias)
-			normalizeExprPtr(&c.Ephemeral)
+		normalizeColumnExprs(t.Columns)
+		normalizeIndexExprs(t.Indexes)
+	}
+	// Patch fields land verbatim on their targets at resolution, so they
+	// must be canonicalized exactly like declared fields — otherwise a
+	// patched expression would diff against its own introspected form.
+	// (order_by/partition_by/sample_by/ttl are deliberately left verbatim,
+	// exactly as they are on declared tables.)
+	for pi := range db.Patches {
+		p := &db.Patches[pi]
+		normalizeColumnExprs(p.Columns)
+		normalizeColumnExprs(p.ModifyColumns)
+		normalizeIndexExprs(p.Indexes)
+	}
+	for pi := range db.ViewPatches {
+		p := &db.ViewPatches[pi]
+		if p.Query == nil {
+			continue
 		}
-		for ii := range t.Indexes {
-			idx := &t.Indexes[ii]
-			if nx, ok := normalizeExpr(idx.Expr); ok {
-				idx.Expr = nx
-			}
-			if nt, ok := normalizeExpr(idx.Type); ok {
-				idx.Type = nt
-			}
+		if q, ok := normalizeQuery(*p.Query); ok {
+			p.Query = &q
+		} else if strings.TrimSpace(*p.Query) != "" {
+			slog.Warn("patch_view query could not be parsed for normalization; keeping raw (may diff as drift)",
+				"database", db.Name, "view", p.Name)
+		}
+	}
+}
+
+// normalizeColumnExprs canonicalizes the expression-bearing fields of each
+// column in place.
+func normalizeColumnExprs(cols []ColumnSpec) {
+	for ci := range cols {
+		c := &cols[ci]
+		normalizeExprPtr(&c.Default)
+		normalizeExprPtr(&c.Materialized)
+		normalizeExprPtr(&c.Alias)
+		normalizeExprPtr(&c.Ephemeral)
+	}
+}
+
+// normalizeIndexExprs canonicalizes each index's expr and type in place.
+func normalizeIndexExprs(idxs []IndexSpec) {
+	for ii := range idxs {
+		idx := &idxs[ii]
+		if nx, ok := normalizeExpr(idx.Expr); ok {
+			idx.Expr = nx
+		}
+		if nt, ok := normalizeExpr(idx.Type); ok {
+			idx.Type = nt
 		}
 	}
 }

@@ -131,6 +131,8 @@ func mergeIntoDatabase(target *DatabaseSpec, incoming DatabaseSpec) error {
 		}
 	}
 	target.Patches = append(target.Patches, incoming.Patches...)
+	target.ViewPatches = append(target.ViewPatches, incoming.ViewPatches...)
+	target.DictionaryPatches = append(target.DictionaryPatches, incoming.DictionaryPatches...)
 
 	mvByName := make(map[string]bool, len(target.MaterializedViews))
 	for _, mv := range target.MaterializedViews {
