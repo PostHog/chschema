@@ -424,6 +424,14 @@ hclexp validate -layer ./nodes/data -cluster aux=./nodes/aux
 hclexp validate -layer ./nodes/data -cluster aux=./nodes/aux -strict-proxy-columns
 ```
 
+The comparison engine (`diff`, `plan`, `drift`) applies the same subset idea
+to one narrow case: a Distributed proxy whose `remote_database` is `system`.
+System tables are server-defined and gain columns with version bumps, so a
+live proxy created from a fuller set routinely carries columns the layer
+intentionally omits — column *presence* differences on such proxies are not
+reported (in either direction), while columns declared on both sides still
+compare fully. Non-system proxies keep exact column semantics.
+
 `hclexp diff -sql` applies the same dependency knowledge to DDL ordering:
 within the generated migration, a table is created before any
 Distributed/MV/Dictionary that depends on it, and dropped after.
