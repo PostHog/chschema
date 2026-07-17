@@ -1072,10 +1072,21 @@ on top of earlier ones.
 **Table inheritance** within a database:
 
 - `abstract = true` — a template table that is not emitted itself
-- `extend = "other_table"` — inherit columns/engine/settings from another
-  table, then add or override
+- `extend = "other_table"` — declare a **new** table inheriting another's
+  shape: columns and indexes append (collisions error); `engine`,
+  `order_by`, `partition_by`, `sample_by`, `ttl`, and `settings` are
+  inherited only if the child doesn't set its own — a child that does set
+  one **replaces it wholesale** (a one-key `settings` map loses every
+  inherited key). `primary_key`, `comment`, `cluster`, constraints, and
+  projections never flow through `extend`.
 - `override = true` — required for a later layer to replace a table that
   an earlier layer already defined
+
+Rule of thumb: `extend` is for *different tables sharing a shape*
+(`events_local` / `events_distributed`); `patch_table` (below) is for *the
+same table adjusted by one layer* — it adds no declaration and its
+`settings` **merge** instead of replacing. The full decision guide is in
+[`docs/README.hcl.md`](docs/README.hcl.md#comparison-extend-vs-patch_table-vs-override).
 
 ```hcl
 database "posthog" {

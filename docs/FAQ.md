@@ -236,22 +236,85 @@ the dev-layer definition wins.
 
 ## What's the difference between `extend` and `patch_table`?
 
+They answer different questions. `extend` says *"these are **different
+tables** that share a shape"* — the child is a new table with its own name
+and engine, and always adds a declaration. `patch_table` says *"this is the
+**same table**, and one layer wants to adjust it"* — the table stays
+declared once, and the patch is a modification, not a declaration
+(`hclexp locate -duplicates` counts extend children, but not patches).
+
 | Aspect            | `table X { extend = "Y" }`                | `patch_table "Y" { ... }`               |
 | ----------------- | ------------------------------------------ | ---------------------------------------- |
 | Creates new table | Yes (`X` is a new, distinct table)        | No (modifies `Y` in place)               |
 | Engine identity   | `X` has its own engine                     | `Y`'s engine is unchanged                |
-| Can override anything? | Yes — engine, order_by, ttl, settings | No — additive columns only               |
+| Can override anything? | Yes — engine, order_by, ttl, settings | Columns (additive) and settings (merged) only |
+| `settings` semantics | **Replace wholesale** — a child that sets one key loses every inherited one | **Merge, patch wins per key** — the base keeps its other keys |
+| Declaration count | One per child (env-per-child breaks once-only) | Target stays declared once |
 | Where it lives    | Same layer, typical                        | Any layer (commonly higher overlays)     |
-| Use case          | "Similar but different" tables             | Per-environment column extras            |
+| Use case          | "Similar but different" tables             | Per-environment column / setting deltas  |
 
 In short: `extend` creates a *new* table; `patch_table` modifies an *existing*
 one.
 
 ## Can `patch_table` change the engine or `order_by`?
 
-No. `patch_table` is strictly additive — only `column` blocks. If you need to
-change those in one environment, use a full `table` declaration with
-`override = true` in that environment's layer.
+No. `patch_table` carries `column` blocks (strictly additive) and `settings`
+(merged, patch wins per key) — nothing else. If one environment needs a
+different engine, `order_by`, or to drop a column, that table genuinely
+differs there: use a full `table` declaration with `override = true` in that
+environment's layer.
+
+## How do I change one table setting in only one environment?
+
+`patch_table` with `settings`. The table stays declared once; the env layer
+carries just the delta, and the maps merge (patch wins on a colliding key):
+
+```hcl
+# base/events.hcl — declared once
+database "posthog" {
+  table "adhoc_events_deletion" {
+    order_by = ["id"]
+    settings = { index_granularity = "8192" }
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+  }
+}
+
+# envs/prod-us/patch.hcl — the whole env difference
+database "posthog" {
+  patch_table "adhoc_events_deletion" {
+    settings = { default_compression_codec = "lz4" }
+  }
+}
+```
+
+Composing `base,envs/prod-us` yields **both** settings. Do **not** reach for
+`extend` here — an extend child replaces the settings map wholesale and adds
+a declaration per environment.
+
+## Why did my `extend` child lose the parent's settings?
+
+Because a child that sets `settings` (or `engine`, `order_by`,
+`partition_by`, `sample_by`, `ttl`) **replaces the inherited value
+wholesale** — these attributes never merge through `extend`:
+
+```hcl
+table "t"  { settings = { index_granularity = "8192" } ... }
+table "t2" {
+  extend   = "t"
+  settings = { default_compression_codec = "lz4" }   # t2 has ONLY this key
+}
+```
+
+An `extend` child is a *new table* and is authoritative about whatever it
+sets, so either restate every setting you want to keep, or — if what you
+meant was "the same table with one setting adjusted" — use `patch_table`,
+whose `settings` merge.
+
+Also note what never flows through `extend` at all: `primary_key`,
+`comment`, `cluster`, `constraint` blocks, and `projection` blocks. Declare
+those on the child. (The database-level `cluster` default still cascades
+into every emitted table, independent of inheritance.)
 
 ## What happens if my `extend` chain has a cycle?
 
