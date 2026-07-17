@@ -244,6 +244,16 @@ func applyPatches(db *DatabaseSpec) error {
 			seen[c.Name] = true
 			target.Columns = append(target.Columns, c)
 		}
+		// Settings merge patch-wins: an env overlay that retunes a base
+		// setting is the point. Patches accumulate in layer order, so a
+		// later layer's patch wins over an earlier one — the same
+		// precedence layers already have.
+		if len(patch.Settings) > 0 && target.Settings == nil {
+			target.Settings = make(map[string]string, len(patch.Settings))
+		}
+		for k, v := range patch.Settings {
+			target.Settings[k] = v
+		}
 	}
 	db.Patches = nil
 	return nil
