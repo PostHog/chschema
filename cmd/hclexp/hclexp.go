@@ -519,14 +519,27 @@ func runLoad(args []string) {
 	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under")
 	formatFlag := fs.String("format", "hcl", "output format: hcl (default) or json (the resolved layer stack per role, from the manifest alone — the layer dirs need not exist; requires -manifest)")
 	outNameFlag := fs.String("out-name", defaultOutName, "file name template for composed roles written into the -out directory; {env} and {role} expand, .hcl is appended, subdirectories are created (e.g. '{env}/{role}')")
+	excludeFlag := fs.String("exclude", "", "HCL exclude config (patterns + object_types, as in diff/drift/plan): matching objects are dropped from the emitted schema")
+	excludeObjectsFlag := fs.String("exclude-objects", "", "comma-separated name globs (bare or db.name) dropped from the emitted schema")
+	onlyFlag := fs.String("only", "", "comma-separated name globs (bare or db.name): keep only the matching objects in the emitted schema")
 	_ = fs.Parse(args)
 
-	if err := loadFlagsError(*manifestFlag, *envFlag, *roleFlag, *formatFlag, *layersFlag, *outNameFlag, flagWasSet(fs, "config")); err != nil {
+	if err := loadFlagsError(loadFlags{
+		manifest: *manifestFlag, env: *envFlag, role: *roleFlag,
+		format: *formatFlag, layers: *layersFlag, outName: *outNameFlag,
+		exclude: *excludeFlag, excludeObjects: *excludeObjectsFlag, only: *onlyFlag,
+		configSet: flagWasSet(fs, "config"),
+	}); err != nil {
 		slog.Error("invalid flags", "err", err)
 		os.Exit(2)
 	}
+	filters := loadFilters{
+		exclude:      loadExcludeFlag(*excludeFlag),
+		excludeGlobs: splitList(*excludeObjectsFlag),
+		onlyGlobs:    splitList(*onlyFlag),
+	}
 	if *manifestFlag != "" {
-		runLoadManifest(*manifestFlag, *envFlag, *roleFlag, *layerRootFlag, *formatFlag, *outFlag, *outNameFlag)
+		runLoadManifest(*manifestFlag, *envFlag, *roleFlag, *layerRootFlag, *formatFlag, *outFlag, *outNameFlag, filters)
 		return
 	}
 
@@ -542,6 +555,7 @@ func runLoad(args []string) {
 		slog.Error("failed to resolve schema", "err", err)
 		os.Exit(1)
 	}
+	filters.apply(schema)
 
 	slog.Info("schema resolved", "databases", len(schema.Databases), "named_collections", len(schema.NamedCollections))
 	for _, db := range schema.Databases {

@@ -463,7 +463,7 @@ committed dump: ClickHouse's atomic-replace temporaries (`_tmp_replace_*`),
 migration/DAG scratch tables (`tmp_*`), backups, staging, and backfills. Their
 DDL also often can't be parsed, which would otherwise abort introspection.
 
-`introspect`, `dump-cluster`, `diff`, `plan`, and `drift` all take
+`introspect`, `dump-cluster`, `diff`, `plan`, `drift`, and `load` all take
 `-exclude <file>`, an HCL config:
 
 ```hcl
@@ -493,6 +493,28 @@ comparison commands (`diff`, `plan`, `drift`) **both sides** are filtered before
 the diff runs, so an excluded object appears in no output, no operation, and no
 count — no post-filtering of the JSON needed. A starter config is at
 [`examples/exclude.hcl`](../examples/exclude.hcl).
+
+### Layer surgery — `load -only` / `-exclude-objects`
+
+`load` additionally takes the filter as ad-hoc globs, in both directions, so
+a layer can be split without leaving hclexp (and without hand-parsing HCL,
+which silently loses shapes like the two-label `raw "dictionary" "x" {}`):
+
+```bash
+# the shared layer: only the objects identical everywhere
+hclexp load -layer overrides/data/dev -only "$LIST" -out overrides/data/cloud/tables.hcl
+
+# each env layer: everything except those
+hclexp load -layer overrides/data/dev -exclude-objects "$LIST" -out overrides/data/dev/tables.hcl
+```
+
+`-only <glob,...>` keeps only the matching objects; `-exclude-objects
+<glob,...>` drops them; both use the same bare-or-qualified glob matching as
+the exclude config and compose with `-exclude <file>` (an object survives iff
+it matches `-only`, when given, and neither exclusion). Filtering applies to
+the emitted resolved schema — in manifest mode to every composed role — and
+removes objects only: the `database {}` wrapper survives even when emptied
+(both halves of a split still need it), and `node {}` blocks are untouched.
 
 ## SQL → HCL edits — `hclexp sql2hcl`
 

@@ -154,6 +154,29 @@ hclexp -config ./schema/posthog.hcl -out ./resolved.hcl
   directory (every `*.hcl` in it) or a single `.hcl` file
   (mutually exclusive with `-config`)
 - `-out` — if set, write the resolved schema as canonical HCL to this path
+- `-exclude` — HCL exclude config (`patterns` + `object_types`, the same file
+  `diff`/`drift`/`plan` consume); matching objects are dropped from the
+  emitted schema
+- `-exclude-objects` — comma-separated name globs (bare or `db.name`) dropped
+  from the emitted schema
+- `-only` — comma-separated name globs; keep **only** the matching objects
+
+`-only`/`-exclude-objects` make layer factoring two `load` calls instead of a
+hand-written HCL parser (which silently loses shapes like the two-label
+`raw "dictionary" "x" {}`):
+
+```bash
+# the shared layer: only the objects identical everywhere
+hclexp load -layer overrides/data/dev -only "$LIST" -out overrides/data/cloud/tables.hcl
+
+# each env layer: everything except those
+hclexp load -layer overrides/data/dev -exclude-objects "$LIST" -out overrides/data/dev/tables.hcl
+```
+
+An object survives iff it matches `-only` (when given) and neither exclusion.
+Filtering removes objects only: the `database {}` wrapper survives even when
+emptied and `node {}` blocks are untouched, so the two halves of a split are
+exact complements.
 
 ### Compose from a manifest
 

@@ -168,8 +168,8 @@ The `justfile` has the full recipe list.
 ### Introspection & Dumping
 - ✅ **Tables** — `hclexp introspect` round-trips tables (columns,
   indexes, constraints, engine, ORDER/PARTITION/SAMPLE/TTL/SETTINGS)
-- ✅ **Exclude patterns** — `introspect`/`dump-cluster`/`diff`/`plan`/`drift` take
-  `-exclude <file>`, an HCL config with an `exclude { patterns = [...] }` glob
+- ✅ **Exclude patterns** — `introspect`/`dump-cluster`/`diff`/`plan`/`drift`/`load`
+  take `-exclude <file>`, an HCL config with an `exclude { patterns = [...] }` glob
   list plus an optional `object_types = [...]` (drop a whole class, e.g.
   `named_collection`). Objects whose name (or `db.name`) matches are skipped
   *before* their DDL is parsed, so transient tables (`_tmp_replace_*`, migration
@@ -252,6 +252,12 @@ The `justfile` has the full recipe list.
   template subdirectories are created — `-out-name '{env}/{role}'` writes the
   per-env tree `golden/<env>/<role>.hcl` directly. Unknown placeholders,
   paths escaping `-out`, and two roles rendering to one path are errors
+- ✅ Object filters on the emitted schema (plain and manifest modes, every
+  composed role): `-exclude <file>` (the shared exclude config),
+  `-exclude-objects <glob,...>` (ad-hoc drops), `-only <glob,...>` (keep only
+  matches — the layer-surgery selector). Kept iff matches `-only` (when given)
+  and neither exclusion; emptied `database{}` blocks and `node{}` blocks
+  survive; rejected with `-format json`
 - ✅ `-format json` emits each role's declared and resolved layer stack, for
   callers that need the stack itself rather than the composed schema; the
   stacks come from the manifest alone (no composition), so it answers "what

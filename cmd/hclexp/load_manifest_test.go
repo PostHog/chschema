@@ -300,10 +300,14 @@ func TestLoadFlagsError(t *testing.T) {
 	tests := []struct {
 		name                                         string
 		manifest, env, role, format, layers, outName string
+		exclude, excludeObjects, only                string
 		configSet                                    bool
 		wantErr                                      string
 	}{
 		{name: "layer mode", format: "hcl"},
+		{name: "layer mode with filters", format: "hcl", layers: "a",
+			exclude: "ex.hcl", excludeObjects: "tmp_*,posthog.*_backup", only: "person*"},
+		{name: "manifest with filters", manifest: "m.hcl", env: "dev", format: "hcl", only: "events"},
 		{name: "layer mode with layers", format: "hcl", layers: "a,b"},
 		{name: "manifest mode", manifest: "m.hcl", env: "dev", format: "hcl"},
 		{name: "manifest mode with role", manifest: "m.hcl", env: "dev", role: "ops", format: "hcl"},
@@ -331,13 +335,26 @@ func TestLoadFlagsError(t *testing.T) {
 			wantErr: "-out-name applies to hcl output"},
 		{name: "out-name unknown placeholder", manifest: "m.hcl", env: "dev", format: "hcl", outName: "{env}/{rolle}",
 			wantErr: "unknown placeholder {rolle}"},
+		{name: "filters with manifest json", manifest: "m.hcl", env: "dev", format: "json", only: "events",
+			wantErr: "not -format json"},
+		{name: "exclude config with json", manifest: "m.hcl", env: "dev", format: "json", exclude: "ex.hcl",
+			wantErr: "not -format json"},
+		{name: "bad only glob", manifest: "m.hcl", env: "dev", format: "hcl", only: "[bad",
+			wantErr: `invalid -only pattern "[bad"`},
+		{name: "bad exclude-objects glob", format: "hcl", excludeObjects: "ok,[bad",
+			wantErr: `invalid -exclude-objects pattern "[bad"`},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.outName == "" {
 				tc.outName = defaultOutName
 			}
-			err := loadFlagsError(tc.manifest, tc.env, tc.role, tc.format, tc.layers, tc.outName, tc.configSet)
+			err := loadFlagsError(loadFlags{
+				manifest: tc.manifest, env: tc.env, role: tc.role,
+				format: tc.format, layers: tc.layers, outName: tc.outName,
+				exclude: tc.exclude, excludeObjects: tc.excludeObjects, only: tc.only,
+				configSet: tc.configSet,
+			})
 			if tc.wantErr == "" {
 				require.NoError(t, err)
 				return
