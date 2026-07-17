@@ -239,6 +239,13 @@ The `justfile` has the full recipe list.
 - ✅ The `field` vocabulary (`column:`/`index:`/`projection:`/`constraint:`/
   `setting:`/`param:`/`engine`/`order_by`/…) is a public contract, documented in
   `docs/README.hcl.md`
+- ✅ **System-proxy column subsets** — a Distributed proxy with
+  `remote_database = "system"` compares columns subset-tolerantly in the diff
+  engine (`diff`/`plan`/`drift`): presence differences are suppressed in
+  either direction (system tables gain columns with server versions, so a
+  declared subset is the only pinnable state), while columns on both sides
+  still compare fully and an engine change yields the full column diff.
+  Non-system proxies stay exact (#136 item 4)
 
 ### Composing a node from the manifest (`hclexp load`)
 - ✅ `-manifest`/`-env` compose a node straight from the same role manifest

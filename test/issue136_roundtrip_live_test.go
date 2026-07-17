@@ -77,3 +77,59 @@ func TestLive_Issue136_IntrospectDiffsCleanAgainstLoad(t *testing.T) {
 	assert.True(t, cs.IsEmpty(),
 		"introspect(apply(layer)) must diff clean against load(layer) (#136); change set: %+v", cs)
 }
+
+// TestLive_Issue136_SystemProxyColumnSubset is the acceptance test for #136
+// item 4: the layer declares a Distributed proxy over system.processes with a
+// curated column subset, while the live proxy — as if created from the full
+// column set on some past server version — carries columns the layer omits.
+// The proxy only forwards reads and the server owns system.processes'
+// columns, so the extra live column is not drift and the diff must be clean.
+func TestLive_Issue136_SystemProxyColumnSubset(t *testing.T) {
+	if !*clickhouse {
+		t.SkipNow()
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	ctx := context.Background()
+	const dbName = "issue136_system_proxy"
+
+	hcl := `database "` + dbName + `" {
+  table "distributed_system_processes" {
+    engine "distributed" {
+      cluster_name    = "posthog"
+      remote_database = "system"
+      remote_table    = "processes"
+    }
+
+    column "query_id" { type = "String" }
+    column "user" { type = "String" }
+    column "elapsed" { type = "Float64" }
+  }
+}`
+	tmp := filepath.Join(t.TempDir(), "schema.hcl")
+	require.NoError(t, os.WriteFile(tmp, []byte(hcl), 0o644))
+
+	loaded, err := hclload.ParseFile(tmp)
+	require.NoError(t, err)
+	require.NoError(t, hclload.Resolve(loaded))
+
+	resetDatabase(t, ctx, conn, dbName)
+	t.Cleanup(func() { _ = conn.Exec(ctx, "DROP DATABASE IF EXISTS "+dbName) })
+	gen := hclload.GenerateSQL(hclload.Diff(&hclload.Schema{}, loaded))
+	require.NotEmpty(t, gen.Statements)
+	for _, s := range gen.Statements {
+		require.NoError(t, conn.Exec(ctx, s), "apply failed:\n%s", s)
+	}
+
+	// Widen the live proxy with a real system.processes column the layer
+	// omits — the state a proxy created via `AS system.processes` on a newer
+	// server ends up in.
+	require.NoError(t, conn.Exec(ctx,
+		"ALTER TABLE "+dbName+".distributed_system_processes ADD COLUMN memory_usage Int64"))
+
+	got, err := hclload.Introspect(ctx, conn, dbName, false)
+	require.NoError(t, err)
+
+	cs := hclload.Diff(loaded, &hclload.Schema{Databases: []hclload.DatabaseSpec{*got}})
+	assert.True(t, cs.IsEmpty(),
+		"a system proxy declaring a column subset must diff clean against the widened live proxy (#136 item 4); change set: %+v", cs)
+}

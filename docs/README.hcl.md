@@ -1009,6 +1009,24 @@ This awareness shows up in three places:
    a Kafka table) — the declared definition wins over the virtual at
    every consumer site.
 
+## System-table proxies in the diff
+
+A `Distributed` proxy whose `remote_database` is `system` compares columns
+**subset-tolerantly** in the comparison engine (`diff`, `plan`, `drift`).
+System tables are server-defined and gain columns with version bumps, so a
+live proxy created from a fuller column set (e.g. `AS system.processes` on a
+newer server) routinely carries columns the layer intentionally omits — that
+is not drift, and reporting it would block convergence forever. Column
+*presence* differences on such proxies are suppressed in either direction;
+columns declared on **both** sides still compare fully, so a real type change
+surfaces as `MODIFY COLUMN`, and an engine change still yields the full
+column diff.
+
+Non-system proxies keep exact column semantics: their remotes are
+layer-managed, so an extra column there is genuine drift. (This mirrors
+`validate`'s proxy-column check, which is subset-tolerant by default —
+see the validate docs.)
+
 Out of scope in v1: MergeTree's version-gated virtuals (`_block_number`,
 `_block_offset`, `_row_exists`) — these depend on ClickHouse version /
 table settings (lightweight deletes) and would risk false positives on

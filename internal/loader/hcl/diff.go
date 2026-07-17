@@ -742,6 +742,15 @@ func sortedKeys[V any](m map[string]V) []string {
 	return out
 }
 
+// isSystemProxy reports whether t is a Distributed proxy over a system.*
+// remote. System tables are server-defined and version-evolving, so any
+// declared column subset is a valid proxy — the same reason validate's
+// proxy-column check is subset-tolerant by default.
+func isSystemProxy(t TableSpec) bool {
+	d, ok := engineOf(t).(EngineDistributed)
+	return ok && d.RemoteDatabase == "system"
+}
+
 func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 	td := TableDiff{Table: to.Name}
 
@@ -772,6 +781,30 @@ func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 		}
 		if _, declaredOnOther := fromCols[n]; !declaredOnOther {
 			delete(toCols, n)
+		}
+	}
+
+	// A Distributed proxy over a system.* table declares a column subset by
+	// design: the server owns the full set and grows it with every version,
+	// so a proxy created from a fuller set (or on a newer server) carries
+	// columns the layer intentionally omits — presence differences are not
+	// drift and would otherwise block convergence forever (#136 item 4).
+	// Compare only the columns declared on both sides; a type change on
+	// those still surfaces. Suppression is symmetric (Diff has no notion of
+	// which operand is live) and applies only when both sides are system
+	// proxies — an engine change still yields the full column diff.
+	// Non-system proxies keep exact semantics: their remotes are
+	// layer-managed, so an extra column there is real drift.
+	if isSystemProxy(*from) && isSystemProxy(*to) {
+		for n := range fromCols {
+			if _, ok := toCols[n]; !ok {
+				delete(fromCols, n)
+			}
+		}
+		for n := range toCols {
+			if _, ok := fromCols[n]; !ok {
+				delete(toCols, n)
+			}
 		}
 	}
 
