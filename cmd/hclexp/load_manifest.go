@@ -35,42 +35,93 @@ type loadJSON struct {
 // <env>-<role>.hcl layout load has always written.
 const defaultOutName = "{env}-{role}"
 
+// loadFlags carries every `load` flag the pure validation needs. configSet
+// says whether -config was given explicitly (it has a non-empty default).
+type loadFlags struct {
+	manifest, env, role, format, layers, outName string
+	exclude, excludeObjects, only                string
+	configSet                                    bool
+}
+
 // loadFlagsError reports the usage error in a `load` invocation, if any. It is
-// pure so the exit-2 paths are testable without a subprocess. configSet says
-// whether -config was given explicitly (it has a non-empty default).
-func loadFlagsError(manifest, env, role, format, layers, outName string, configSet bool) error {
-	if (manifest == "") != (env == "") {
+// pure so the exit-2 paths are testable without a subprocess.
+func loadFlagsError(f loadFlags) error {
+	if (f.manifest == "") != (f.env == "") {
 		return fmt.Errorf("-manifest and -env must be used together")
 	}
-	if format != "hcl" && format != "json" {
-		return fmt.Errorf("invalid -format %q (want hcl or json)", format)
+	if f.format != "hcl" && f.format != "json" {
+		return fmt.Errorf("invalid -format %q (want hcl or json)", f.format)
 	}
-	if manifest == "" {
-		if role != "" {
+	// The JSON document is the layer stacks, not a schema — there are no
+	// objects for a filter to act on.
+	if f.format == "json" && (f.exclude != "" || f.excludeObjects != "" || f.only != "") {
+		return fmt.Errorf("-exclude/-exclude-objects/-only apply to the emitted schema, not -format json")
+	}
+	if err := validGlobList("-exclude-objects", f.excludeObjects); err != nil {
+		return err
+	}
+	if err := validGlobList("-only", f.only); err != nil {
+		return err
+	}
+	if f.manifest == "" {
+		if f.role != "" {
 			return fmt.Errorf("-role requires -manifest")
 		}
-		if outName != defaultOutName {
+		if f.outName != defaultOutName {
 			return fmt.Errorf("-out-name requires -manifest (it names composed role files)")
 		}
 		// Without a manifest the layer stack is the flag value itself, so
 		// there is nothing for -format json to resolve.
-		if format == "json" {
+		if f.format == "json" {
 			return fmt.Errorf("-format json requires -manifest")
 		}
 		return nil
 	}
-	if layers != "" || configSet {
+	if f.layers != "" || f.configSet {
 		return fmt.Errorf("-manifest is mutually exclusive with -layer and -config")
 	}
-	if outName != defaultOutName {
-		if format == "json" {
+	if f.outName != defaultOutName {
+		if f.format == "json" {
 			return fmt.Errorf("-out-name applies to hcl output, not -format json")
 		}
-		if _, err := renderOutName(outName, "env", "role"); err != nil {
+		if _, err := renderOutName(f.outName, "env", "role"); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// validGlobList checks every comma-separated pattern in a flag value.
+func validGlobList(flagName, list string) error {
+	for _, p := range splitList(list) {
+		if _, err := filepath.Match(p, ""); err != nil {
+			return fmt.Errorf("invalid %s pattern %q: %w", flagName, p, err)
+		}
+	}
+	return nil
+}
+
+// loadFilters is the assembled object filter applied to every schema `load`
+// emits: the -exclude config, the ad-hoc -exclude-objects globs, and the
+// -only selector.
+type loadFilters struct {
+	exclude      *hclload.ExcludeMatcher
+	excludeGlobs []string
+	onlyGlobs    []string
+}
+
+// apply drops the excluded objects and then keeps only the -only matches. An
+// object survives iff it matches -only (when given) and neither exclusion
+// source. Databases survive emptied (a split layer still needs the database{}
+// wrapper and its cluster default) and node{} blocks are never touched.
+func (lf loadFilters) apply(s *hclload.Schema) {
+	hclload.FilterSchema(s, lf.exclude)
+	if len(lf.excludeGlobs) > 0 {
+		hclload.FilterSchema(s, hclload.NewExcludeMatcher(lf.excludeGlobs...))
+	}
+	if len(lf.onlyGlobs) > 0 {
+		hclload.SelectSchema(s, hclload.NewExcludeMatcher(lf.onlyGlobs...))
+	}
 }
 
 // outNamePlaceholderRe matches a {placeholder} left over after expansion, so
@@ -121,11 +172,11 @@ func checkOutTarget(out string, nRoles int) error {
 }
 
 // runLoadManifest composes the manifest's roles for env (filtered to role when
-// non-empty) and writes them out. In hcl format a single role goes to a file or
-// stdout and multiple roles go to the -out directory, each named by the
-// -out-name template (default <env>-<role>.hcl); in json format the resolved
-// layer stacks go to stdout or -out.
-func runLoadManifest(manifestPath, env, role, layerRoot, format, out, outName string) {
+// non-empty), applies the object filters, and writes them out. In hcl format a
+// single role goes to a file or stdout and multiple roles go to the -out
+// directory, each named by the -out-name template (default <env>-<role>.hcl);
+// in json format the resolved layer stacks go to stdout or -out.
+func runLoadManifest(manifestPath, env, role, layerRoot, format, out, outName string, filters loadFilters) {
 	roles, err := parseManifest(manifestPath, env)
 	if err != nil {
 		slog.Error("failed to parse manifest", "file", manifestPath, "env", env, "err", err)
@@ -151,6 +202,9 @@ func runLoadManifest(manifestPath, env, role, layerRoot, format, out, outName st
 	if err != nil {
 		slog.Error("failed to compose manifest roles", "file", manifestPath, "env", env, "err", err)
 		os.Exit(1)
+	}
+	for i := range composed {
+		filters.apply(composed[i].Schema)
 	}
 
 	if err := checkOutTarget(out, len(composed)); err != nil {

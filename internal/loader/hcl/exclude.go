@@ -137,6 +137,40 @@ func FilterSchema(s *Schema, m *ExcludeMatcher) {
 	})
 }
 
+// SelectSchema keeps only the objects the matcher matches, in place — the
+// inverse of FilterSchema, for "emit only these objects" selections (load
+// -only). An empty matcher selects nothing to keep... which would erase the
+// schema, so it is treated as "no selection" and leaves the schema unchanged;
+// callers pass a matcher only when a selector was actually given. Databases
+// are kept even when emptied (a split layer still needs the database{}
+// wrapper and its cluster default); node blocks are untouched.
+func SelectSchema(s *Schema, m *ExcludeMatcher) {
+	if s == nil || m.Empty() {
+		return
+	}
+	for di := range s.Databases {
+		db := &s.Databases[di]
+		db.Tables = filterSlice(db.Tables, func(t TableSpec) bool {
+			return !m.MatchesObject(KindTable, db.Name, t.Name)
+		})
+		db.MaterializedViews = filterSlice(db.MaterializedViews, func(v MaterializedViewSpec) bool {
+			return !m.MatchesObject(KindMaterializedView, db.Name, v.Name)
+		})
+		db.Views = filterSlice(db.Views, func(v ViewSpec) bool {
+			return !m.MatchesObject(KindView, db.Name, v.Name)
+		})
+		db.Dictionaries = filterSlice(db.Dictionaries, func(d DictionarySpec) bool {
+			return !m.MatchesObject(KindDictionary, db.Name, d.Name)
+		})
+		db.Raws = filterSlice(db.Raws, func(r RawSpec) bool {
+			return !m.MatchesObject(KindRaw, db.Name, r.Name)
+		})
+	}
+	s.NamedCollections = filterSlice(s.NamedCollections, func(nc NamedCollectionSpec) bool {
+		return !m.MatchesObject(KindNamedCollection, "", nc.Name)
+	})
+}
+
 func filterSlice[T any](in []T, drop func(T) bool) []T {
 	out := in[:0]
 	for _, v := range in {

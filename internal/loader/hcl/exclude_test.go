@@ -144,6 +144,61 @@ func TestFilterSchema(t *testing.T) {
 	assert.Equal(t, want, s)
 }
 
+// SelectSchema is FilterSchema's inverse: only the matches survive, the
+// database block stays even when emptied, and nodes are untouched.
+func TestSelectSchema(t *testing.T) {
+	s := &Schema{
+		Databases: []DatabaseSpec{
+			{
+				Name: "posthog",
+				Tables: []TableSpec{
+					{Name: "events"},
+					{Name: "person"},
+				},
+				Views:        []ViewSpec{{Name: "events_view", Query: "SELECT 1"}},
+				Dictionaries: []DictionarySpec{{Name: "events_dict"}},
+				Raws:         []RawSpec{{Kind: "dictionary", Name: "events_legacy", SQL: "CREATE ..."}},
+			},
+			{
+				Name:   "other",
+				Tables: []TableSpec{{Name: "person"}},
+			},
+		},
+		NamedCollections: []NamedCollectionSpec{{Name: "events_creds"}, {Name: "s3_creds"}},
+		Nodes:            []NodeSpec{{Name: "host-1"}},
+	}
+
+	SelectSchema(s, NewExcludeMatcher("events*", "other.person"))
+
+	want := &Schema{
+		Databases: []DatabaseSpec{
+			{
+				Name:         "posthog",
+				Tables:       []TableSpec{{Name: "events"}},
+				Views:        []ViewSpec{{Name: "events_view", Query: "SELECT 1"}},
+				Dictionaries: []DictionarySpec{{Name: "events_dict"}},
+				Raws:         []RawSpec{{Kind: "dictionary", Name: "events_legacy", SQL: "CREATE ..."}},
+			},
+			{
+				Name:   "other",
+				Tables: []TableSpec{{Name: "person"}},
+			},
+		},
+		NamedCollections: []NamedCollectionSpec{{Name: "events_creds"}},
+		Nodes:            []NodeSpec{{Name: "host-1"}},
+	}
+	assert.Equal(t, want, s)
+}
+
+// An empty (or nil) matcher would select nothing and erase the schema, so it
+// is a no-op instead — a selector only acts when one was actually given.
+func TestSelectSchema_EmptyMatcherIsNoop(t *testing.T) {
+	s := &Schema{Databases: []DatabaseSpec{{Name: "d", Tables: []TableSpec{{Name: "t"}}}}}
+	SelectSchema(s, nil)
+	SelectSchema(s, NewExcludeMatcher())
+	require.Len(t, s.Databases[0].Tables, 1)
+}
+
 func TestLoadExcludeConfig_ObjectTypes(t *testing.T) {
 	path := writeTempExclude(t, `
 exclude {
