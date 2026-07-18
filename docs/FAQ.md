@@ -462,3 +462,59 @@ HCL authors always write `samples`.
 
 See the `time_series` reference in `README.hcl.md` for the full
 attribute list and the inner-target form.
+
+## How do I capture an existing cluster as HCL?
+
+One node: `introspect`. The whole fleet: `dump-cluster`.
+
+```bash
+# One node, one file per database
+hclexp introspect -host ch1.prod -database posthog,system -out ./schema/ \
+  -allow-raw -exclude exclude.hcl
+
+# Every node of a cluster, one <short-host>.hcl each
+hclexp dump-cluster -host entry.prod -cluster posthog \
+  -database posthog -out-dir ./prod/eu -allow-raw -exclude exclude.hcl
+```
+
+Two flags do the heavy lifting on a real cluster: `-exclude` skips the
+transient objects (`_tmp_replace_*`, backups, staging) *before* their DDL is
+parsed, so they neither pollute the dump nor abort it; `-allow-raw` captures
+anything the HCL model can't express as a verbatim `raw {}` block instead of
+failing the dump. Start from
+[`examples/exclude.hcl`](../examples/exclude.hcl). The per-node dumps feed
+`drift` (cross-node comparison), `plan` (current state per role), and
+`locate -dump`.
+
+## How do I seed a fresh ClickHouse from an existing schema?
+
+Two ways, depending on which artifact you have:
+
+```bash
+# From a live database: replayable SQL, in apply order
+hclexp dump-sql -database posthog -out seed.sql
+clickhouse client --multiquery < seed.sql
+
+# From an HCL schema: the migration from empty is just a diff
+mkdir -p /tmp/empty
+hclexp diff -left /tmp/empty -right ./schema -sql | clickhouse client --multiquery
+```
+
+`dump-sql` preserves the server's exact DDL (good for byte-faithful seeds);
+the `diff -sql` route generates from your declared source of truth (good for
+CI and fresh environments). Both emit dependencies before dependents.
+
+## How do I apply a SQL migration I already wrote to the HCL schema?
+
+`sql2hcl` — feed it the DDL, get updated HCL back; no hand-translation:
+
+```bash
+printf 'ALTER TABLE posthog.events ADD COLUMN plan LowCardinality(String);\n' | \
+  hclexp sql2hcl -left ./schema -database posthog -in - -out ./resolved.hcl
+```
+
+The output is the resolved (flat) schema, so the usual loop is: apply the
+edit, eyeball `hclexp diff -left ./schema -right ./resolved.hcl -sql` to
+confirm it implies exactly the migration you wrote, then fold the change back
+into the layered source. Schema DDL only — data and partition operations are
+rejected.

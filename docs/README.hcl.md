@@ -691,6 +691,32 @@ in place. Review the emitted HCL (or the `diff -sql` it implies) and integrate.
 The default database for an unqualified name comes from `-database`, or, when the
 left side has exactly one database, that database.
 
+## Replayable DDL — `hclexp dump-sql`
+
+`dump-sql` captures a database's `CREATE` statements (the server's own
+`create_table_query` text) as one replayable `.sql` stream — the seed-file
+counterpart of `introspect`'s HCL dump, for when the consumer is
+`clickhouse client` rather than this tool.
+
+```bash
+hclexp dump-sql -database posthog -out seed.sql
+clickhouse client --multiquery < seed.sql     # rebuild elsewhere
+```
+
+- Statements are emitted in **apply order** — storage engines before the
+  Distributed proxies, views, MVs, and dictionaries that reference them —
+  under a `-- database: <db>` header, each terminated by `;`.
+- Long view / materialized-view `CREATE`s are beautified (multi-line,
+  indented), so the seed is reviewable, not a wall of one-liners.
+- `-out` empty or `-` writes to stdout; `-show-secrets` captures real
+  secret values instead of `[HIDDEN]` (same server-side requirements as
+  `introspect`); connection/TLS flags as everywhere else.
+
+Because the stream is exactly what the server reports, replaying it into a
+fresh instance and introspecting the result is the round-trip fidelity
+check the test suite runs — see the top-level README's "Verify round-trip
+fidelity".
+
 ## Cross-role planning — `hclexp plan`
 
 A node's schema is composed along two axes — **environment** (dev/prod-us/…)
