@@ -1202,7 +1202,8 @@ database "posthog" {
 so the table itself stays declared once and an environment layer carries
 just its delta: columns (add — appended or positioned with
 `after`/`first` — plus `modify_column` / `drop_columns`), indexes
-(add / `drop_indexes`), `order_by`/`partition_by`/`sample_by`/`ttl`
+(add — likewise positioned — / `drop_indexes`),
+`order_by`/`partition_by`/`sample_by`/`ttl`
 (replace when set), the `engine` block (wholesale replace — e.g. a
 Distributed target that moves with the env's topology), and `settings`
 (merged, patch wins per key):
