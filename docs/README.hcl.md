@@ -265,7 +265,8 @@ database "posthog" {
 ## Inheritance — `extend = "Y"`
 
 A `table` can declare `extend = "Y"`, where `Y` is another table (or an
-abstract table) in the same database.
+abstract table) in the same database. The parent does **not** have to be
+abstract: a concrete table can be extended, and then both are emitted.
 
 The child inherits:
 
@@ -274,6 +275,22 @@ The child inherits:
 - `engine`, `order_by`, `partition_by`, `sample_by`, `ttl`, `settings`
   — if the child does **not** set its own; otherwise the child's value
   replaces the inherited one.
+
+The child does **not** inherit:
+
+- `primary_key`, `comment` — declare them on the child if it needs them.
+- `constraint` and `projection` blocks.
+- `cluster` — the table-level attribute never flows through `extend`;
+  the database-level `cluster` default cascades into every emitted
+  table separately, after resolution, which covers the common case.
+
+> **Settings replace wholesale — they do not merge.** A child that sets
+> `settings = { default_compression_codec = "lz4" }` loses every
+> inherited key (`index_granularity`, …) and ends up with exactly that
+> one setting. This is deliberate: an `extend` child is a *new table*
+> and is authoritative about whatever it sets. If what you actually
+> want is "the same table, with one setting adjusted", you want
+> `patch_table` — its `settings` *merge* (see below).
 
 Chains are allowed (`A extends B extends C`); cycles error.
 
@@ -383,11 +400,37 @@ When the loader processes a layered set, this pipeline runs:
 
 ## Comparison: `extend` vs `patch_table` vs `override`
 
+The three mechanisms answer different questions — the choice follows from
+which question you are asking:
+
+- **`extend`**: *"these are **different tables** that share a shape."*
+  `events_local` and `events_distributed` both look like an abstract
+  `_event_base`, but each is its own table with its own name and engine.
+  `extend` always produces a **new declaration**.
+- **`patch_table`**: *"this is the **same table**, and one layer wants to
+  adjust it."* The table stays declared exactly **once**; the env layer
+  contributes a modification, not a declaration.
+- **`override = true`**: *"in this environment the table is genuinely
+  different."* A full replacement declaration, sanctioned by the flag.
+
+The declaration count is not cosmetic: `hclexp locate -duplicates` (the
+once-only CI guard) treats `patch_table` and `override` sites as
+legitimate, but an extend-child-per-environment pattern is N distinct
+declarations — `extend` cannot express "the same table, varied per env",
+and using it that way reintroduces the duplication the layer discipline
+exists to prevent.
+
+The other asymmetry worth internalizing: **`extend`'s `settings` replace
+wholesale, `patch_table`'s `settings` merge (patch wins per key)**. An
+extend child is a new table and owns whatever it sets; a patch adjusts an
+existing table, which stays authoritative except where patched.
+
 | Need                                              | Use            |
 | ------------------------------------------------- | -------------- |
 | Two tables share most columns; different engines  | `extend` + `abstract` parent |
 | Add a column to the same table in one environment | `patch_table`  |
 | Change one setting on the same table in one environment | `patch_table` with `settings` |
+| A table differing per env by engine / `order_by` / dropped columns | `override = true` |
 | Replace a table entirely in one environment       | `override = true` |
 
 ## Dependency validation — `hclexp validate`
