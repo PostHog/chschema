@@ -1106,10 +1106,12 @@ database "posthog" {
 ```
 
 **Patching** — a `patch_table` block modifies a table declared elsewhere,
-so the table itself stays declared once. Columns are strictly additive
-(a duplicate errors); `settings` merges into the target's map with the
-patch winning on key collision, so an environment layer can retune one
-setting without redeclaring the table:
+so the table itself stays declared once and an environment layer carries
+just its delta: columns (add / `modify_column` / `drop_columns`), indexes
+(add / `drop_indexes`), `order_by`/`partition_by`/`sample_by`/`ttl`
+(replace when set), the `engine` block (wholesale replace — e.g. a
+Distributed target that moves with the env's topology), and `settings`
+(merged, patch wins per key):
 
 ```hcl
 # env_us/events_patch.hcl
@@ -1120,6 +1122,11 @@ database "posthog" {
   }
 }
 ```
+
+`patch_view` and `patch_dictionary` do the same for views (`query`,
+`comment`) and dictionaries (`source`/`layout`/`lifetime` replace,
+`settings` merge). See the
+[`patch_table` reference](docs/README.hcl.md#patch_table).
 
 After resolution, `extend` / `abstract` / `patch_table` are all consumed
 and every table is flat with its effective columns, engine, and settings.

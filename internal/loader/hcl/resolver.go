@@ -20,6 +20,12 @@ func Resolve(s *Schema) error {
 		if err := applyPatches(&s.Databases[di]); err != nil {
 			return err
 		}
+		if err := applyViewPatches(&s.Databases[di]); err != nil {
+			return err
+		}
+		if err := applyDictionaryPatches(&s.Databases[di]); err != nil {
+			return err
+		}
 		if err := resolveDatabase(&s.Databases[di]); err != nil {
 			return err
 		}
@@ -232,22 +238,143 @@ func applyPatches(db *DatabaseSpec) error {
 		if !ok {
 			return fmt.Errorf("%s: patch_table %q references unknown table", db.Name, patch.Name)
 		}
-		target := &db.Tables[idx]
-		seen := make(map[string]bool, len(target.Columns)+len(patch.Columns))
-		for _, c := range target.Columns {
-			seen[c.Name] = true
+		if err := applyTablePatch(db.Name, &db.Tables[idx], patch); err != nil {
+			return err
 		}
-		for _, c := range patch.Columns {
-			if seen[c.Name] {
-				return fmt.Errorf("%s: patch_table %q: column %q already exists on target", db.Name, patch.Name, c.Name)
-			}
-			seen[c.Name] = true
-			target.Columns = append(target.Columns, c)
+	}
+	db.Patches = nil
+	return nil
+}
+
+// applyTablePatch applies one patch to its target. Column order within one
+// patch is modify → drop → add, so an add sees the post-drop state (a
+// drop+add pair moves a column to the end with a new definition, while
+// modify_column changes it in place). Index drops likewise precede adds, so
+// a drop+add pair redefines an index in one patch.
+func applyTablePatch(dbName string, target *TableSpec, patch PatchTableSpec) error {
+	for _, c := range patch.ModifyColumns {
+		i := columnIndex(target.Columns, c.Name)
+		if i < 0 {
+			return fmt.Errorf("%s: patch_table %q: modify_column %q does not exist on target", dbName, patch.Name, c.Name)
 		}
-		// Settings merge patch-wins: an env overlay that retunes a base
-		// setting is the point. Patches accumulate in layer order, so a
-		// later layer's patch wins over an earlier one — the same
-		// precedence layers already have.
+		target.Columns[i] = c
+	}
+	for _, name := range patch.DropColumns {
+		i := columnIndex(target.Columns, name)
+		if i < 0 {
+			return fmt.Errorf("%s: patch_table %q: drop_columns %q does not exist on target", dbName, patch.Name, name)
+		}
+		target.Columns = append(target.Columns[:i], target.Columns[i+1:]...)
+	}
+	for _, c := range patch.Columns {
+		if columnIndex(target.Columns, c.Name) >= 0 {
+			return fmt.Errorf("%s: patch_table %q: column %q already exists on target", dbName, patch.Name, c.Name)
+		}
+		target.Columns = append(target.Columns, c)
+	}
+
+	for _, name := range patch.DropIndexes {
+		i := indexIndex(target.Indexes, name)
+		if i < 0 {
+			return fmt.Errorf("%s: patch_table %q: drop_indexes %q does not exist on target", dbName, patch.Name, name)
+		}
+		target.Indexes = append(target.Indexes[:i], target.Indexes[i+1:]...)
+	}
+	for _, idx := range patch.Indexes {
+		if indexIndex(target.Indexes, idx.Name) >= 0 {
+			return fmt.Errorf("%s: patch_table %q: index %q already exists on target (drop it in the same patch to redefine)", dbName, patch.Name, idx.Name)
+		}
+		target.Indexes = append(target.Indexes, idx)
+	}
+
+	// Scalar clauses replace when set; the engine block replaces wholesale
+	// (merging engine sub-arguments is not meaningful).
+	if patch.OrderBy != nil {
+		target.OrderBy = patch.OrderBy
+	}
+	if patch.PartitionBy != nil {
+		target.PartitionBy = patch.PartitionBy
+	}
+	if patch.SampleBy != nil {
+		target.SampleBy = patch.SampleBy
+	}
+	if patch.TTL != nil {
+		target.TTL = patch.TTL
+	}
+	if patch.Engine != nil {
+		eng := *patch.Engine
+		target.Engine = &eng
+	}
+
+	// Settings merge patch-wins: an env overlay that retunes a base
+	// setting is the point. Patches accumulate in layer order, so a
+	// later layer's patch wins over an earlier one — the same
+	// precedence layers already have.
+	if len(patch.Settings) > 0 && target.Settings == nil {
+		target.Settings = make(map[string]string, len(patch.Settings))
+	}
+	for k, v := range patch.Settings {
+		target.Settings[k] = v
+	}
+	return nil
+}
+
+// applyViewPatches applies each patch_view to its target view: fields the
+// patch sets replace the target's.
+func applyViewPatches(db *DatabaseSpec) error {
+	if len(db.ViewPatches) == 0 {
+		return nil
+	}
+	indexByName := make(map[string]int, len(db.Views))
+	for i := range db.Views {
+		indexByName[db.Views[i].Name] = i
+	}
+	for _, patch := range db.ViewPatches {
+		idx, ok := indexByName[patch.Name]
+		if !ok {
+			return fmt.Errorf("%s: patch_view %q references unknown view", db.Name, patch.Name)
+		}
+		target := &db.Views[idx]
+		if patch.Query != nil {
+			target.Query = *patch.Query
+		}
+		if patch.Comment != nil {
+			target.Comment = patch.Comment
+		}
+	}
+	db.ViewPatches = nil
+	return nil
+}
+
+// applyDictionaryPatches applies each patch_dictionary to its target:
+// source/layout/lifetime replace wholesale when set, settings merge
+// patch-wins.
+func applyDictionaryPatches(db *DatabaseSpec) error {
+	if len(db.DictionaryPatches) == 0 {
+		return nil
+	}
+	indexByName := make(map[string]int, len(db.Dictionaries))
+	for i := range db.Dictionaries {
+		indexByName[db.Dictionaries[i].Name] = i
+	}
+	for _, patch := range db.DictionaryPatches {
+		idx, ok := indexByName[patch.Name]
+		if !ok {
+			return fmt.Errorf("%s: patch_dictionary %q references unknown dictionary", db.Name, patch.Name)
+		}
+		target := &db.Dictionaries[idx]
+		if patch.Source != nil {
+			src := *patch.Source
+			target.Source = &src
+		}
+		if patch.Layout != nil {
+			lay := *patch.Layout
+			target.Layout = &lay
+		}
+		if patch.Lifetime != nil {
+			lt := *patch.Lifetime
+			target.Lifetime = &lt
+		}
 		if len(patch.Settings) > 0 && target.Settings == nil {
 			target.Settings = make(map[string]string, len(patch.Settings))
 		}
@@ -255,8 +382,28 @@ func applyPatches(db *DatabaseSpec) error {
 			target.Settings[k] = v
 		}
 	}
-	db.Patches = nil
+	db.DictionaryPatches = nil
 	return nil
+}
+
+// columnIndex returns the position of the named column, or -1.
+func columnIndex(cols []ColumnSpec, name string) int {
+	for i := range cols {
+		if cols[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+// indexIndex returns the position of the named index, or -1.
+func indexIndex(idxs []IndexSpec, name string) int {
+	for i := range idxs {
+		if idxs[i].Name == name {
+			return i
+		}
+	}
+	return -1
 }
 
 func resolveDatabase(db *DatabaseSpec) error {

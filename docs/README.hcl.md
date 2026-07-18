@@ -40,7 +40,8 @@ twice, which is the usual duplicate-declaration error.
 
 Most files declare one or more `database` blocks. Within a database, the
 allowed children are `table`, `patch_table`, `materialized_view`, `view`,
-`dictionary`, and `raw` (the escape hatch; see [`raw`](#raw)).
+`patch_view`, `dictionary`, `patch_dictionary`, and `raw` (the escape
+hatch; see [`raw`](#raw)).
 
 ```hcl
 database "posthog" {
@@ -244,23 +245,94 @@ once, and an env layer patches just its delta.
 ```hcl
 database "posthog" {
   patch_table "events" {
+    # columns: add / modify in place / drop
     column "us_session_id" { type = "String" }
+    modify_column "amount" { type = "Decimal(18, 4)" }
+    drop_columns = ["legacy_flag"]
+
+    # indexes: drop applies before add, so drop+add redefines
+    index "idx_session" {
+      expr        = "us_session_id"
+      type        = "bloom_filter"
+      granularity = 4
+    }
+    drop_indexes = ["idx_old"]
+
+    # scalar clauses: replace the target's value when set
+    order_by     = ["team_id", "timestamp"]
+    partition_by = "toYYYYMM(timestamp)"
+    ttl          = "timestamp + INTERVAL 6 MONTH"
+
+    # engine: replaces the target's engine block wholesale
+    engine "distributed" {
+      cluster_name    = "posthog"
+      remote_database = "posthog"
+      remote_table    = "sharded_events"
+    }
+
+    # settings: merge into the target's map, patch wins per key
     settings = { default_compression_codec = "lz4" }
   }
 }
 ```
 
-- The target table must exist somewhere in the merged config.
-- `column` blocks are strictly additive: adding a column that already exists
-  on the target is an error.
-- `settings` merges into the target's map, **patch wins** on key collision —
-  an env overlay that retunes a base setting is the point. A table whose
-  envs differ by one setting stays declared once; the env layer carries a
-  one-line patch. Patches accumulate in layer order, so a later layer's
-  patch wins over an earlier one.
-- Anything else — `engine`, `order_by`, `index`, etc. — is rejected at
-  parse time.
-- `patch_table` lives at any layer.
+Every field is optional; a patch carries exactly the delta. Semantics per
+field:
+
+- **`column`** — add; a name already on the target errors.
+  **`modify_column`** — replace an existing column **in place** (position
+  kept); an unknown name errors. **`drop_columns`** — remove; unknown
+  errors. Applied modify → drop → add, so an add sees the post-drop state
+  (a drop+add pair moves a column to the end with a new definition;
+  `modify_column` is the way to change one where it stands).
+- **`index`** / **`drop_indexes`** — drops apply first, so a drop+add pair
+  in one patch **redefines** an index; adding an existing name without the
+  drop errors.
+- **`order_by`, `partition_by`, `sample_by`, `ttl`** — replace the
+  target's value when set; unset fields keep the target's.
+- **`engine`** — replaces the target's engine block **wholesale** (merging
+  engine sub-arguments is not meaningful). This is how a Distributed
+  table whose target moves with the env's topology stays declared once —
+  the env patch carries just the engine block.
+- **`settings`** — merges into the target's map, **patch wins** on key
+  collision; an env overlay that retunes a base setting is the point.
+- Not patchable (rejected at parse time): `primary_key`, `comment`,
+  `cluster`, `constraint`/`projection` blocks, and the control attributes.
+  A table that differs beyond the patchable fields is genuinely different
+  — use `override = true`.
+
+The target must exist somewhere in the merged config. Patches accumulate
+across layers and apply in layer order (a later layer's patch wins), before
+`extend` resolution — so patching an abstract base patches every child.
+`patch_table` lives at any layer.
+
+## `patch_view` / `patch_dictionary`
+
+The same idea for the other patchable object kinds: the object stays
+declared once, the env layer replaces just the fields it sets.
+
+```hcl
+database "posthog" {
+  patch_view "user_sessions" {
+    query = file("sql/user_sessions_dev.sql")   # replace; normalized like any view query
+  }
+
+  patch_dictionary "geoip" {
+    source "clickhouse" { table = "geoip_dev" } # replace wholesale
+    lifetime { min = 600 }                      # replace wholesale
+    settings = { max_threads = "2" }            # merge, patch wins
+  }
+}
+```
+
+- `patch_view` fields: `query`, `comment` — each replaces the target's
+  value when set. The patched query normalizes to the canonical beautified
+  form, so a heredoc patch and a one-liner declaration of the same SQL
+  diff clean.
+- `patch_dictionary` fields: `source`, `layout`, `lifetime` (replace
+  wholesale when set) and `settings` (merge, patch wins).
+- Unknown targets error, like `patch_table`. Materialized views have no
+  patch form — an MV differing per env is replaced with `override = true`.
 
 ## Inheritance — `extend = "Y"`
 
@@ -391,8 +463,10 @@ When the loader processes a layered set, this pipeline runs:
 1. **Parse** every `.hcl` file in every layer (ordered).
 2. **Merge** databases by name. Tables collide on name unless the later one
    sets `override = true`. `patch_table` blocks accumulate.
-3. **Apply `patch_table`s** — in layer order, against their targets: columns
-   additively, settings patch-wins.
+3. **Apply patches** (`patch_table`, `patch_view`, `patch_dictionary`) — in
+   layer order, against their targets: columns modify/drop/add, index
+   drop/add, scalar clauses and engine/query/source replace, settings
+   patch-wins.
 4. **Resolve `extend` chains** — DFS with cycle detection; children see the
    post-patch parent.
 5. **Drop abstract tables** from the emit set.
@@ -428,9 +502,11 @@ existing table, which stays authoritative except where patched.
 | Need                                              | Use            |
 | ------------------------------------------------- | -------------- |
 | Two tables share most columns; different engines  | `extend` + `abstract` parent |
-| Add a column to the same table in one environment | `patch_table`  |
-| Change one setting on the same table in one environment | `patch_table` with `settings` |
-| A table differing per env by engine / `order_by` / dropped columns | `override = true` |
+| Add / modify / drop a column on the same table in one environment | `patch_table` |
+| Change a setting, index, `order_by`/`partition_by`/`ttl`, or the engine on the same table in one environment | `patch_table` |
+| A Distributed table whose target moves with the env's topology | `patch_table` with `engine` |
+| A view's `query` or a dictionary's `source` differing per environment | `patch_view` / `patch_dictionary` |
+| A table differing beyond the patchable fields (`primary_key`, constraints, projections, …) | `override = true` |
 | Replace a table entirely in one environment       | `override = true` |
 
 ## Dependency validation — `hclexp validate`

@@ -5,6 +5,6 @@ database "posthog" {
   }
   patch_table "events" {
     column "extra" { type = "String" }
-    engine "log" {}
+    primary_key = ["id"]
   }
 }

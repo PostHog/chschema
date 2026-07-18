@@ -106,8 +106,14 @@ func objectDeclaration(blk *hclsyntax.Block, database, path string) (Declaration
 		d.ObjectType = KindMaterializedView
 	case "view":
 		d.ObjectType = KindView
+	case "patch_view":
+		d.ObjectType = KindView
+		d.Patch = true
 	case "dictionary":
 		d.ObjectType = KindDictionary
+	case "patch_dictionary":
+		d.ObjectType = KindDictionary
+		d.Patch = true
 	case "raw":
 		if len(blk.Labels) != 2 {
 			return Declaration{}, false

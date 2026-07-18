@@ -154,9 +154,15 @@ The `justfile` has the full recipe list.
   `.hcl` file** — same merge semantics either way (`hclload.LayerFiles` owns the
   dir/file decision, so every `-layer`/`-left`/manifest `layers` path gets it);
   a non-`.hcl` or missing entry errors
-- ✅ `patch_table` (cross-layer table modification: columns strictly additive,
-  `settings` merged patch-wins — a one-setting env delta needs no full
-  redeclaration)
+- ✅ `patch_table` (cross-layer table modification; the target stays declared
+  once): columns add/`modify_column`/`drop_columns` (modify → drop → add),
+  indexes add/`drop_indexes` (drop first, so drop+add redefines),
+  `order_by`/`partition_by`/`sample_by`/`ttl` replace when set, `engine`
+  replaces wholesale, `settings` merge patch-wins; `primary_key`/comment/
+  constraints/projections stay non-patchable (use `override = true`)
+- ✅ `patch_view` (`query`/`comment` replace; query normalized like a declared
+  view's) and `patch_dictionary` (`source`/`layout`/`lifetime` replace
+  wholesale, `settings` merge) — unknown targets error; MVs have no patch form
 - ✅ `extend` inheritance with `abstract` bases and cycle detection
 - ✅ `override = true` for cross-layer full replacement
 - ✅ `node` top-level blocks (introspection metadata: hostname +

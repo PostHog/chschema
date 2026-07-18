@@ -18,6 +18,12 @@ type DatabaseSpec struct {
 	Tables  []TableSpec      `hcl:"table,block"`
 	Patches []PatchTableSpec `hcl:"patch_table,block" diff:"-"`
 
+	// ViewPatches and DictionaryPatches are the patch_view /
+	// patch_dictionary counterparts of Patches. Like table patches they
+	// accumulate across layers and are consumed during resolution.
+	ViewPatches       []PatchViewSpec       `hcl:"patch_view,block"       diff:"-"`
+	DictionaryPatches []PatchDictionarySpec `hcl:"patch_dictionary,block" diff:"-"`
+
 	// MaterializedViews are a sibling collection to Tables, not a flavored
 	// TableSpec. They may `extend` an `abstract = true` table to inherit
 	// its column list (and optionally cluster/comment); `patch_table` does
@@ -110,16 +116,55 @@ type ViewSpec struct {
 }
 
 // PatchTableSpec is a cross-layer modification of a table: the table stays
-// declared once, and an env layer patches just its delta. Columns are
-// strictly additive (a duplicate errors); Settings merge into the target's
-// map with the patch winning on key collision — an env overlay that retunes
-// a base setting is the point (#152). Anything else (engine, order_by,
-// index, ...) is rejected at parse time by struct shape. Consumed during
-// resolution.
+// declared once, and an env layer patches just its delta (#152, #154).
+// Consumed during resolution; patches accumulate and apply in layer order,
+// before extend resolution. Per-field semantics:
+//
+//   - Columns add (a name already on the target errors); ModifyColumns
+//     replace an existing column in place (an unknown name errors);
+//     DropColumns remove (unknown errors). Applied modify → drop → add,
+//     so add sees the post-drop state.
+//   - Indexes add, DropIndexes remove; drops apply first, so a drop+add
+//     pair in one patch redefines an index.
+//   - OrderBy / PartitionBy / SampleBy / TTL replace the target's value
+//     when set.
+//   - Engine replaces the target's engine block wholesale — merging engine
+//     sub-arguments is not meaningful.
+//   - Settings merge into the target's map, patch wins on key collision.
 type PatchTableSpec struct {
-	Name     string            `hcl:"name,label"`
-	Columns  []ColumnSpec      `hcl:"column,block"`
-	Settings map[string]string `hcl:"settings,optional"`
+	Name          string            `hcl:"name,label"`
+	Columns       []ColumnSpec      `hcl:"column,block"`
+	ModifyColumns []ColumnSpec      `hcl:"modify_column,block"`
+	DropColumns   []string          `hcl:"drop_columns,optional"`
+	Indexes       []IndexSpec       `hcl:"index,block"`
+	DropIndexes   []string          `hcl:"drop_indexes,optional"`
+	OrderBy       []string          `hcl:"order_by,optional"`
+	PartitionBy   *string           `hcl:"partition_by,optional"`
+	SampleBy      *string           `hcl:"sample_by,optional"`
+	TTL           *string           `hcl:"ttl,optional"`
+	Settings      map[string]string `hcl:"settings,optional"`
+	Engine        *EngineSpec       `hcl:"engine,block"`
+}
+
+// PatchViewSpec is the view counterpart of patch_table: the view stays
+// declared once and an env layer replaces just the fields it sets. Query is
+// normalized to the canonical beautified form at parse, like a declared
+// view's.
+type PatchViewSpec struct {
+	Name    string  `hcl:"name,label"`
+	Query   *string `hcl:"query,optional"`
+	Comment *string `hcl:"comment,optional"`
+}
+
+// PatchDictionarySpec is the dictionary counterpart of patch_table. Source,
+// Layout, and Lifetime replace the target's wholesale when set; Settings
+// merge patch-wins, like patch_table's.
+type PatchDictionarySpec struct {
+	Name     string                `hcl:"name,label"`
+	Source   *DictionarySourceSpec `hcl:"source,block"`
+	Layout   *DictionaryLayoutSpec `hcl:"layout,block"`
+	Lifetime *DictionaryLifetime   `hcl:"lifetime,block"`
+	Settings map[string]string     `hcl:"settings,optional"`
 }
 
 type TableSpec struct {

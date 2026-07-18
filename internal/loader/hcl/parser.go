@@ -51,6 +51,20 @@ func ParseFile(path string) (*Schema, error) {
 			}
 			tbl.Engine.Decoded = decoded
 		}
+		// Patch engine blocks decode exactly like table engines: the patch
+		// replaces the target's engine wholesale at resolution, so the
+		// decoded value must be ready before then.
+		for pi := range db.Patches {
+			p := &db.Patches[pi]
+			if p.Engine == nil {
+				continue
+			}
+			decoded, err := DecodeEngine(p.Engine)
+			if err != nil {
+				return nil, fmt.Errorf("%s: patch_table %q: %w", db.Name, p.Name, err)
+			}
+			p.Engine.Decoded = decoded
+		}
 		for i := range db.Dictionaries {
 			d := &db.Dictionaries[i]
 			if d.Source != nil {
@@ -66,6 +80,23 @@ func ParseFile(path string) (*Schema, error) {
 					return nil, fmt.Errorf("%s.%s: %w", db.Name, d.Name, err)
 				}
 				d.Layout.Decoded = decoded
+			}
+		}
+		for pi := range db.DictionaryPatches {
+			p := &db.DictionaryPatches[pi]
+			if p.Source != nil {
+				decoded, err := DecodeDictionarySource(p.Source)
+				if err != nil {
+					return nil, fmt.Errorf("%s: patch_dictionary %q: %w", db.Name, p.Name, err)
+				}
+				p.Source.Decoded = decoded
+			}
+			if p.Layout != nil {
+				decoded, err := DecodeDictionaryLayout(p.Layout)
+				if err != nil {
+					return nil, fmt.Errorf("%s: patch_dictionary %q: %w", db.Name, p.Name, err)
+				}
+				p.Layout.Decoded = decoded
 			}
 		}
 	}
