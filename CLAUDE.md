@@ -159,7 +159,8 @@ The `justfile` has the full recipe list.
   adds position with `after = "col"` / `first = true`, resolving against the
   post-previous-op state, so mid-table env columns interleave without full
   redeclaration — placement is patch-only and cleared on application),
-  indexes add/`drop_indexes` (drop first, so drop+add redefines),
+  indexes add/`drop_indexes` (drop first, so drop+add redefines; adds take
+  the same `after`/`first` placement as columns),
   `order_by`/`partition_by`/`sample_by`/`ttl` replace when set, `engine`
   replaces wholesale, `settings` merge patch-wins; `primary_key`/comment/
   constraints/projections stay non-patchable (use `override = true`)

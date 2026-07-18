@@ -249,6 +249,14 @@ type IndexSpec struct {
 	Expr        string `hcl:"expr"`
 	Type        string `hcl:"type"`
 	Granularity int    `hcl:"granularity,optional"`
+
+	// After / First position a patch_table index add, exactly like the
+	// column placement fields (#158/#160): patch-only, consumed and
+	// cleared at application, so the composed table renders identically
+	// to a flat declaration in that order. A declared table index
+	// carrying either is a resolve error.
+	After *string `hcl:"after,optional" diff:"-"`
+	First bool    `hcl:"first,optional" diff:"-"`
 }
 
 // ProjectionSpec is a table PROJECTION: a named SELECT (implicit FROM

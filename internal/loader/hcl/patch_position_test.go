@@ -208,3 +208,193 @@ func TestPatchTable_PositionErrors(t *testing.T) {
 	}}}
 	require.ErrorContains(t, Resolve(mv), "not valid on a materialized_view column")
 }
+
+// indexOrder flattens an index list to names for order assertions.
+func indexOrder(idxs []IndexSpec) []string {
+	out := make([]string, len(idxs))
+	for i, x := range idxs {
+		out[i] = x.Name
+	}
+	return out
+}
+
+// The issue #160 scenario in miniature: sharded_events' per-env minmax_mat_*
+// indexes interleave mid-list. The positioned patch reproduces the order and
+// the composed table renders byte-identical to the flat declaration.
+func TestPatchTable_PositionedIndexAdds(t *testing.T) {
+	root := t.TempDir()
+	base := writePatchLayer(t, root, "base/events.hcl", `
+database "posthog" {
+  table "sharded_events" {
+    order_by = ["id"]
+    column "id"    { type = "UInt64" }
+    column "mat_a" { type = "String" }
+    column "mat_b" { type = "String" }
+    index "minmax_mat_a" {
+      expr        = "mat_a"
+      type        = "minmax"
+      granularity = 1
+    }
+    index "minmax_ts" {
+      expr        = "id"
+      type        = "minmax"
+      granularity = 1
+    }
+    engine "merge_tree" {}
+  }
+}`)
+	patch := writePatchLayer(t, root, "prod/patch.hcl", `
+database "posthog" {
+  patch_table "sharded_events" {
+    index "minmax_mat_b" {
+      expr        = "mat_b"
+      type        = "minmax"
+      granularity = 1
+      after       = "minmax_mat_a"
+    }
+  }
+}`)
+	flat := writePatchLayer(t, root, "flat/events.hcl", `
+database "posthog" {
+  table "sharded_events" {
+    order_by = ["id"]
+    column "id"    { type = "UInt64" }
+    column "mat_a" { type = "String" }
+    column "mat_b" { type = "String" }
+    index "minmax_mat_a" {
+      expr        = "mat_a"
+      type        = "minmax"
+      granularity = 1
+    }
+    index "minmax_mat_b" {
+      expr        = "mat_b"
+      type        = "minmax"
+      granularity = 1
+    }
+    index "minmax_ts" {
+      expr        = "id"
+      type        = "minmax"
+      granularity = 1
+    }
+    engine "merge_tree" {}
+  }
+}`)
+
+	composed, err := LoadLayers([]string{base, patch})
+	require.NoError(t, err)
+	require.NoError(t, Resolve(composed))
+	assert.Equal(t, []string{"minmax_mat_a", "minmax_mat_b", "minmax_ts"},
+		indexOrder(composed.Databases[0].Tables[0].Indexes))
+
+	declared, err := LoadLayers([]string{flat})
+	require.NoError(t, err)
+	require.NoError(t, Resolve(declared))
+
+	var composedOut, declaredOut bytes.Buffer
+	require.NoError(t, Write(&composedOut, composed))
+	require.NoError(t, Write(&declaredOut, declared))
+	assert.Equal(t, declaredOut.String(), composedOut.String(),
+		"base+patch renders byte-identical to the flat declaration (golden parity)")
+}
+
+// first, chained after, and a positioned drop+add redefine — drop+add is the
+// sanctioned index redefine, and a redefine lands where you put it.
+func TestPatchTable_IndexPlacementForms(t *testing.T) {
+	idx := func(name string) IndexSpec {
+		return IndexSpec{Name: name, Expr: "x", Type: "minmax", Granularity: 1}
+	}
+	withPos := func(name string, after *string, first bool) IndexSpec {
+		i := idx(name)
+		i.After, i.First = after, first
+		return i
+	}
+
+	db := DatabaseSpec{
+		Name: "posthog",
+		Tables: []TableSpec{{
+			Name:    "t",
+			Indexes: []IndexSpec{idx("a"), idx("b")},
+		}},
+		Patches: []PatchTableSpec{{
+			Name:        "t",
+			DropIndexes: []string{"b"},
+			Indexes: []IndexSpec{
+				withPos("z", nil, true),               // first
+				withPos("a2", utils.Ptr("a"), false),  // after base index
+				withPos("a3", utils.Ptr("a2"), false), // chained after same-patch add
+				withPos("b", utils.Ptr("z"), false),   // positioned drop+add redefine
+			},
+		}},
+	}
+	require.NoError(t, applyPatches(&db))
+	got := db.Tables[0].Indexes
+	assert.Equal(t, []string{"z", "b", "a", "a2", "a3"}, indexOrder(got))
+	for _, x := range got {
+		assert.Nil(t, x.After, "placement is cleared on application")
+		assert.False(t, x.First)
+	}
+}
+
+// Index placement misuse errors: both set, unknown/dropped target, and
+// placement on a declared index (including inherited from an abstract base).
+func TestPatchTable_IndexPositionErrors(t *testing.T) {
+	patchCase := func(patch PatchTableSpec) error {
+		db := DatabaseSpec{
+			Name: "posthog",
+			Tables: []TableSpec{{
+				Name:    "t",
+				Indexes: []IndexSpec{{Name: "a", Expr: "x", Type: "minmax"}},
+			}},
+			Patches: []PatchTableSpec{patch},
+		}
+		return applyPatches(&db)
+	}
+
+	require.ErrorContains(t, patchCase(PatchTableSpec{
+		Name:    "t",
+		Indexes: []IndexSpec{{Name: "i", Expr: "x", Type: "minmax", First: true, After: utils.Ptr("a")}},
+	}), "first and after are mutually exclusive")
+
+	require.ErrorContains(t, patchCase(PatchTableSpec{
+		Name:    "t",
+		Indexes: []IndexSpec{{Name: "i", Expr: "x", Type: "minmax", After: utils.Ptr("nope")}},
+	}), `after references unknown index "nope"`)
+
+	require.ErrorContains(t, patchCase(PatchTableSpec{
+		Name:        "t",
+		DropIndexes: []string{"a"},
+		Indexes:     []IndexSpec{{Name: "i", Expr: "x", Type: "minmax", After: utils.Ptr("a")}},
+	}), `after references unknown index "a"`)
+
+	declared := &Schema{Databases: []DatabaseSpec{{
+		Name: "posthog",
+		Tables: []TableSpec{{
+			Name:    "t",
+			OrderBy: []string{"c"},
+			Columns: []ColumnSpec{{Name: "c", Type: "UInt8"}},
+			Indexes: []IndexSpec{{Name: "i", Expr: "c", Type: "minmax", First: true}},
+			Engine:  &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}},
+		}},
+	}}}
+	require.ErrorContains(t, Resolve(declared), "on a declared index the declaration order is the order")
+
+	inherited := &Schema{Databases: []DatabaseSpec{{
+		Name: "posthog",
+		Tables: []TableSpec{
+			{
+				Name:     "base",
+				Abstract: true,
+				Columns:  []ColumnSpec{{Name: "c", Type: "UInt8"}},
+				Indexes:  []IndexSpec{{Name: "i", Expr: "c", Type: "minmax", After: utils.Ptr("x")}},
+			},
+			{
+				Name:    "child",
+				Extend:  utils.Ptr("base"),
+				OrderBy: []string{"c"},
+				Engine:  &EngineSpec{Kind: "merge_tree", Decoded: EngineMergeTree{}},
+			},
+		},
+	}}}
+	require.ErrorContains(t, Resolve(inherited), "on a declared index the declaration order is the order",
+		"placement inherited from an abstract base still errors")
+}

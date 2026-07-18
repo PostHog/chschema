@@ -297,7 +297,18 @@ func applyTablePatch(dbName string, target *TableSpec, patch PatchTableSpec) err
 		if indexIndex(target.Indexes, idx.Name) >= 0 {
 			return fmt.Errorf("%s: patch_table %q: index %q already exists on target (drop it in the same patch to redefine)", dbName, patch.Name, idx.Name)
 		}
-		target.Indexes = append(target.Indexes, idx)
+		pos, err := insertPos(len(target.Indexes),
+			func(n string) int { return indexIndex(target.Indexes, n) },
+			"index", idx.Name, idx.After, idx.First)
+		if err != nil {
+			return fmt.Errorf("%s: patch_table %q: %w", dbName, patch.Name, err)
+		}
+		// Placement is transient, as for columns: the composed table must
+		// render identically to a flat declaration in this order.
+		idx.After, idx.First = nil, false
+		target.Indexes = append(target.Indexes, IndexSpec{})
+		copy(target.Indexes[pos+1:], target.Indexes[pos:])
+		target.Indexes[pos] = idx
 	}
 
 	// Scalar clauses replace when set; the engine block replaces wholesale
@@ -399,25 +410,31 @@ func applyDictionaryPatches(db *DatabaseSpec) error {
 	return nil
 }
 
-// patchInsertPos resolves a patch column add's position: after the named
-// column, at the front, or appended. Adds apply in patch order, so `after`
-// resolves against the post-previous-op state — it may name a column added
-// earlier in the same patch, and naming a just-dropped column errors.
-func patchInsertPos(cols []ColumnSpec, c ColumnSpec) (int, error) {
-	if c.First && c.After != nil {
-		return 0, fmt.Errorf("column %q: first and after are mutually exclusive", c.Name)
+// insertPos resolves an after/first placement for a patch add: after the
+// named sibling, at the front, or appended. Adds apply in patch order, so
+// `after` resolves against the post-previous-op state — it may name a
+// sibling added earlier in the same patch, and naming a just-dropped one
+// errors. kind is "column" or "index", for error messages.
+func insertPos(count int, indexOf func(string) int, kind, name string, after *string, first bool) (int, error) {
+	if first && after != nil {
+		return 0, fmt.Errorf("%s %q: first and after are mutually exclusive", kind, name)
 	}
-	if c.First {
+	if first {
 		return 0, nil
 	}
-	if c.After == nil {
-		return len(cols), nil
+	if after == nil {
+		return count, nil
 	}
-	i := columnIndex(cols, *c.After)
+	i := indexOf(*after)
 	if i < 0 {
-		return 0, fmt.Errorf("column %q: after references unknown column %q", c.Name, *c.After)
+		return 0, fmt.Errorf("%s %q: after references unknown %s %q", kind, name, kind, *after)
 	}
 	return i + 1, nil
+}
+
+// patchInsertPos resolves a patch column add's position.
+func patchInsertPos(cols []ColumnSpec, c ColumnSpec) (int, error) {
+	return insertPos(len(cols), func(n string) int { return columnIndex(cols, n) }, "column", c.Name, c.After, c.First)
 }
 
 // columnIndex returns the position of the named column, or -1.
@@ -522,6 +539,9 @@ func resolveDatabase(db *DatabaseSpec) error {
 		if err := validateColumns(db.Name, t); err != nil {
 			return err
 		}
+		if err := validateIndexes(db.Name, t); err != nil {
+			return err
+		}
 		if err := validateConstraints(db.Name, t); err != nil {
 			return err
 		}
@@ -612,6 +632,19 @@ func validateConstraints(db string, t TableSpec) error {
 
 // validateColumns checks mutually-exclusive default-value attributes and
 // rejects the Nullable + nullable=true combination per ClickHouse's rule.
+// validateIndexes rejects placement metadata on declared indexes: patch adds
+// consume and clear After/First before this runs, so anything still carrying
+// them was declared on a table (possibly inherited from an abstract base) —
+// where declaration order IS the order.
+func validateIndexes(db string, t TableSpec) error {
+	for _, idx := range t.Indexes {
+		if idx.After != nil || idx.First {
+			return fmt.Errorf("%s.%s: index %q: after/first position a patch_table index add; on a declared index the declaration order is the order", db, t.Name, idx.Name)
+		}
+	}
+	return nil
+}
+
 func validateColumns(db string, t TableSpec) error {
 	for _, c := range t.Columns {
 		// Patch adds consume and clear their placement before this runs,

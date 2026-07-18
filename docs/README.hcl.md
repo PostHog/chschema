@@ -254,11 +254,13 @@ database "posthog" {
     modify_column "amount" { type = "Decimal(18, 4)" }
     drop_columns = ["legacy_flag"]
 
-    # indexes: drop applies before add, so drop+add redefines
+    # indexes: drop applies before add, so drop+add redefines;
+    # adds position like columns (after / first)
     index "idx_session" {
       expr        = "us_session_id"
       type        = "bloom_filter"
       granularity = 4
+      after       = "idx_team"
     }
     drop_indexes = ["idx_old"]
 
@@ -299,7 +301,11 @@ field:
   it stands).
 - **`index`** / **`drop_indexes`** — drops apply first, so a drop+add pair
   in one patch **redefines** an index; adding an existing name without the
-  drop errors.
+  drop errors. Index adds take the same `after = "<name>"` / `first = true`
+  placement as columns (append by default, post-previous-op resolution,
+  patch-only, cleared on application) — so per-env skip indexes can
+  interleave mid-list, and a positioned drop+add redefines an index *at* a
+  position.
 - **`order_by`, `partition_by`, `sample_by`, `ttl`** — replace the
   target's value when set; unset fields keep the target's.
 - **`engine`** — replaces the target's engine block **wholesale** (merging
