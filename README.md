@@ -27,8 +27,11 @@ Additional commands:
 - **plan** — diff every node role in a `-manifest` against a `-dump`
   topology in one run, emitting a single globally-ordered, cross-role
   operation list (storage before its Distributed/Buffer proxies before the
-  MV). See **[Cross-role planning](docs/README.hcl.md#cross-role-planning--hclexp-plan)**.
+  MV). See **[Cross-role planning](#cross-role-planning)** and the runnable
+  **[`examples/manifest/`](examples/manifest/)**.
 - **drift** — detect cross-node schema drift across per-node HCL dumps.
+- **locate** — find every declaration site of an object across manifest
+  layers and per-node dumps; `-duplicates` audits the once-only rule.
 - **dump-cluster** — enumerate a cluster's nodes and dump one `<host>.hcl`
   per node. **dump-sql** — dump a database's CREATE statements as replayable
   DDL.
@@ -133,6 +136,30 @@ and continue, so one unusual object never breaks the whole dump.
 text and recreated (`DROP` + `CREATE`) on change, with a `table`-kind change
 flagged `-- UNSAFE`. See [`docs/README.hcl.md`](docs/README.hcl.md#raw) for
 the full reference.
+
+## Dump a whole cluster
+
+`hclexp dump-cluster` enumerates every node of a named cluster from an
+entry host's `system.clusters` and introspects **each node natively**,
+writing one `<short-host>.hcl` per node — the per-node dumps that `drift`,
+`plan`, and `locate -dump` consume.
+
+```bash
+hclexp dump-cluster -host entry.prod.internal -cluster posthog \
+  -database posthog,system -out-dir ./prod/eu -allow-raw -exclude exclude.hcl
+```
+
+- `-cluster` — the `system.clusters` name to enumerate (required)
+- `-out-dir` — output directory (required). Existing `*.hcl` files in it are
+  removed first, so decommissioned nodes disappear from the dump.
+- `-database`, `-allow-raw`, `-exclude`, and the connection/TLS flags work
+  exactly as in `introspect`, applied on every node.
+- Per-node failures are non-fatal: the run logs the node, continues, and
+  reports the failure count at the end — one unreachable replica doesn't
+  lose the fleet dump.
+
+Enumeration and introspection use the native protocol from your machine to
+each node; the entry host only supplies the node list.
 
 ## Load & resolve an HCL schema
 
@@ -503,6 +530,30 @@ summary: 58 nodes, 8 groups, 2 groups with drift, 28 drifting nodes
 > finer deployment role from the node name and usually isolates genuine
 > drift.
 
+## Cross-role planning
+
+`hclexp plan` diffs **every role in a manifest** against a `-dump` topology
+in one run and emits a single globally-ordered, cross-role operation list —
+storage tables before the Distributed/Buffer proxies that front them,
+proxies before the MVs that read them — with `roles` provenance on every
+operation, so one command plans a whole environment.
+
+```bash
+hclexp plan -manifest manifest.hcl -env prod-us -layer-root ./schema \
+  -dump ./prod/us -format json | jq '.operations[] | {order, kind, object_type, object, roles}'
+```
+
+Desired state is each role's composed layer stack from the manifest;
+current state is the matching node in the dump (nodes matched by their
+`hostClusterRole` macro, replicas collapsed to one representative per
+role; a role absent from the dump plans as all-CREATE). `-format text`
+prints the same ordered list human-readably.
+
+See **[Cross-role planning](docs/README.hcl.md#cross-role-planning--hclexp-plan)**
+in the reference for the manifest format, and
+**[`examples/manifest/`](examples/manifest/)** for a runnable
+two-role × three-environment example.
+
 ## Locate declarations
 
 `hclexp locate` answers "where does a name live?" across a manifest's
@@ -581,6 +632,27 @@ Exit codes: `0` on success, `1` when any pattern matches nothing (a
 scriptable existence check) or `-duplicates` finds any, `2` on usage
 errors.
 
+## Browse the schema in a web UI
+
+`hclexp web` serves a read-only UI for a resolved schema — databases,
+objects, their columns/engine/settings, and dependency cross-links — with
+no cluster connection.
+
+```bash
+# One schema, from a config file or a layer stack
+hclexp web -layer ./schema/base,./schema/envs/us -addr :8080
+
+# Every (env, role) a manifest composes: a schema list at /, each
+# composition under /s/<env>/<role>/
+hclexp web -manifest manifest.hcl -layer-root ./schema
+```
+
+The server auto-reloads on source edits: each request re-stats the source
+files at most once per `-reload-interval` (default `2s`; `0` disables) and
+reloads when a mod time changes — a broken edit keeps serving the last good
+schema. In manifest mode `-env` filters to one environment. Try it against
+[`examples/manifest/`](examples/manifest/).
+
 ## Verify round-trip fidelity
 
 `hclexp dump-sql` captures a database's `CREATE` statements (the `SHOW CREATE`
@@ -599,6 +671,27 @@ ROUNDTRIP_FIXTURE=$PWD/prod.sql go test ./test -run TestLive_RoundTripFidelity -
 
 See [docs/roundtrip-fidelity.md](docs/roundtrip-fidelity.md) for the full
 workflow and limitations.
+
+## Apply SQL edits to the HCL schema
+
+You already know ClickHouse DDL; `hclexp sql2hcl` applies it to an HCL
+schema and emits the updated HCL, so a change you'd naturally write as SQL
+never has to be hand-translated into blocks:
+
+```bash
+printf 'ALTER TABLE posthog.events ADD COLUMN plan LowCardinality(String);\n' | \
+  hclexp sql2hcl -left ./schema -database posthog -in - -out ./resolved.hcl
+```
+
+Supported: `CREATE TABLE/MATERIALIZED VIEW/VIEW/DICTIONARY` (add or replace
+by name), `ALTER TABLE` add/drop/modify/rename column, add/drop index,
+TTL and settings changes, `MODIFY QUERY`, `DROP …`, and `RENAME TABLE`.
+Data/partition operations (`TRUNCATE`, `ALTER … DELETE`, `MATERIALIZE …`)
+are rejected — this is schema editing, not execution. Output is the
+resolved (flat) schema; pair it with `hclexp diff -sql` to preview the
+migration the edit implies. See
+**[SQL → HCL edits](docs/README.hcl.md#sql--hcl-edits--hclexp-sql2hcl)**
+for the full statement list and flags.
 
 ## Mint a GitHub App token
 
