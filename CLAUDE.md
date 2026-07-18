@@ -155,7 +155,10 @@ The `justfile` has the full recipe list.
   dir/file decision, so every `-layer`/`-left`/manifest `layers` path gets it);
   a non-`.hcl` or missing entry errors
 - ✅ `patch_table` (cross-layer table modification; the target stays declared
-  once): columns add/`modify_column`/`drop_columns` (modify → drop → add),
+  once): columns add/`modify_column`/`drop_columns` (modify → drop → add;
+  adds position with `after = "col"` / `first = true`, resolving against the
+  post-previous-op state, so mid-table env columns interleave without full
+  redeclaration — placement is patch-only and cleared on application),
   indexes add/`drop_indexes` (drop first, so drop+add redefines),
   `order_by`/`partition_by`/`sample_by`/`ttl` replace when set, `engine`
   replaces wholesale, `settings` merge patch-wins; `primary_key`/comment/
