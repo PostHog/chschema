@@ -231,6 +231,17 @@ type ColumnSpec struct {
 	// ADD. Tagged diff:"-" because it's transient metadata, not part of the
 	// schema being compared.
 	RenamedFrom *string `hcl:"renamed_from,optional" diff:"-"`
+
+	// After / First position a patch_table column add: the new column is
+	// inserted immediately after the named column (or at the front) instead
+	// of appended, so an env's mid-table extras can interleave without
+	// redeclaring the table (#158). Patch-only — a declared table or MV
+	// column carrying either is a resolve error, and modify_column rejects
+	// them (repositioning base columns is genuine drift). Consumed and
+	// cleared at patch application; tagged diff:"-" as transient placement
+	// metadata, like RenamedFrom.
+	After *string `hcl:"after,optional" diff:"-"`
+	First bool    `hcl:"first,optional" diff:"-"`
 }
 
 type IndexSpec struct {

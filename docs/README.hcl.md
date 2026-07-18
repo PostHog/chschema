@@ -245,8 +245,12 @@ once, and an env layer patches just its delta.
 ```hcl
 database "posthog" {
   patch_table "events" {
-    # columns: add / modify in place / drop
+    # columns: add (appended, or positioned) / modify in place / drop
     column "us_session_id" { type = "String" }
+    column "region" {
+      type  = "LowCardinality(String)"
+      after = "team_id"          # or first = true
+    }
     modify_column "amount" { type = "Decimal(18, 4)" }
     drop_columns = ["legacy_flag"]
 
@@ -279,12 +283,20 @@ database "posthog" {
 Every field is optional; a patch carries exactly the delta. Semantics per
 field:
 
-- **`column`** — add; a name already on the target errors.
+- **`column`** — add; a name already on the target errors. By default the
+  column appends; `after = "<name>"` inserts it immediately after the named
+  column and `first = true` inserts it at the front (mutually exclusive),
+  so an env's mid-table extras can interleave without redeclaring the
+  table. Adds apply in patch order, each resolving against the
+  post-previous-op state — `after` may name a column added earlier in the
+  same patch; naming a dropped or unknown column errors.
   **`modify_column`** — replace an existing column **in place** (position
-  kept); an unknown name errors. **`drop_columns`** — remove; unknown
-  errors. Applied modify → drop → add, so an add sees the post-drop state
-  (a drop+add pair moves a column to the end with a new definition;
-  `modify_column` is the way to change one where it stands).
+  kept); an unknown name errors, and `after`/`first` are rejected
+  (repositioning an existing column is genuine drift — redeclare).
+  **`drop_columns`** — remove; unknown errors. Applied modify → drop → add,
+  so an add sees the post-drop state (a drop+add pair moves a column to the
+  end with a new definition; `modify_column` is the way to change one where
+  it stands).
 - **`index`** / **`drop_indexes`** — drops apply first, so a drop+add pair
   in one patch **redefines** an index; adding an existing name without the
   drop errors.

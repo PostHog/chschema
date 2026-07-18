@@ -253,6 +253,9 @@ func applyPatches(db *DatabaseSpec) error {
 // a drop+add pair redefines an index in one patch.
 func applyTablePatch(dbName string, target *TableSpec, patch PatchTableSpec) error {
 	for _, c := range patch.ModifyColumns {
+		if c.After != nil || c.First {
+			return fmt.Errorf("%s: patch_table %q: modify_column %q: after/first position an add, not a modify (repositioning an existing column is a full redeclaration)", dbName, patch.Name, c.Name)
+		}
 		i := columnIndex(target.Columns, c.Name)
 		if i < 0 {
 			return fmt.Errorf("%s: patch_table %q: modify_column %q does not exist on target", dbName, patch.Name, c.Name)
@@ -270,7 +273,17 @@ func applyTablePatch(dbName string, target *TableSpec, patch PatchTableSpec) err
 		if columnIndex(target.Columns, c.Name) >= 0 {
 			return fmt.Errorf("%s: patch_table %q: column %q already exists on target", dbName, patch.Name, c.Name)
 		}
-		target.Columns = append(target.Columns, c)
+		pos, err := patchInsertPos(target.Columns, c)
+		if err != nil {
+			return fmt.Errorf("%s: patch_table %q: %w", dbName, patch.Name, err)
+		}
+		// Placement is transient: once the column sits at its position the
+		// composed table must be byte-identical to the same table declared
+		// plainly in that order.
+		c.After, c.First = nil, false
+		target.Columns = append(target.Columns, ColumnSpec{})
+		copy(target.Columns[pos+1:], target.Columns[pos:])
+		target.Columns[pos] = c
 	}
 
 	for _, name := range patch.DropIndexes {
@@ -386,6 +399,27 @@ func applyDictionaryPatches(db *DatabaseSpec) error {
 	return nil
 }
 
+// patchInsertPos resolves a patch column add's position: after the named
+// column, at the front, or appended. Adds apply in patch order, so `after`
+// resolves against the post-previous-op state — it may name a column added
+// earlier in the same patch, and naming a just-dropped column errors.
+func patchInsertPos(cols []ColumnSpec, c ColumnSpec) (int, error) {
+	if c.First && c.After != nil {
+		return 0, fmt.Errorf("column %q: first and after are mutually exclusive", c.Name)
+	}
+	if c.First {
+		return 0, nil
+	}
+	if c.After == nil {
+		return len(cols), nil
+	}
+	i := columnIndex(cols, *c.After)
+	if i < 0 {
+		return 0, fmt.Errorf("column %q: after references unknown column %q", c.Name, *c.After)
+	}
+	return i + 1, nil
+}
+
 // columnIndex returns the position of the named column, or -1.
 func columnIndex(cols []ColumnSpec, name string) int {
 	for i := range cols {
@@ -499,6 +533,11 @@ func resolveDatabase(db *DatabaseSpec) error {
 		if mv.Query == "" {
 			return fmt.Errorf("%s.%s: materialized_view requires query", db.Name, mv.Name)
 		}
+		for _, c := range mv.Columns {
+			if c.After != nil || c.First {
+				return fmt.Errorf("%s.%s.%s: after/first position a patch_table column add; they are not valid on a materialized_view column", db.Name, mv.Name, c.Name)
+			}
+		}
 	}
 	return nil
 }
@@ -575,6 +614,13 @@ func validateConstraints(db string, t TableSpec) error {
 // rejects the Nullable + nullable=true combination per ClickHouse's rule.
 func validateColumns(db string, t TableSpec) error {
 	for _, c := range t.Columns {
+		// Patch adds consume and clear their placement before this runs,
+		// so anything still carrying after/first was declared on a table
+		// (possibly inherited from an abstract base) — where placement is
+		// meaningless: declaration order IS the order.
+		if c.After != nil || c.First {
+			return fmt.Errorf("%s.%s.%s: after/first position a patch_table column add; on a declared column the declaration order is the order", db, t.Name, c.Name)
+		}
 		set := 0
 		if c.Default != nil {
 			set++

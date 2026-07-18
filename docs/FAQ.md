@@ -209,6 +209,24 @@ database "posthog" {
 When the loader runs with `--layer base --layer envs/us`, the resolved
 `events` table has three columns.
 
+By default the added column appends. When the env's real table has it
+mid-table (physical column order matters for `SELECT *`, positional
+`INSERT`, and dump parity), position it:
+
+```hcl
+patch_table "events" {
+  column "us_session_id" {
+    type  = "String"
+    after = "timestamp"    # or first = true
+  }
+}
+```
+
+Adds apply in patch order, so a second column can use
+`after = "us_session_id"` to chain. The composed table renders exactly as
+if it had been declared in that order, so goldens converge with
+introspected dumps.
+
 ## How do I add the same extra column to a table in *several* environments?
 
 If only US needs it, use `patch_table` in `envs/us/`. If US and EU both need
