@@ -160,6 +160,41 @@ func normalizeExpr(s string) (string, bool) {
 	return formatNode(unwrapRootParens(sel.SelectItems[0].Expr)), true
 }
 
+// normalizeTTL canonicalizes a table TTL clause to the same text introspection
+// renders (formatTTLItems), so an authored TTL and its live-introspected
+// counterpart compare equal. A stored TTL is rewritten by ClickHouse — INTERVAL
+// 7 DAY becomes toIntervalDay(7), and a move rule (TO DISK / TO VOLUME) rides on
+// the clause — so a raw string compare of authored vs introspected TTL never
+// matches and the diff emits a perpetual no-op MODIFY TTL. Parsing both sides
+// through the same printer removes that asymmetry (issue #136, TTL case).
+// Returns ok=false with the input unchanged when it can't be parsed, so the
+// caller keeps the raw text.
+func normalizeTTL(s string) (string, bool) {
+	if strings.TrimSpace(s) == "" {
+		return s, true
+	}
+	stmt, err := parseCreateStatement("CREATE TABLE _norm_ttl (_x Int) ENGINE = MergeTree ORDER BY _x TTL " + s)
+	if err != nil {
+		return s, false
+	}
+	ct, ok := stmt.(*chparser.CreateTable)
+	if !ok || ct.Engine == nil || ct.Engine.TTL == nil || len(ct.Engine.TTL.Items) == 0 {
+		return s, false
+	}
+	return formatTTLItems(ct.Engine.TTL.Items), true
+}
+
+// normalizeTTLPtr canonicalizes a *string TTL field in place, leaving it
+// untouched when nil or unparseable.
+func normalizeTTLPtr(p **string) {
+	if *p == nil {
+		return
+	}
+	if v, ok := normalizeTTL(**p); ok {
+		*p = &v
+	}
+}
+
 // canonicalize brings every expression-bearing field of db to a single
 // canonical string form, so a schema composed from HCL and the same schema
 // introspected from a live cluster reduce to identical text and diff clean
@@ -171,17 +206,20 @@ func canonicalize(db *DatabaseSpec) {
 		t := &db.Tables[ti]
 		normalizeColumnExprs(t.Columns)
 		normalizeIndexExprs(t.Indexes)
+		normalizeTTLPtr(&t.TTL)
 	}
 	// Patch fields land verbatim on their targets at resolution, so they
 	// must be canonicalized exactly like declared fields — otherwise a
 	// patched expression would diff against its own introspected form.
-	// (order_by/partition_by/sample_by/ttl are deliberately left verbatim,
-	// exactly as they are on declared tables.)
+	// (order_by/partition_by/sample_by are deliberately left verbatim, exactly
+	// as they are on declared tables; ttl is normalized because ClickHouse
+	// rewrites it — see normalizeTTL.)
 	for pi := range db.Patches {
 		p := &db.Patches[pi]
 		normalizeColumnExprs(p.Columns)
 		normalizeColumnExprs(p.ModifyColumns)
 		normalizeIndexExprs(p.Indexes)
+		normalizeTTLPtr(&p.TTL)
 	}
 	for pi := range db.ViewPatches {
 		p := &db.ViewPatches[pi]

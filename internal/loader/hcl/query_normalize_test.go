@@ -181,3 +181,17 @@ func TestFileFunc_ResolvesRelativeToHCL_AndErrors(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "nope.sql")
 }
+
+// TestNormalizeTTL_CanonicalizesIntervalAndKeepsMoveRule guards that an authored
+// TTL converges to ClickHouse's stored form: INTERVAL literals become
+// toInterval<Unit>(n) and the TO VOLUME move rule is preserved, so the authored
+// clause matches its live-introspected counterpart and does not diff as drift.
+func TestNormalizeTTL_CanonicalizesIntervalAndKeepsMoveRule(t *testing.T) {
+	got, ok := normalizeTTL("ts + INTERVAL 7 DAY TO VOLUME 'cold', ts + INTERVAL 90 DAY")
+	require.True(t, ok)
+	assert.Equal(t, "ts + toIntervalDay(7) TO VOLUME 'cold', ts + toIntervalDay(90)", got)
+
+	again, ok := normalizeTTL(got)
+	require.True(t, ok, "normalizeTTL must be idempotent")
+	assert.Equal(t, got, again)
+}

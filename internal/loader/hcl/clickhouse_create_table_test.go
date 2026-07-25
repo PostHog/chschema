@@ -325,8 +325,11 @@ var createTableCases = []createTableCase{
     }
   }
 }`,
+		// The authored INTERVAL form is canonicalized to ClickHouse's stored
+		// toInterval<Unit>(n) form so a table TTL round-trips clean against a
+		// live-introspected schema (see normalizeTTL / canonicalizeTTLIntervals).
 		wantContains: []string{
-			"TTL ts + INTERVAL 6 MONTH",
+			"TTL ts + toIntervalMonth(6)",
 			"ttl_only_drop_parts = 1",
 			"merge_with_ttl_timeout = 3600",
 		},

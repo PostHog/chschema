@@ -926,3 +926,19 @@ func TestIntrospect_Null_Memory(t *testing.T) {
 		assert.Equal(t, c.kind, db.Tables[0].Engine.Kind)
 	}
 }
+
+// TestBuildTableFromCreateSQL_MoveTTLPreserved guards the move-TTL fix: a tiered
+// table's TTL must round-trip the TO VOLUME move rule and every rule, not just
+// the first item's bare expression. Previously introspect kept only
+// Items[0].Expr, so the introspected TTL never matched its declared form and the
+// diff emitted a perpetual no-op MODIFY TTL.
+func TestBuildTableFromCreateSQL_MoveTTLPreserved(t *testing.T) {
+	src := `CREATE TABLE db.t (ts DateTime, id UInt64) ENGINE = MergeTree ORDER BY id ` +
+		`TTL ts + toIntervalDay(7) TO VOLUME 'cold', ts + toIntervalDay(90)`
+	got, err := buildTableFromCreateSQL(src)
+	require.NoError(t, err)
+	require.NotNil(t, got.TTL)
+	assert.Contains(t, *got.TTL, "TO VOLUME 'cold'", "move rule must survive")
+	assert.Contains(t, *got.TTL, "toIntervalDay(7)", "first rule must survive")
+	assert.Contains(t, *got.TTL, "toIntervalDay(90)", "second rule must survive")
+}
