@@ -1262,4 +1262,8 @@ list of recipes.
 
 ## License
 
-TBD
+MIT — see [LICENSE](LICENSE).
+
+`chschema` links against [HCL](https://github.com/hashicorp/hcl) (MPL-2.0)
+and [clickhouse-go](https://github.com/ClickHouse/clickhouse-go) (Apache-2.0);
+their licenses apply to those components.
