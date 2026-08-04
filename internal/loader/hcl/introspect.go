@@ -324,7 +324,7 @@ func buildTableFromCreateTable(ct *chparser.CreateTable) (TableSpec, error) {
 			}
 		}
 		if ct.Engine.TTL != nil && len(ct.Engine.TTL.Items) > 0 {
-			t.TTL = strPtr(formatNode(ct.Engine.TTL.Items[0].Expr))
+			t.TTL = strPtr(formatTTLItems(ct.Engine.TTL.Items))
 		}
 		if len(settings) > 0 {
 			t.Settings = settings
@@ -477,6 +477,101 @@ func formatNode(n chparser.Expr) string {
 		return ""
 	}
 	return v.String()
+}
+
+// formatTTLItems renders a table TTL clause as canonical, comma-joined text —
+// the single canonical form used on both the introspect and load sides so a
+// declared TTL and its live-introspected counterpart compare equal. Each item
+// is rendered whole (*TTLExpr) rather than just its .Expr, so a move rule (TO
+// DISK / TO VOLUME) and any WHERE / GROUP BY survive, and every item is kept
+// rather than only the first — a tiered table's TTL such as
+// `ts + toIntervalDay(7) TO VOLUME 'cold', ts + toIntervalDay(90)` round-trips
+// intact instead of collapsing to `ts + toIntervalDay(7)`. Rendering only
+// Items[0].Expr made an introspected move-TTL never match its declared form, so
+// the diff emitted a perpetual no-op MODIFY TTL. INTERVAL literals are rewritten
+// to ClickHouse's stored toInterval<Unit>(n) form (see canonicalizeTTLIntervals)
+// so an authored `INTERVAL 7 DAY` matches the introspected `toIntervalDay(7)`.
+func formatTTLItems(items []*chparser.TTLExpr) string {
+	parts := make([]string, 0, len(items))
+	for _, it := range items {
+		parts = append(parts, canonicalizeTTLIntervals(formatNode(it)))
+	}
+	return strings.Join(parts, ", ")
+}
+
+// ttlIntervalRe matches an INTERVAL literal exactly as the parser's printer
+// emits it: `INTERVAL <n> <UNIT>`.
+var ttlIntervalRe = regexp.MustCompile(`(?i)\bINTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR)S?\b`)
+
+// canonicalizeTTLIntervals rewrites unquoted INTERVAL literals to ClickHouse's
+// canonical toInterval<Unit>(n) function form. ClickHouse stores a TTL's
+// `INTERVAL 7 DAY` as `toIntervalDay(7)` in create_table_query, so an authored
+// INTERVAL clause would otherwise never match its introspected form and the
+// diff would emit a perpetual no-op MODIFY TTL. It runs on both sides, so it is
+// a no-op on an already-canonical (introspected) clause. Non-literal intervals
+// (a rare `INTERVAL <expr> UNIT`) are left as-is. Quoted SQL is copied verbatim:
+// a TTL policy may legitimately compare a column with the string
+// `'INTERVAL 7 DAY'`, which is data rather than interval syntax.
+func canonicalizeTTLIntervals(s string) string {
+	return rewriteUnquotedSQL(s, func(unquoted string) string {
+		return ttlIntervalRe.ReplaceAllStringFunc(unquoted, canonicalTTLInterval)
+	})
+}
+
+func canonicalTTLInterval(m string) string {
+	sub := ttlIntervalRe.FindStringSubmatch(m)
+	unit := strings.ToLower(sub[2])
+	unit = strings.ToUpper(unit[:1]) + unit[1:]
+	return "toInterval" + unit + "(" + sub[1] + ")"
+}
+
+// rewriteUnquotedSQL applies rewrite only outside SQL quoted regions. The
+// input has already been parsed and rendered by the SQL parser, so comments
+// and malformed quoting are not expected; handling single/double/backtick
+// quotes plus backslash and doubled-quote escapes is sufficient to preserve
+// every literal and quoted identifier byte-for-byte.
+func rewriteUnquotedSQL(s string, rewrite func(string) string) string {
+	var out strings.Builder
+	segmentStart := 0
+
+	for i := 0; i < len(s); {
+		quote := s[i]
+		if quote != '\'' && quote != '"' && quote != '`' {
+			i++
+			continue
+		}
+
+		out.WriteString(rewrite(s[segmentStart:i]))
+		quotedEnd := sqlQuotedEnd(s, i)
+		out.WriteString(s[i:quotedEnd])
+		i = quotedEnd
+		segmentStart = i
+	}
+
+	out.WriteString(rewrite(s[segmentStart:]))
+	return out.String()
+}
+
+// sqlQuotedEnd returns the byte immediately after a quoted SQL region, or
+// len(s) for an unmatched quote. It understands both ClickHouse backslash
+// escapes and SQL-style doubled quote escapes.
+func sqlQuotedEnd(s string, start int) int {
+	quote := s[start]
+	for i := start + 1; i < len(s); i++ {
+		switch {
+		case s[i] == '\\':
+			if i+1 < len(s) {
+				i++
+			}
+		case s[i] != quote:
+			continue
+		case i+1 < len(s) && s[i+1] == quote:
+			i++
+		default:
+			return i + 1
+		}
+	}
+	return len(s)
 }
 
 func columnFromAST(c *chparser.ColumnDef) ColumnSpec {

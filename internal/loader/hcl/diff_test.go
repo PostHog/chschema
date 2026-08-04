@@ -1292,3 +1292,26 @@ func TestDiff_ColumnModifierOnlyChanges(t *testing.T) {
 		assert.Empty(t, modify(plainY, plainY))
 	})
 }
+
+// TestDiff_MoveTTL_AuthoredIntervalNoPhantom is the end-to-end guard for the
+// move-TTL phantom MODIFY TTL: a table authored in HCL with human INTERVAL
+// syntax and a TO VOLUME move rule must diff clean against the same table
+// introspected from ClickHouse (which stores the TTL in toInterval form).
+func TestDiff_MoveTTL_AuthoredIntervalNoPhantom(t *testing.T) {
+	live, err := buildTableFromCreateSQL(
+		`CREATE TABLE db.t (fetch_time DateTime, id UInt64) ENGINE = MergeTree ORDER BY id ` +
+			`TTL fetch_time + toIntervalDay(30) TO VOLUME 'cold'`)
+	require.NoError(t, err)
+	require.NotNil(t, live.TTL)
+
+	authored := "fetch_time + INTERVAL 30 DAY TO VOLUME 'cold'"
+	desired := live
+	desired.TTL = &authored
+	ddb := DatabaseSpec{Name: "db", Tables: []TableSpec{desired}}
+	canonicalize(&ddb)
+
+	ldb := DatabaseSpec{Name: "db", Tables: []TableSpec{live}}
+	cs := Diff(&Schema{Databases: []DatabaseSpec{ldb}}, &Schema{Databases: []DatabaseSpec{ddb}})
+	assert.True(t, cs.IsEmpty(),
+		"move-TTL authored as INTERVAL must not diff against introspected toInterval form; got %+v", cs)
+}
