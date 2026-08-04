@@ -237,6 +237,35 @@ samples {
 }
 ```
 
+## Table TTL
+
+The table-level `ttl` attribute contains the complete ClickHouse clause after
+the `TTL` keyword. It may contain one rule or a comma-separated tiered policy,
+including move, delete, recompress, `WHERE`, and `GROUP BY` forms:
+
+```hcl
+table "events" {
+  column "timestamp" { type = "DateTime" }
+  column "team_id"   { type = "UInt64" }
+
+  ttl = "timestamp + INTERVAL 7 DAY TO VOLUME 'cold', timestamp + INTERVAL 90 DAY DELETE"
+
+  engine "merge_tree" {}
+  order_by = ["team_id", "timestamp"]
+}
+```
+
+Table TTLs are parsed and rendered to one canonical form on both load and
+introspection, so a hand-authored clause compares cleanly with ClickHouse's
+stored `create_table_query`. In particular, numeric interval literals such as
+`INTERVAL 7 DAY` become `toIntervalDay(7)` in the resolved schema and in
+generated or dumped output. Both input forms are accepted. A `ttl` supplied by
+`patch_table` receives the same normalization.
+
+This canonicalization applies only to the table-level attribute. A `ttl`
+inside a `column` block is a per-column TTL expression and keeps the normal
+column-modifier behavior.
+
 ## `patch_table`
 
 Cross-layer modification of an existing table: the table stays declared
