@@ -72,6 +72,8 @@ database "default" {
 
   table "events_local" {
     extend = "events_base"
+    patch_column "timestamp" { codec = "Delta(8), ZSTD(1)" }
+    patch_column "team_id"   { codec = "T64, ZSTD(1)" }
     engine "replicated_merge_tree" {
       zoo_path     = "/clickhouse/tables/{shard}/events"
       replica_name = "{replica}"
@@ -97,7 +99,10 @@ database "default" {
 ```
 
 Adding a column to `events_base` adds it to all three tables. The MV picks
-it up automatically the next time you edit the `SELECT` to project it.
+it up automatically the next time you edit the `SELECT` to project it. The
+two `patch_column` blocks specialize only `events_local`: the Kafka and
+Distributed tables inherit the codec-free logical shape. A normal `column`
+block would mean “add” and would collide with the inherited name.
 
 ## When does it make sense to `extend` on a `materialized_view`?
 
@@ -265,7 +270,7 @@ declared once, and the patch is a modification, not a declaration
 | ----------------- | ------------------------------------------ | ---------------------------------------- |
 | Creates new table | Yes (`X` is a new, distinct table)        | No (modifies `Y` in place)               |
 | Engine identity   | `X` has its own engine                     | Unchanged unless the patch carries an `engine` block (wholesale replace) |
-| Can override anything? | Yes — engine, order_by, ttl, settings | Columns (add/modify/drop), indexes (add/drop), `order_by`/`partition_by`/`sample_by`/`ttl`, engine, settings — not `primary_key`/constraints/projections |
+| Can override anything? | Engine, order_by, ttl, settings; inherited columns can be partially specialized with `patch_column` | Columns (add/modify/drop), indexes (add/drop), `order_by`/`partition_by`/`sample_by`/`ttl`, engine, settings — not `primary_key`/constraints/projections |
 | `settings` semantics | **Replace wholesale** — a child that sets one key loses every inherited one | **Merge, patch wins per key** — the base keeps its other keys |
 | Declaration count | One per child (env-per-child breaks once-only) | Target stays declared once |
 | Where it lives    | Same layer, typical                        | Any layer (commonly higher overlays)     |

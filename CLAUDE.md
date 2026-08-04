@@ -167,7 +167,8 @@ The `justfile` has the full recipe list.
 - ✅ `patch_view` (`query`/`comment` replace; query normalized like a declared
   view's) and `patch_dictionary` (`source`/`layout`/`lifetime` replace
   wholesale, `settings` merge) — unknown targets error; MVs have no patch form
-- ✅ `extend` inheritance with `abstract` bases and cycle detection
+- ✅ `extend` inheritance with `abstract` bases, child-local partial
+  `patch_column` specialization of inherited columns, and cycle detection
 - ✅ `override = true` for cross-layer full replacement
 - ✅ `node` top-level blocks (introspection metadata: hostname +
   `macros` from `system.macros`; ignored by diff)

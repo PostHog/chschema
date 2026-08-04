@@ -170,6 +170,7 @@ func canonicalize(db *DatabaseSpec) {
 	for ti := range db.Tables {
 		t := &db.Tables[ti]
 		normalizeColumnExprs(t.Columns)
+		normalizePatchColumnExprs(t.ColumnPatches)
 		normalizeIndexExprs(t.Indexes)
 	}
 	// Patch fields land verbatim on their targets at resolution, so they
@@ -206,6 +207,18 @@ func normalizeColumnExprs(cols []ColumnSpec) {
 		normalizeExprPtr(&c.Materialized)
 		normalizeExprPtr(&c.Alias)
 		normalizeExprPtr(&c.Ephemeral)
+	}
+}
+
+// normalizePatchColumnExprs canonicalizes the expression-bearing fields of
+// partial inherited-column patches exactly like full column declarations.
+func normalizePatchColumnExprs(patches []PatchColumnSpec) {
+	for i := range patches {
+		p := &patches[i]
+		normalizeExprPtr(&p.Default)
+		normalizeExprPtr(&p.Materialized)
+		normalizeExprPtr(&p.Alias)
+		normalizeExprPtr(&p.Ephemeral)
 	}
 }
 

@@ -687,6 +687,9 @@ func resolveTable(db *DatabaseSpec, idx int, indexByName map[string]int, resolve
 	}
 
 	if t.Extend == nil {
+		if len(t.ColumnPatches) > 0 {
+			return fmt.Errorf("%s.%s: patch_column requires extend", db.Name, t.Name)
+		}
 		resolved[t.Name] = true
 		return nil
 	}
@@ -763,12 +766,15 @@ func resolveMaterializedView(db *DatabaseSpec, idx int, tableIndex map[string]in
 }
 
 func mergeParent(child, parent *TableSpec) error {
-	if len(parent.Columns) > 0 || len(child.Columns) > 0 {
+	if len(parent.Columns) > 0 || len(child.Columns) > 0 || len(child.ColumnPatches) > 0 {
 		merged := make([]ColumnSpec, 0, len(parent.Columns)+len(child.Columns))
 		seen := make(map[string]bool, len(parent.Columns)+len(child.Columns))
 		for _, c := range parent.Columns {
 			seen[c.Name] = true
 			merged = append(merged, c)
+		}
+		if err := applyInheritedColumnPatches(merged, child.ColumnPatches); err != nil {
+			return err
 		}
 		for _, c := range child.Columns {
 			if seen[c.Name] {
@@ -779,6 +785,7 @@ func mergeParent(child, parent *TableSpec) error {
 		}
 		child.Columns = merged
 	}
+	child.ColumnPatches = nil
 
 	if len(parent.Indexes) > 0 || len(child.Indexes) > 0 {
 		merged := make([]IndexSpec, 0, len(parent.Indexes)+len(child.Indexes))
@@ -822,6 +829,64 @@ func mergeParent(child, parent *TableSpec) error {
 	if child.Engine == nil && parent.Engine != nil {
 		eng := *parent.Engine
 		child.Engine = &eng
+	}
+	return nil
+}
+
+// applyInheritedColumnPatches partially overlays parent columns for one
+// extend child. Patches are deliberately applied before the child's ordinary
+// column additions: patch_column can only specialize inherited columns, while
+// column continues to mean "add" and retains its collision checks.
+func applyInheritedColumnPatches(columns []ColumnSpec, patches []PatchColumnSpec) error {
+	for _, patch := range patches {
+		i := columnIndex(columns, patch.Name)
+		if i < 0 {
+			return fmt.Errorf("patch_column %q does not exist on inherited table", patch.Name)
+		}
+
+		defaults := 0
+		if patch.Default != nil {
+			defaults++
+		}
+		if patch.Materialized != nil {
+			defaults++
+		}
+		if patch.Ephemeral != nil {
+			defaults++
+		}
+		if patch.Alias != nil {
+			defaults++
+		}
+		if defaults > 1 {
+			return fmt.Errorf("patch_column %q: at most one of default, materialized, ephemeral, alias may be set", patch.Name)
+		}
+
+		column := &columns[i]
+		if patch.Type != nil {
+			column.Type = *patch.Type
+		}
+		if patch.Nullable != nil {
+			column.Nullable = *patch.Nullable
+		}
+		if defaults == 1 {
+			column.Default = nil
+			column.Materialized = nil
+			column.Ephemeral = nil
+			column.Alias = nil
+			column.Default = patch.Default
+			column.Materialized = patch.Materialized
+			column.Ephemeral = patch.Ephemeral
+			column.Alias = patch.Alias
+		}
+		if patch.Comment != nil {
+			column.Comment = patch.Comment
+		}
+		if patch.Codec != nil {
+			column.Codec = patch.Codec
+		}
+		if patch.TTL != nil {
+			column.TTL = patch.TTL
+		}
 	}
 	return nil
 }

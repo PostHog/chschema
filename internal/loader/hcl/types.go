@@ -188,11 +188,42 @@ type TableSpec struct {
 	// inherited from DatabaseSpec.Cluster during resolution.
 	Cluster *string `hcl:"cluster,optional"`
 
-	Columns     []ColumnSpec     `hcl:"column,block"`
+	Columns []ColumnSpec `hcl:"column,block"`
+
+	// ColumnPatches partially specialize columns inherited through Extend.
+	// They are applied after the parent has resolved, preserve the inherited
+	// column's position and every field they do not set, then are consumed.
+	// A patch may only target an inherited column; ordinary column blocks
+	// remain additions and still collide with inherited names.
+	ColumnPatches []PatchColumnSpec `hcl:"patch_column,block" diff:"-"`
+
 	Indexes     []IndexSpec      `hcl:"index,block"`
 	Projections []ProjectionSpec `hcl:"projection,block"`
 	Constraints []ConstraintSpec `hcl:"constraint,block"`
 	Engine      *EngineSpec      `hcl:"engine,block"`
+}
+
+// PatchColumnSpec is a child-local, partial overlay for a column inherited
+// through table Extend. Pointer fields distinguish an omitted attribute
+// (preserve the parent value) from an explicit zero value such as
+// nullable = false. If one default-kind attribute is set it replaces the
+// inherited DEFAULT / MATERIALIZED / EPHEMERAL / ALIAS family wholesale.
+// Optional modifiers cannot currently be removed; put the modifier-free
+// shape on the abstract parent and add it on the child that needs it.
+type PatchColumnSpec struct {
+	Name string `hcl:"name,label"`
+
+	Type     *string `hcl:"type,optional"`
+	Nullable *bool   `hcl:"nullable,optional"`
+
+	Default      *string `hcl:"default,optional"`
+	Materialized *string `hcl:"materialized,optional"`
+	Ephemeral    *string `hcl:"ephemeral,optional"`
+	Alias        *string `hcl:"alias,optional"`
+
+	Comment *string `hcl:"comment,optional"`
+	Codec   *string `hcl:"codec,optional"`
+	TTL     *string `hcl:"ttl,optional"`
 }
 
 // ConstraintSpec is a table-level constraint. Either Check or Assume must be
