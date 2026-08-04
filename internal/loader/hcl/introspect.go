@@ -503,20 +503,75 @@ func formatTTLItems(items []*chparser.TTLExpr) string {
 // emits it: `INTERVAL <n> <UNIT>`.
 var ttlIntervalRe = regexp.MustCompile(`(?i)\bINTERVAL\s+(\d+)\s+(SECOND|MINUTE|HOUR|DAY|WEEK|MONTH|QUARTER|YEAR)S?\b`)
 
-// canonicalizeTTLIntervals rewrites INTERVAL literals to ClickHouse's canonical
-// toInterval<Unit>(n) function form. ClickHouse stores a TTL's `INTERVAL 7 DAY`
-// as `toIntervalDay(7)` in create_table_query, so an authored INTERVAL clause
-// would otherwise never match its introspected form and the diff would emit a
-// perpetual no-op MODIFY TTL. It runs on both sides, so it is a no-op on an
-// already-canonical (introspected) clause. Non-literal intervals (a rare
-// `INTERVAL <expr> UNIT`) are left as-is.
+// canonicalizeTTLIntervals rewrites unquoted INTERVAL literals to ClickHouse's
+// canonical toInterval<Unit>(n) function form. ClickHouse stores a TTL's
+// `INTERVAL 7 DAY` as `toIntervalDay(7)` in create_table_query, so an authored
+// INTERVAL clause would otherwise never match its introspected form and the
+// diff would emit a perpetual no-op MODIFY TTL. It runs on both sides, so it is
+// a no-op on an already-canonical (introspected) clause. Non-literal intervals
+// (a rare `INTERVAL <expr> UNIT`) are left as-is. Quoted SQL is copied verbatim:
+// a TTL policy may legitimately compare a column with the string
+// `'INTERVAL 7 DAY'`, which is data rather than interval syntax.
 func canonicalizeTTLIntervals(s string) string {
-	return ttlIntervalRe.ReplaceAllStringFunc(s, func(m string) string {
-		sub := ttlIntervalRe.FindStringSubmatch(m)
-		unit := strings.ToLower(sub[2])
-		unit = strings.ToUpper(unit[:1]) + unit[1:]
-		return "toInterval" + unit + "(" + sub[1] + ")"
+	return rewriteUnquotedSQL(s, func(unquoted string) string {
+		return ttlIntervalRe.ReplaceAllStringFunc(unquoted, canonicalTTLInterval)
 	})
+}
+
+func canonicalTTLInterval(m string) string {
+	sub := ttlIntervalRe.FindStringSubmatch(m)
+	unit := strings.ToLower(sub[2])
+	unit = strings.ToUpper(unit[:1]) + unit[1:]
+	return "toInterval" + unit + "(" + sub[1] + ")"
+}
+
+// rewriteUnquotedSQL applies rewrite only outside SQL quoted regions. The
+// input has already been parsed and rendered by the SQL parser, so comments
+// and malformed quoting are not expected; handling single/double/backtick
+// quotes plus backslash and doubled-quote escapes is sufficient to preserve
+// every literal and quoted identifier byte-for-byte.
+func rewriteUnquotedSQL(s string, rewrite func(string) string) string {
+	var out strings.Builder
+	segmentStart := 0
+
+	for i := 0; i < len(s); {
+		quote := s[i]
+		if quote != '\'' && quote != '"' && quote != '`' {
+			i++
+			continue
+		}
+
+		out.WriteString(rewrite(s[segmentStart:i]))
+		quotedEnd := sqlQuotedEnd(s, i)
+		out.WriteString(s[i:quotedEnd])
+		i = quotedEnd
+		segmentStart = i
+	}
+
+	out.WriteString(rewrite(s[segmentStart:]))
+	return out.String()
+}
+
+// sqlQuotedEnd returns the byte immediately after a quoted SQL region, or
+// len(s) for an unmatched quote. It understands both ClickHouse backslash
+// escapes and SQL-style doubled quote escapes.
+func sqlQuotedEnd(s string, start int) int {
+	quote := s[start]
+	for i := start + 1; i < len(s); i++ {
+		switch {
+		case s[i] == '\\':
+			if i+1 < len(s) {
+				i++
+			}
+		case s[i] != quote:
+			continue
+		case i+1 < len(s) && s[i+1] == quote:
+			i++
+		default:
+			return i + 1
+		}
+	}
+	return len(s)
 }
 
 func columnFromAST(c *chparser.ColumnDef) ColumnSpec {
