@@ -1166,7 +1166,8 @@ on top of earlier ones.
 
 - `abstract = true` — a template table that is not emitted itself
 - `extend = "other_table"` — declare a **new** table inheriting another's
-  shape: columns and indexes append (collisions error); `engine`,
+  shape: inherited columns may be specialized with partial `patch_column`
+  blocks, then ordinary columns and indexes append (collisions error); `engine`,
   `order_by`, `partition_by`, `sample_by`, `ttl`, and `settings` are
   inherited only if the child doesn't set its own — a child that does set
   one **replaces it wholesale** (a one-key `settings` map loses every
@@ -1192,11 +1193,20 @@ database "posthog" {
   table "events_local" {
     extend   = "_event_base"
     order_by = ["timestamp", "team_id"]
+    patch_column "timestamp" { codec = "Delta(4), ZSTD(1)" }
     column "event" { type = "String" }
     engine "merge_tree" {}
   }
 }
 ```
+
+`patch_column` is child-local inheritance specialization: it targets a column
+from `extend`, preserves every omitted field and the inherited position, and
+is consumed during resolution. This is useful when the storage table needs a
+`CODEC`, TTL, comment, default, type, or nullability variation that a sibling
+Distributed table should not inherit. It is distinct from `patch_table`, which
+modifies the same named table across layers. An ordinary `column` block still
+means “add” and still errors if its name collides with an inherited column.
 
 **Patching** — a `patch_table` block modifies a table declared elsewhere,
 so the table itself stays declared once and an environment layer carries
@@ -1253,4 +1263,3 @@ list of recipes.
 ## License
 
 TBD
-

@@ -71,6 +71,9 @@ table "events" {
   column "timestamp" { type = "DateTime" }
   column "team_id"   { type = "UInt64" }
 
+  # Partial specialization of a column inherited through extend.
+  patch_column "timestamp" { codec = "Delta(4), ZSTD(1)" }
+
   index "idx_team" {
     expr        = "team_id"
     type        = "minmax"
@@ -84,8 +87,9 @@ table "events" {
 }
 ```
 
-All non-block attributes are optional. `column` and `index` are repeatable
-blocks. `engine` is a single labeled block — see *Engine kinds* below.
+All non-block attributes are optional. `column`, `patch_column`, and `index`
+are repeatable blocks. `engine` is a single labeled block — see *Engine kinds*
+below. `patch_column` is valid only when the table sets `extend`.
 
 ### Control attributes
 
@@ -101,11 +105,52 @@ blocks. `engine` is a single labeled block — see *Engine kinds* below.
 
 ```hcl
 column "name" {
-  type = "DateTime"
+  type     = "DateTime"
+  nullable = false
+  default  = "now()"
+  codec    = "Delta(4), ZSTD(1)"
+  ttl      = "name + INTERVAL 30 DAY"
+  comment  = "event time"
 }
 ```
 
-`type` is required. (Defaults, codecs, and nullability live in future work.)
+`type` is required. `nullable` defaults to false. A column may set at most one
+of `default`, `materialized`, `ephemeral`, or `alias`; it may also carry
+`codec`, `ttl`, `comment`, and `renamed_from`.
+
+## `patch_column`
+
+Inside a table with `extend`, `patch_column` partially specializes one column
+from the inherited shape:
+
+```hcl
+table "events_local" {
+  extend = "_event_base"
+
+  patch_column "timestamp" {
+    codec = "Delta(8), ZSTD(1)"
+  }
+
+  engine "replicated_merge_tree" {
+    zoo_path     = "/clickhouse/tables/{shard}/events_local"
+    replica_name = "{replica}"
+  }
+}
+```
+
+Every attribute is optional. Supported attributes are `type`, `nullable`,
+`default`, `materialized`, `ephemeral`, `alias`, `codec`, `ttl`, and `comment`.
+Omitted attributes keep the inherited value, and the column stays in its
+inherited position. Setting one default-kind attribute replaces the inherited
+`DEFAULT` / `MATERIALIZED` / `EPHEMERAL` / `ALIAS` choice as a unit.
+
+The target must exist on the resolved parent; `patch_column` without `extend`
+or against a child-added/unknown column errors. The blocks are consumed during
+resolution, leaving an ordinary flat column list for diff and SQL generation.
+An ordinary `column` block remains an addition, so redeclaring an inherited
+name with `column` still errors. Optional modifiers cannot currently be
+removed; define the modifier-free shape on the abstract parent and add the
+modifier only on the child that needs it.
 
 ## `index`
 
@@ -389,7 +434,8 @@ abstract: a concrete table can be extended, and then both are emitted.
 
 The child inherits:
 
-- All `column` blocks (appended; collisions with child's own columns error).
+- All `column` blocks. The child may partially specialize them with
+  `patch_column`; its ordinary columns then append, and collisions still error.
 - All `index` blocks (appended; collisions error).
 - `engine`, `order_by`, `partition_by`, `sample_by`, `ttl`, `settings`
   — if the child does **not** set its own; otherwise the child's value
@@ -428,6 +474,18 @@ table "_event_base" {
 
 table "events_local"       { extend = "_event_base"; engine "merge_tree" {}; ... }
 table "events_distributed" { extend = "_event_base"; engine "distributed" { ... } }
+```
+
+When a physical modifier belongs only on one child, keep the abstract shape
+neutral and patch that child rather than duplicating the column or pushing the
+modifier into every sibling:
+
+```hcl
+table "events_local" {
+  extend = "_event_base"
+  patch_column "timestamp" { codec = "Delta(8), ZSTD(1)" }
+  engine "merge_tree" {}
+}
 ```
 
 ### Inheritance on `materialized_view`
@@ -515,7 +573,7 @@ When the loader processes a layered set, this pipeline runs:
    drop/add, scalar clauses and engine/query/source replace, settings
    patch-wins.
 4. **Resolve `extend` chains** — DFS with cycle detection; children see the
-   post-patch parent.
+   post-patch parent, then apply their child-local `patch_column` blocks.
 5. **Drop abstract tables** from the emit set.
 6. **Validate** — every remaining (non-abstract) table must have an engine.
 
@@ -549,6 +607,7 @@ existing table, which stays authoritative except where patched.
 | Need                                              | Use            |
 | ------------------------------------------------- | -------------- |
 | Two tables share most columns; different engines  | `extend` + `abstract` parent |
+| One extend child needs different column modifiers | child-local `patch_column` |
 | Add / modify / drop a column on the same table in one environment | `patch_table` |
 | Change a setting, index, `order_by`/`partition_by`/`ttl`, or the engine on the same table in one environment | `patch_table` |
 | A Distributed table whose target moves with the env's topology | `patch_table` with `engine` |

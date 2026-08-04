@@ -116,6 +116,105 @@ func TestResolve_ColumnCollision(t *testing.T) {
 	assert.Contains(t, err.Error(), "collides")
 }
 
+func TestResolve_PatchInheritedColumn(t *testing.T) {
+	schema, err := ParseFile(filepath.Join("testdata", "resolve_patch_inherited_column.hcl"))
+	require.NoError(t, err)
+	require.NoError(t, Resolve(schema))
+
+	require.Len(t, schema.Databases, 1)
+	require.Len(t, schema.Databases[0].Tables, 2)
+	sharded := schema.Databases[0].Tables[0]
+	distributed := schema.Databases[0].Tables[1]
+	require.Equal(t, "sharded_events", sharded.Name)
+	require.Equal(t, "events", distributed.Name)
+
+	require.Len(t, sharded.Columns, 2)
+	require.Len(t, distributed.Columns, 2)
+	assert.Equal(t, "timestamp", sharded.Columns[0].Name, "patching preserves inherited column order")
+	assert.Equal(t, "DateTime64(6)", sharded.Columns[0].Type, "an omitted patch field stays inherited")
+	require.NotNil(t, sharded.Columns[0].Comment)
+	assert.Equal(t, "ingest time", *sharded.Columns[0].Comment)
+	require.NotNil(t, sharded.Columns[0].Codec)
+	assert.Equal(t, "Delta(8), ZSTD(1)", *sharded.Columns[0].Codec)
+	require.NotNil(t, sharded.Columns[1].Codec)
+	assert.Equal(t, "T64, ZSTD(1)", *sharded.Columns[1].Codec)
+
+	assert.Nil(t, distributed.Columns[0].Codec, "the sibling inherits the codec-free base unchanged")
+	assert.Nil(t, distributed.Columns[1].Codec)
+	assert.Nil(t, sharded.ColumnPatches, "patch_column is consumed during resolution")
+	assert.Contains(t, createTableSQL("posthog", sharded), "CODEC(Delta(8), ZSTD(1))")
+	assert.NotContains(t, createTableSQL("posthog", distributed), "CODEC(", "the Distributed DDL stays codec-free")
+}
+
+func TestResolve_PatchColumnRequiresExtendAndInheritedTarget(t *testing.T) {
+	t.Run("requires extend", func(t *testing.T) {
+		dbs := []DatabaseSpec{{
+			Name: "posthog",
+			Tables: []TableSpec{{
+				Name:          "events",
+				ColumnPatches: []PatchColumnSpec{{Name: "timestamp", Codec: strPtr("ZSTD(1)")}},
+			}},
+		}}
+		err := Resolve(&Schema{Databases: dbs})
+		require.ErrorContains(t, err, "patch_column requires extend")
+	})
+
+	t.Run("must target inherited column", func(t *testing.T) {
+		parent := "_base"
+		dbs := []DatabaseSpec{{
+			Name: "posthog",
+			Tables: []TableSpec{
+				{Name: parent, Abstract: true, Columns: []ColumnSpec{{Name: "id", Type: "UInt64"}}},
+				{Name: "events", Extend: &parent, ColumnPatches: []PatchColumnSpec{{Name: "timestamp", Codec: strPtr("ZSTD(1)")}}},
+			},
+		}}
+		err := Resolve(&Schema{Databases: dbs})
+		require.ErrorContains(t, err, `patch_column "timestamp" does not exist on inherited table`)
+	})
+}
+
+func TestApplyInheritedColumnPatches_PartialOverlay(t *testing.T) {
+	nullable := false
+	columns := []ColumnSpec{{
+		Name:         "timestamp",
+		Type:         "DateTime64(6)",
+		Nullable:     true,
+		Materialized: strPtr("now64(6)"),
+		Comment:      strPtr("inherited comment"),
+		TTL:          strPtr("timestamp + INTERVAL 1 YEAR"),
+	}}
+	patches := []PatchColumnSpec{{
+		Name:     "timestamp",
+		Nullable: &nullable,
+		Alias:    strPtr("toDateTime64(0, 6)"),
+		Codec:    strPtr("Delta(8), ZSTD(1)"),
+	}}
+
+	require.NoError(t, applyInheritedColumnPatches(columns, patches))
+	got := columns[0]
+	assert.Equal(t, "DateTime64(6)", got.Type)
+	assert.False(t, got.Nullable, "an explicit false overrides inherited true")
+	assert.Nil(t, got.Materialized, "a patched default kind replaces the inherited family")
+	require.NotNil(t, got.Alias)
+	assert.Equal(t, "toDateTime64(0, 6)", *got.Alias)
+	require.NotNil(t, got.Comment)
+	assert.Equal(t, "inherited comment", *got.Comment, "omitted optional fields stay inherited")
+	require.NotNil(t, got.TTL)
+	assert.Equal(t, "timestamp + INTERVAL 1 YEAR", *got.TTL)
+	require.NotNil(t, got.Codec)
+	assert.Equal(t, "Delta(8), ZSTD(1)", *got.Codec)
+}
+
+func TestApplyInheritedColumnPatches_RejectsConflictingDefaultKinds(t *testing.T) {
+	columns := []ColumnSpec{{Name: "id", Type: "UInt64"}}
+	err := applyInheritedColumnPatches(columns, []PatchColumnSpec{{
+		Name:    "id",
+		Default: strPtr("0"),
+		Alias:   strPtr("source_id"),
+	}})
+	require.ErrorContains(t, err, "at most one of default, materialized, ephemeral, alias")
+}
+
 func TestResolve_NoEngineOnNonAbstract(t *testing.T) {
 	schema, err := ParseFile(filepath.Join("testdata", "resolve_no_engine.hcl"))
 	require.NoError(t, err)
