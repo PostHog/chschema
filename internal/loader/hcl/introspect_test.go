@@ -942,3 +942,17 @@ func TestBuildTableFromCreateSQL_MoveTTLPreserved(t *testing.T) {
 	assert.Contains(t, *got.TTL, "toIntervalDay(7)", "first rule must survive")
 	assert.Contains(t, *got.TTL, "toIntervalDay(90)", "second rule must survive")
 }
+
+func TestBuildTableFromCreateSQL_TTLWherePreserved(t *testing.T) {
+	src := `CREATE TABLE db.t (deleted_at DateTime, is_deleted UInt8) ` +
+		`ENGINE = MergeTree ORDER BY deleted_at ` +
+		`TTL deleted_at + toIntervalMonth(3) WHERE is_deleted = 1`
+	got, err := buildTableFromCreateSQL(src)
+	require.NoError(t, err)
+	require.NotNil(t, got.TTL)
+	assert.Equal(t,
+		"deleted_at + toIntervalMonth(3) WHERE is_deleted = 1",
+		*got.TTL,
+		"live introspection must preserve the complete TTL WHERE policy",
+	)
+}

@@ -224,11 +224,15 @@ func TestNormalizeTTL_PreservesIntervalTextInsideQuotedValues(t *testing.T) {
 }
 
 func TestNormalizeTTL_WhereIntervalSemanticEquivalence(t *testing.T) {
+	want := "deleted_at + toIntervalMonth(3) WHERE is_deleted = 1"
+
 	stored, ok := normalizeTTL("deleted_at + toIntervalMonth(3) WHERE is_deleted = 1")
 	require.True(t, ok)
+	assert.Equal(t, want, stored, "the stored form must preserve the WHERE policy")
 
 	authored, ok := normalizeTTL("deleted_at + INTERVAL 3 MONTH WHERE is_deleted = 1")
 	require.True(t, ok)
+	assert.Equal(t, want, authored, "canonicalizing INTERVAL must preserve the WHERE policy")
 
 	assert.Equal(t, stored, authored)
 }
