@@ -222,3 +222,13 @@ func TestNormalizeTTL_PreservesIntervalTextInsideQuotedValues(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeTTL_WhereIntervalSemanticEquivalence(t *testing.T) {
+	stored, ok := normalizeTTL("deleted_at + toIntervalMonth(3) WHERE is_deleted = 1")
+	require.True(t, ok)
+
+	authored, ok := normalizeTTL("deleted_at + INTERVAL 3 MONTH WHERE is_deleted = 1")
+	require.True(t, ok)
+
+	assert.Equal(t, stored, authored)
+}

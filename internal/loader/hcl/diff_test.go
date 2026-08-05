@@ -1315,3 +1315,27 @@ func TestDiff_MoveTTL_AuthoredIntervalNoPhantom(t *testing.T) {
 	assert.True(t, cs.IsEmpty(),
 		"move-TTL authored as INTERVAL must not diff against introspected toInterval form; got %+v", cs)
 }
+
+// Diff is a public boundary and may receive resolved TableSpec values from
+// callers other than ParseFile/Introspect. Semantically identical table TTLs
+// must therefore compare clean even when the caller did not canonicalize them
+// first.
+func TestDiff_TableTTLIntervalSemanticEquivalence(t *testing.T) {
+	stored := mkTable("events", EngineMergeTree{}, ColumnSpec{Name: "deleted_at", Type: "DateTime"})
+	stored.TTL = ptr("deleted_at + toIntervalMonth(3) WHERE is_deleted = 1")
+	authored := stored
+	authored.TTL = ptr("deleted_at + INTERVAL 3 MONTH WHERE is_deleted = 1")
+
+	from := &Schema{Databases: []DatabaseSpec{mkDB("posthog", stored)}}
+	to := &Schema{Databases: []DatabaseSpec{mkDB("posthog", authored)}}
+	cs := Diff(from, to)
+	assert.True(t, cs.IsEmpty(), "equivalent TTL syntax must not emit MODIFY TTL")
+	assert.Empty(t, GenerateSQL(cs).Statements)
+
+	different := authored
+	different.TTL = ptr("deleted_at + INTERVAL 3 MONTH WHERE is_deleted = 0")
+	cs = Diff(from, &Schema{Databases: []DatabaseSpec{mkDB("posthog", different)}})
+	require.Len(t, cs.Databases, 1, "a real policy change must still produce drift")
+	require.Len(t, cs.Databases[0].AlterTables, 1)
+	assert.NotNil(t, cs.Databases[0].AlterTables[0].TTLChange)
+}
