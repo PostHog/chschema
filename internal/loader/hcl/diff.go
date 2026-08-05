@@ -941,7 +941,7 @@ func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 			td.OrderByChange = diffStringSlice(from.OrderBy, to.OrderBy)
 			td.PartitionByChange = diffStringPtr(from.PartitionBy, to.PartitionBy)
 			td.SampleByChange = diffStringPtr(from.SampleBy, to.SampleBy)
-			td.TTLChange = diffStringPtr(from.TTL, to.TTL)
+			td.TTLChange = diffTableTTL(from.TTL, to.TTL)
 			// Merge in table-level Settings (independent of engine settings
 			// on TimeSeries). We append rather than overwrite so the engine
 			// settings populated by diffTimeSeries above aren't dropped.
@@ -962,7 +962,7 @@ func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 	td.OrderByChange = diffStringSlice(from.OrderBy, to.OrderBy)
 	td.PartitionByChange = diffStringPtr(from.PartitionBy, to.PartitionBy)
 	td.SampleByChange = diffStringPtr(from.SampleBy, to.SampleBy)
-	td.TTLChange = diffStringPtr(from.TTL, to.TTL)
+	td.TTLChange = diffTableTTL(from.TTL, to.TTL)
 
 	added, removed, changed := diffSettings(from.Settings, to.Settings)
 	td.SettingsAdded = added
@@ -1094,6 +1094,24 @@ func diffStringPtr(from, to *string) *StringChange {
 		return nil
 	}
 	return &StringChange{Old: from, New: to}
+}
+
+// diffTableTTL compares parseable table TTLs by their canonical semantics,
+// rather than requiring every Schema producer to have called canonicalize
+// before Diff. ClickHouse stores `INTERVAL 3 MONTH` as
+// `toIntervalMonth(3)`; those forms must not produce a no-op MODIFY TTL.
+// If either side cannot be parsed, retain the conservative raw-string diff so
+// an unsupported expression is never silently treated as equal. Column TTLs
+// deliberately continue to use ordinary column comparison.
+func diffTableTTL(from, to *string) *StringChange {
+	if from != nil && to != nil {
+		fromCanonical, fromOK := normalizeTTL(*from)
+		toCanonical, toOK := normalizeTTL(*to)
+		if fromOK && toOK && fromCanonical == toCanonical {
+			return nil
+		}
+	}
+	return diffStringPtr(from, to)
 }
 
 func diffSettings(from, to map[string]string) (added map[string]string, removed []string, changed []SettingChange) {
