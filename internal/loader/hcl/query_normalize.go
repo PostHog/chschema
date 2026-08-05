@@ -220,7 +220,30 @@ func canonicalize(db *DatabaseSpec) {
 		normalizeColumnExprs(p.Columns)
 		normalizeColumnExprs(p.ModifyColumns)
 		normalizeIndexExprs(p.Indexes)
+		for i := range p.Projections {
+			projection := &p.Projections[i]
+			if q, ok := normalizeQuery(projection.Query); ok {
+				projection.Query = q
+			} else if strings.TrimSpace(projection.Query) != "" {
+				slog.Warn("patch_table projection query could not be parsed for normalization; keeping raw (may diff as drift)",
+					"database", db.Name, "table", p.Name, "projection", projection.Name)
+			}
+		}
 		normalizeTTLPtr(&p.TTL)
+	}
+	for pi := range db.MaterializedViewPatches {
+		p := &db.MaterializedViewPatches[pi]
+		normalizeColumnExprs(p.Columns)
+		normalizeColumnExprs(p.ModifyColumns)
+		if p.Query == nil {
+			continue
+		}
+		if q, ok := normalizeQuery(*p.Query); ok {
+			p.Query = &q
+		} else if strings.TrimSpace(*p.Query) != "" {
+			slog.Warn("patch_materialized_view query could not be parsed for normalization; keeping raw (may diff as drift)",
+				"database", db.Name, "materialized_view", p.Name)
+		}
 	}
 	for pi := range db.ViewPatches {
 		p := &db.ViewPatches[pi]

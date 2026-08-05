@@ -104,6 +104,9 @@ func objectDeclaration(blk *hclsyntax.Block, database, path string) (Declaration
 		d.Patch = true
 	case "materialized_view":
 		d.ObjectType = KindMaterializedView
+	case "patch_materialized_view":
+		d.ObjectType = KindMaterializedView
+		d.Patch = true
 	case "view":
 		d.ObjectType = KindView
 	case "patch_view":

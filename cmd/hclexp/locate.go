@@ -358,7 +358,13 @@ func declMarkers(d locateDecl) string {
 		parts = append(parts, "[override]")
 	}
 	if d.Patch {
-		parts = append(parts, "[patch_table]")
+		patchKind := map[string]string{
+			hclload.KindTable:            "patch_table",
+			hclload.KindMaterializedView: "patch_materialized_view",
+			hclload.KindView:             "patch_view",
+			hclload.KindDictionary:       "patch_dictionary",
+		}[d.Type]
+		parts = append(parts, "["+patchKind+"]")
 	}
 	if d.RawKind != "" {
 		parts = append(parts, "[raw "+d.RawKind+"]")

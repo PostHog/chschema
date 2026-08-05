@@ -10,9 +10,9 @@ import (
 // LoadLayers parses the .hcl files each layer path contributes, in the given
 // order, and merges them into a combined raw spec set. A layer path is either
 // a directory (every *.hcl inside it, in lexical filename order) or a single
-// .hcl file. Across layers (and across files), a duplicate table name is an
-// error unless the later declaration sets override = true. patch_table blocks
-// always accumulate.
+// .hcl file. Across layers (and across files), a duplicate table or
+// materialized-view name is an error unless the later declaration sets
+// override = true. Patch blocks always accumulate.
 //
 // LoadLayers does NOT call Resolve; callers run that explicitly so they can
 // inspect the merged-but-unresolved input first.
@@ -131,19 +131,24 @@ func mergeIntoDatabase(target *DatabaseSpec, incoming DatabaseSpec) error {
 		}
 	}
 	target.Patches = append(target.Patches, incoming.Patches...)
+	target.MaterializedViewPatches = append(target.MaterializedViewPatches, incoming.MaterializedViewPatches...)
 	target.ViewPatches = append(target.ViewPatches, incoming.ViewPatches...)
 	target.DictionaryPatches = append(target.DictionaryPatches, incoming.DictionaryPatches...)
 
-	mvByName := make(map[string]bool, len(target.MaterializedViews))
-	for _, mv := range target.MaterializedViews {
-		mvByName[mv.Name] = true
+	mvByName := make(map[string]int, len(target.MaterializedViews))
+	for i := range target.MaterializedViews {
+		mvByName[target.MaterializedViews[i].Name] = i
 	}
 	for _, mv := range incoming.MaterializedViews {
-		if mvByName[mv.Name] {
-			return fmt.Errorf("materialized_view %q redeclared across layers", mv.Name)
+		if idx, ok := mvByName[mv.Name]; ok {
+			if !mv.Override {
+				return fmt.Errorf("materialized_view %q redeclared without override = true", mv.Name)
+			}
+			target.MaterializedViews[idx] = mv
+		} else {
+			target.MaterializedViews = append(target.MaterializedViews, mv)
+			mvByName[mv.Name] = len(target.MaterializedViews) - 1
 		}
-		mvByName[mv.Name] = true
-		target.MaterializedViews = append(target.MaterializedViews, mv)
 	}
 
 	viewByName := make(map[string]bool, len(target.Views))

@@ -29,7 +29,7 @@ table, one shared definition a role pulls in) needs no directory of its own:
 hclexp validate -layer schema/base,schema/envs/us,schema/nodes/ingest/events.hcl
 ```
 
-A file layer has the same merge semantics as a directory layer: `patch_table`,
+A file layer has the same merge semantics as a directory layer: patch blocks,
 `extend`, and `override = true` behave identically, and its declarations are
 applied at its position in the stack. The file must have the `.hcl` extension —
 naming anything else is an error, as is naming a path that does not exist.
@@ -39,9 +39,9 @@ twice, which is the usual duplicate-declaration error.
 ## Top-level blocks
 
 Most files declare one or more `database` blocks. Within a database, the
-allowed children are `table`, `patch_table`, `materialized_view`, `view`,
-`patch_view`, `dictionary`, `patch_dictionary`, and `raw` (the escape
-hatch; see [`raw`](#raw)).
+allowed children are `table`, `patch_table`, `materialized_view`,
+`patch_materialized_view`, `view`, `patch_view`, `dictionary`,
+`patch_dictionary`, and `raw` (the escape hatch; see [`raw`](#raw)).
 
 ```hcl
 database "posthog" {
@@ -338,6 +338,11 @@ database "posthog" {
     }
     drop_indexes = ["idx_old"]
 
+    # projections: additive; an existing name errors
+    projection "aggregate_counts" {
+      query = "SELECT team_id, count() GROUP BY team_id"
+    }
+
     # scalar clauses: replace the target's value when set
     order_by     = ["team_id", "timestamp"]
     partition_by = "toYYYYMM(timestamp)"
@@ -380,6 +385,10 @@ field:
   patch-only, cleared on application) — so per-env skip indexes can
   interleave mid-list, and a positioned drop+add redefines an index *at* a
   position.
+- **`projection`** — add; a name already on the target errors. Projection
+  queries receive the same canonical normalization as declared projections.
+  Projection removal/redefinition is intentionally not part of the patch
+  vocabulary; use `override = true` for those cases.
 - **`order_by`, `partition_by`, `sample_by`, `ttl`** — replace the
   target's value when set; unset fields keep the target's.
 - **`engine`** — replaces the target's engine block **wholesale** (merging
@@ -389,7 +398,7 @@ field:
 - **`settings`** — merges into the target's map, **patch wins** on key
   collision; an env overlay that retunes a base setting is the point.
 - Not patchable (rejected at parse time): `primary_key`, `comment`,
-  `cluster`, `constraint`/`projection` blocks, and the control attributes.
+  `cluster`, `constraint` blocks, and the control attributes.
   A table that differs beyond the patchable fields is genuinely different
   — use `override = true`.
 
@@ -398,13 +407,19 @@ across layers and apply in layer order (a later layer's patch wins), before
 `extend` resolution — so patching an abstract base patches every child.
 `patch_table` lives at any layer.
 
-## `patch_view` / `patch_dictionary`
+## `patch_materialized_view` / `patch_view` / `patch_dictionary`
 
 The same idea for the other patchable object kinds: the object stays
 declared once, the env layer replaces just the fields it sets.
 
 ```hcl
 database "posthog" {
+  patch_materialized_view "events_mv" {
+    query = file("sql/events_mv_dev.sql")
+    modify_column "team_id" { type = "UInt64" }
+    column "region" { type = "LowCardinality(String)" }
+  }
+
   patch_view "user_sessions" {
     query = file("sql/user_sessions_dev.sql")   # replace; normalized like any view query
   }
@@ -417,14 +432,19 @@ database "posthog" {
 }
 ```
 
+- `patch_materialized_view` fields: `query` (replace), plus `column`,
+  `modify_column`, and `drop_columns` with the same semantics and placement
+  options as `patch_table`. MV column patches apply after `extend`, so they
+  may target columns inherited from an abstract table. The query is
+  normalized like a declared MV query.
 - `patch_view` fields: `query`, `comment` — each replaces the target's
   value when set. The patched query normalizes to the canonical beautified
   form, so a heredoc patch and a one-liner declaration of the same SQL
   diff clean.
 - `patch_dictionary` fields: `source`, `layout`, `lifetime` (replace
   wholesale when set) and `settings` (merge, patch wins).
-- Unknown targets error, like `patch_table`. Materialized views have no
-  patch form — an MV differing per env is replaced with `override = true`.
+- Unknown targets error, like `patch_table`. A later-layer
+  `materialized_view` may also set `override = true` for a full replacement.
 
 ## Inheritance — `extend = "Y"`
 
@@ -561,21 +581,26 @@ An `abstract = true` materialized_view is accepted for symmetry (it is
 dropped after resolution, like an abstract table), but has no common use
 case — MVs are usually concrete glue.
 
+A later layer may fully replace an MV by redeclaring it with
+`override = true`. When only the query or output columns differ, prefer
+`patch_materialized_view` so the common declaration stays defined once.
+
 ## Resolution pipeline
 
 When the loader processes a layered set, this pipeline runs:
 
 1. **Parse** every `.hcl` file in every layer (ordered).
-2. **Merge** databases by name. Tables collide on name unless the later one
-   sets `override = true`. `patch_table` blocks accumulate.
-3. **Apply patches** (`patch_table`, `patch_view`, `patch_dictionary`) — in
-   layer order, against their targets: columns modify/drop/add, index
-   drop/add, scalar clauses and engine/query/source replace, settings
-   patch-wins.
-4. **Resolve `extend` chains** — DFS with cycle detection; children see the
-   post-patch parent, then apply their child-local `patch_column` blocks.
-5. **Drop abstract tables** from the emit set.
-6. **Validate** — every remaining (non-abstract) table must have an engine.
+2. **Merge** databases by name. Tables and materialized views collide on name
+   unless the later declaration sets `override = true`. Patch blocks
+   accumulate.
+3. **Apply table/view/dictionary patches** in layer order: columns
+   modify/drop/add, indexes/projections add, scalar clauses and
+   engine/query/source replace, settings patch-wins.
+4. **Resolve `extend` chains**, then apply `patch_materialized_view` so its
+   column operations can target inherited MV columns.
+5. **Drop abstract tables and materialized views** from the emit set.
+6. **Validate** the remaining objects — including the engine requirement for
+   concrete tables and `to_table`/`query` requirements for MVs.
 
 ## Comparison: `extend` vs `patch_table` vs `override`
 
@@ -611,9 +636,12 @@ existing table, which stays authoritative except where patched.
 | Add / modify / drop a column on the same table in one environment | `patch_table` |
 | Change a setting, index, `order_by`/`partition_by`/`ttl`, or the engine on the same table in one environment | `patch_table` |
 | A Distributed table whose target moves with the env's topology | `patch_table` with `engine` |
+| An MV's `query` or columns differing per environment | `patch_materialized_view` |
 | A view's `query` or a dictionary's `source` differing per environment | `patch_view` / `patch_dictionary` |
-| A table differing beyond the patchable fields (`primary_key`, constraints, projections, …) | `override = true` |
+| Add a projection to the same table in one environment | `patch_table` with `projection` |
+| A table differing beyond the patchable fields (`primary_key`, constraints, …) | `override = true` |
 | Replace a table entirely in one environment       | `override = true` |
+| Replace a materialized view entirely in one environment | `override = true` |
 
 ## Dependency validation — `hclexp validate`
 
