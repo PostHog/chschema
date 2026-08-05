@@ -71,6 +71,45 @@ func TestLoadLayers_CollisionWithoutOverrideErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "override")
 }
 
+func TestLoadLayers_MaterializedViewOverrideAcrossLayers(t *testing.T) {
+	root := t.TempDir()
+	base := writePatchLayer(t, root, "base/mv.hcl", `
+database "posthog" {
+  materialized_view "events_mv" {
+    to_table = "posthog.events"
+    query    = "SELECT id FROM source_prod"
+    column "id" { type = "UInt64" }
+  }
+}`)
+	override := writePatchLayer(t, root, "dev/mv.hcl", `
+database "posthog" {
+  materialized_view "events_mv" {
+    override = true
+    to_table = "posthog.events"
+    query    = "SELECT dev_id FROM source_dev"
+    column "dev_id" { type = "UInt32" }
+  }
+}`)
+
+	schema, err := LoadLayers([]string{base, override})
+	require.NoError(t, err)
+	require.NoError(t, Resolve(schema))
+	require.Len(t, schema.Databases[0].MaterializedViews, 1)
+	mv := schema.Databases[0].MaterializedViews[0]
+	assert.Contains(t, mv.Query, "source_dev")
+	assert.Equal(t, []ColumnSpec{{Name: "dev_id", Type: "UInt32"}}, mv.Columns)
+
+	withoutOverride := writePatchLayer(t, root, "bad/mv.hcl", `
+database "posthog" {
+  materialized_view "events_mv" {
+    to_table = "posthog.events"
+    query    = "SELECT id FROM source_dev"
+  }
+}`)
+	_, err = LoadLayers([]string{base, withoutOverride})
+	require.ErrorContains(t, err, `materialized_view "events_mv" redeclared without override = true`)
+}
+
 func TestLoadLayers_ViewRedeclareAcrossLayers(t *testing.T) {
 	_, err := LoadLayers([]string{
 		layerPath("view_redeclare", "base"),

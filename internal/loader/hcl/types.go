@@ -21,13 +21,13 @@ type DatabaseSpec struct {
 	// ViewPatches and DictionaryPatches are the patch_view /
 	// patch_dictionary counterparts of Patches. Like table patches they
 	// accumulate across layers and are consumed during resolution.
-	ViewPatches       []PatchViewSpec       `hcl:"patch_view,block"       diff:"-"`
-	DictionaryPatches []PatchDictionarySpec `hcl:"patch_dictionary,block" diff:"-"`
+	MaterializedViewPatches []PatchMaterializedViewSpec `hcl:"patch_materialized_view,block" diff:"-"`
+	ViewPatches             []PatchViewSpec             `hcl:"patch_view,block"              diff:"-"`
+	DictionaryPatches       []PatchDictionarySpec       `hcl:"patch_dictionary,block"        diff:"-"`
 
 	// MaterializedViews are a sibling collection to Tables, not a flavored
 	// TableSpec. They may `extend` an `abstract = true` table to inherit
-	// its column list (and optionally cluster/comment); `patch_table` does
-	// not apply to MVs.
+	// its column list (and optionally cluster/comment).
 	MaterializedViews []MaterializedViewSpec `hcl:"materialized_view,block"`
 
 	// Dictionaries are a third sibling collection. Like MVs, they do not
@@ -87,12 +87,25 @@ type MaterializedViewSpec struct {
 	// Abstract MVs are dropped before diff, like abstract tables.
 	Extend   *string `hcl:"extend,optional"   diff:"-"`
 	Abstract bool    `hcl:"abstract,optional" diff:"-"`
+	Override bool    `hcl:"override,optional" diff:"-"`
 
 	ToTable string       `hcl:"to_table,optional"` // TO <db.>table target (required when not abstract)
 	Columns []ColumnSpec `hcl:"column,block"`      // explicit column list (may be empty; merged with parent on extend)
 	Query   string       `hcl:"query,optional"`    // the AS SELECT ... body (required when not abstract)
 	Cluster *string      `hcl:"cluster,optional"`  // ON CLUSTER
 	Comment *string      `hcl:"comment,optional"`
+}
+
+// PatchMaterializedViewSpec is the materialized-view counterpart of
+// patch_table. Query replaces when set; columns follow patch_table's
+// modify -> drop -> add semantics. It is consumed after MV extend resolution,
+// so inherited columns may be modified or dropped too.
+type PatchMaterializedViewSpec struct {
+	Name          string       `hcl:"name,label"`
+	Columns       []ColumnSpec `hcl:"column,block"`
+	ModifyColumns []ColumnSpec `hcl:"modify_column,block"`
+	DropColumns   []string     `hcl:"drop_columns,optional"`
+	Query         *string      `hcl:"query,optional"`
 }
 
 // ViewSpec models a ClickHouse plain (non-materialized) view: a saved
@@ -126,6 +139,7 @@ type ViewSpec struct {
 //     so add sees the post-drop state.
 //   - Indexes add, DropIndexes remove; drops apply first, so a drop+add
 //     pair in one patch redefines an index.
+//   - Projections add (an existing name errors).
 //   - OrderBy / PartitionBy / SampleBy / TTL replace the target's value
 //     when set.
 //   - Engine replaces the target's engine block wholesale — merging engine
@@ -138,6 +152,7 @@ type PatchTableSpec struct {
 	DropColumns   []string          `hcl:"drop_columns,optional"`
 	Indexes       []IndexSpec       `hcl:"index,block"`
 	DropIndexes   []string          `hcl:"drop_indexes,optional"`
+	Projections   []ProjectionSpec  `hcl:"projection,block"`
 	OrderBy       []string          `hcl:"order_by,optional"`
 	PartitionBy   *string           `hcl:"partition_by,optional"`
 	SampleBy      *string           `hcl:"sample_by,optional"`

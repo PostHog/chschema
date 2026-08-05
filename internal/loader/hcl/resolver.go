@@ -6,9 +6,9 @@ import (
 	"strings"
 )
 
-// Resolve walks each database, applies patch_table additions, resolves
-// extend chains, drops abstract tables, and validates that every remaining
-// table has an engine. All mutation happens in place on the supplied slice.
+// Resolve walks each database, applies object patches, resolves extend chains,
+// drops abstract tables and materialized views, and validates the remaining
+// objects. All mutation happens in place on the supplied slice.
 func Resolve(s *Schema) error {
 	if s == nil {
 		return errors.New("Resolve: nil schema")
@@ -310,6 +310,12 @@ func applyTablePatch(dbName string, target *TableSpec, patch PatchTableSpec) err
 		copy(target.Indexes[pos+1:], target.Indexes[pos:])
 		target.Indexes[pos] = idx
 	}
+	for _, projection := range patch.Projections {
+		if projectionIndex(target.Projections, projection.Name) >= 0 {
+			return fmt.Errorf("%s: patch_table %q: projection %q already exists on target", dbName, patch.Name, projection.Name)
+		}
+		target.Projections = append(target.Projections, projection)
+	}
 
 	// Scalar clauses replace when set; the engine block replaces wholesale
 	// (merging engine sub-arguments is not meaningful).
@@ -457,6 +463,16 @@ func indexIndex(idxs []IndexSpec, name string) int {
 	return -1
 }
 
+// projectionIndex returns the position of the named projection, or -1.
+func projectionIndex(projections []ProjectionSpec, name string) int {
+	for i := range projections {
+		if projections[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
 func resolveDatabase(db *DatabaseSpec) error {
 	indexByName := make(map[string]int, len(db.Tables))
 	for i := range db.Tables {
@@ -491,6 +507,9 @@ func resolveDatabase(db *DatabaseSpec) error {
 		if err := resolveMaterializedView(db, i, indexByName, mvIndex); err != nil {
 			return err
 		}
+	}
+	if err := applyMaterializedViewPatches(db); err != nil {
+		return err
 	}
 
 	kept := db.Tables[:0]
@@ -559,6 +578,60 @@ func resolveDatabase(db *DatabaseSpec) error {
 			}
 		}
 	}
+	return nil
+}
+
+// applyMaterializedViewPatches applies patches after MV extend resolution, so
+// modify/drop operations may target columns inherited from an abstract table.
+func applyMaterializedViewPatches(db *DatabaseSpec) error {
+	if len(db.MaterializedViewPatches) == 0 {
+		return nil
+	}
+	indexByName := make(map[string]int, len(db.MaterializedViews))
+	for i := range db.MaterializedViews {
+		indexByName[db.MaterializedViews[i].Name] = i
+	}
+	for _, patch := range db.MaterializedViewPatches {
+		idx, ok := indexByName[patch.Name]
+		if !ok {
+			return fmt.Errorf("%s: patch_materialized_view %q references unknown materialized_view", db.Name, patch.Name)
+		}
+		target := &db.MaterializedViews[idx]
+		for _, column := range patch.ModifyColumns {
+			if column.After != nil || column.First {
+				return fmt.Errorf("%s: patch_materialized_view %q: modify_column %q: after/first position an add, not a modify", db.Name, patch.Name, column.Name)
+			}
+			i := columnIndex(target.Columns, column.Name)
+			if i < 0 {
+				return fmt.Errorf("%s: patch_materialized_view %q: modify_column %q does not exist on target", db.Name, patch.Name, column.Name)
+			}
+			target.Columns[i] = column
+		}
+		for _, name := range patch.DropColumns {
+			i := columnIndex(target.Columns, name)
+			if i < 0 {
+				return fmt.Errorf("%s: patch_materialized_view %q: drop_columns %q does not exist on target", db.Name, patch.Name, name)
+			}
+			target.Columns = append(target.Columns[:i], target.Columns[i+1:]...)
+		}
+		for _, column := range patch.Columns {
+			if columnIndex(target.Columns, column.Name) >= 0 {
+				return fmt.Errorf("%s: patch_materialized_view %q: column %q already exists on target", db.Name, patch.Name, column.Name)
+			}
+			pos, err := patchInsertPos(target.Columns, column)
+			if err != nil {
+				return fmt.Errorf("%s: patch_materialized_view %q: %w", db.Name, patch.Name, err)
+			}
+			column.After, column.First = nil, false
+			target.Columns = append(target.Columns, ColumnSpec{})
+			copy(target.Columns[pos+1:], target.Columns[pos:])
+			target.Columns[pos] = column
+		}
+		if patch.Query != nil {
+			target.Query = *patch.Query
+		}
+	}
+	db.MaterializedViewPatches = nil
 	return nil
 }
 

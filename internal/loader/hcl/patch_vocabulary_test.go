@@ -166,6 +166,128 @@ func TestPatchTable_IndexDropThenAdd(t *testing.T) {
 	require.ErrorContains(t, applyPatches(&missing), `drop_indexes "nope" does not exist`)
 }
 
+// projection blocks in patch_table are additive. Their queries normalize like
+// declared projections, and a duplicate name is rejected rather than silently
+// redefining an existing projection.
+func TestPatchTable_ProjectionAdd(t *testing.T) {
+	db := mustParseResolve(t, `
+database "posthog" {
+  table "events" {
+    column "id" { type = "UInt64" }
+    projection "by_id" { query = "SELECT id ORDER BY id" }
+    engine "merge_tree" {}
+    order_by = ["id"]
+  }
+  patch_table "events" {
+    projection "counts" {
+      query = "select id, count() group by id"
+    }
+  }
+}`)
+
+	require.Len(t, db.Tables[0].Projections, 2)
+	assert.Equal(t, "counts", db.Tables[0].Projections[1].Name)
+	assert.Contains(t, db.Tables[0].Projections[1].Query, "SELECT")
+	assert.Contains(t, db.Tables[0].Projections[1].Query, "GROUP BY")
+	assert.Contains(t, db.Tables[0].Projections[1].Query, "id")
+
+	bad := DatabaseSpec{
+		Name: "posthog",
+		Tables: []TableSpec{{
+			Name:        "events",
+			Projections: []ProjectionSpec{{Name: "by_id", Query: "SELECT id ORDER BY id"}},
+		}},
+		Patches: []PatchTableSpec{{
+			Name:        "events",
+			Projections: []ProjectionSpec{{Name: "by_id", Query: "SELECT id"}},
+		}},
+	}
+	require.ErrorContains(t, applyPatches(&bad), `projection "by_id" already exists on target`)
+}
+
+// A materialized view can stay declared once while an environment replaces
+// its query and edits its output columns. MV patches run after extend so a
+// modify_column can target an inherited column.
+func TestPatchMaterializedView_QueryAndColumns(t *testing.T) {
+	root := t.TempDir()
+	base := writePatchLayer(t, root, "base/mv.hcl", `
+database "posthog" {
+  table "_mv_columns" {
+    abstract = true
+    column "id"    { type = "UInt32" }
+    column "stale" { type = "String" }
+  }
+  materialized_view "events_mv" {
+    extend   = "_mv_columns"
+    to_table = "posthog.events"
+    query    = "SELECT id, stale FROM source"
+  }
+}`)
+	dev := writePatchLayer(t, root, "dev/mv_patch.hcl", `
+database "posthog" {
+  patch_materialized_view "events_mv" {
+    query = <<-SQL
+      SELECT id, extra
+      FROM source_dev
+    SQL
+    modify_column "id" { type = "UInt64" }
+    drop_columns = ["stale"]
+    column "extra" {
+      type  = "String"
+      after = "id"
+    }
+  }
+}`)
+
+	schema, err := LoadLayers([]string{base, dev})
+	require.NoError(t, err)
+	require.NoError(t, Resolve(schema))
+	db := schema.Databases[0]
+
+	require.Len(t, db.MaterializedViews, 1)
+	mv := db.MaterializedViews[0]
+	assert.Contains(t, mv.Query, "FROM source_dev")
+	assert.Equal(t, []ColumnSpec{
+		{Name: "id", Type: "UInt64"},
+		{Name: "extra", Type: "String"},
+	}, mv.Columns)
+	assert.Empty(t, db.MaterializedViewPatches, "patches are consumed during resolution")
+}
+
+func TestPatchMaterializedView_UnknownAndInvalidColumnTargets(t *testing.T) {
+	unknown := DatabaseSpec{
+		Name:                    "posthog",
+		MaterializedViewPatches: []PatchMaterializedViewSpec{{Name: "missing"}},
+	}
+	require.ErrorContains(t, applyMaterializedViewPatches(&unknown),
+		`patch_materialized_view "missing" references unknown materialized_view`)
+
+	base := func(patch PatchMaterializedViewSpec) DatabaseSpec {
+		return DatabaseSpec{
+			Name: "posthog",
+			MaterializedViews: []MaterializedViewSpec{{
+				Name:    "mv",
+				Columns: []ColumnSpec{{Name: "id", Type: "UInt64"}},
+			}},
+			MaterializedViewPatches: []PatchMaterializedViewSpec{patch},
+		}
+	}
+
+	modifyMissing := base(PatchMaterializedViewSpec{
+		Name:          "mv",
+		ModifyColumns: []ColumnSpec{{Name: "missing", Type: "String"}},
+	})
+	require.ErrorContains(t, applyMaterializedViewPatches(&modifyMissing),
+		`modify_column "missing" does not exist on target`)
+
+	addExisting := base(PatchMaterializedViewSpec{
+		Name:    "mv",
+		Columns: []ColumnSpec{{Name: "id", Type: "String"}},
+	})
+	require.ErrorContains(t, applyMaterializedViewPatches(&addExisting),
+		`column "id" already exists on target`)
+}
+
 // patch_view replaces the query, and the patched query normalizes to the
 // same canonical form as a declared one — a heredoc patch and a one-liner
 // declaration of the same SQL diff clean.
@@ -263,12 +385,19 @@ database "posthog" {
 	require.ErrorContains(t, applyDictionaryPatches(&bad), `patch_dictionary "nope" references unknown dictionary`)
 }
 
-// patch_view / patch_dictionary sites scan as patches, so the once-only
+// patch_materialized_view / patch_view / patch_dictionary sites scan as
+// patches, so the once-only
 // audit (locate -duplicates) does not count them as redeclarations.
 func TestPatchViewDictionary_LocateExempt(t *testing.T) {
 	dir := t.TempDir()
 	path := writeHCL(t, dir, "s.hcl", `
 database "posthog" {
+  materialized_view "mv" {
+    to_table = "events"
+    query    = "SELECT 1"
+  }
+  patch_materialized_view "mv" { query = "SELECT 2" }
+
   view "v" { query = "SELECT 1" }
   patch_view "v" { query = "SELECT 2" }
 
@@ -278,11 +407,13 @@ database "posthog" {
 `)
 	decls, err := ScanDeclarations([]string{path})
 	require.NoError(t, err)
-	require.Len(t, decls, 4)
-	assert.True(t, decls[1].Patch, "patch_view is a patch site")
-	assert.Equal(t, KindView, decls[1].ObjectType)
-	assert.True(t, decls[3].Patch, "patch_dictionary is a patch site")
-	assert.Equal(t, KindDictionary, decls[3].ObjectType)
+	require.Len(t, decls, 6)
+	assert.True(t, decls[1].Patch, "patch_materialized_view is a patch site")
+	assert.Equal(t, KindMaterializedView, decls[1].ObjectType)
+	assert.True(t, decls[3].Patch, "patch_view is a patch site")
+	assert.Equal(t, KindView, decls[3].ObjectType)
+	assert.True(t, decls[5].Patch, "patch_dictionary is a patch site")
+	assert.Equal(t, KindDictionary, decls[5].ObjectType)
 
 	assert.Empty(t, FindDuplicates(decls), "patches never count toward the once-only audit")
 }

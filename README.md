@@ -1173,8 +1173,8 @@ on top of earlier ones.
   one **replaces it wholesale** (a one-key `settings` map loses every
   inherited key). `primary_key`, `comment`, `cluster`, constraints, and
   projections never flow through `extend`.
-- `override = true` — required for a later layer to replace a table that
-  an earlier layer already defined
+- `override = true` — required for a later layer to replace a table or
+  materialized view that an earlier layer already defined
 
 Rule of thumb: `extend` is for *different tables sharing a shape*
 (`events_local` / `events_distributed`); `patch_table` (below) is for *the
@@ -1213,6 +1213,7 @@ so the table itself stays declared once and an environment layer carries
 just its delta: columns (add — appended or positioned with
 `after`/`first` — plus `modify_column` / `drop_columns`), indexes
 (add — likewise positioned — / `drop_indexes`),
+projections (add),
 `order_by`/`partition_by`/`sample_by`/`ttl`
 (replace when set), the `engine` block (wholesale replace — e.g. a
 Distributed target that moves with the env's topology), and `settings`
@@ -1228,12 +1229,13 @@ database "posthog" {
 }
 ```
 
-`patch_view` and `patch_dictionary` do the same for views (`query`,
-`comment`) and dictionaries (`source`/`layout`/`lifetime` replace,
-`settings` merge). See the
+`patch_materialized_view` does the same for MV queries and output columns;
+its column operations run after `extend`, so inherited columns are patchable.
+`patch_view` and `patch_dictionary` cover views (`query`, `comment`) and
+dictionaries (`source`/`layout`/`lifetime` replace, `settings` merge). See the
 [`patch_table` reference](docs/README.hcl.md#patch_table).
 
-After resolution, `extend` / `abstract` / `patch_table` are all consumed
+After resolution, `extend` / `abstract` / patch blocks are all consumed
 and every table is flat with its effective columns, engine, and settings.
 
 ## Development
