@@ -618,11 +618,12 @@ which question you are asking:
   different."* A full replacement declaration, sanctioned by the flag.
 
 The declaration count is not cosmetic: `hclexp locate -duplicates` (the
-once-only CI guard) treats `patch_table` and `override` sites as
-legitimate, but an extend-child-per-environment pattern is N distinct
-declarations — `extend` cannot express "the same table, varied per env",
-and using it that way reintroduces the duplication the layer discipline
-exists to prevent.
+once-only CI guard) counts definition sites, while treating patch,
+`override`, and `extend` sites as sanctioned refinements. This permits a
+same-name extend child per disjoint environment stack: the shared column set
+stays on the abstract parent, and each child carries only its local engine,
+ordering, or additive columns. Two copied abstracts still count as two
+definitions and are flagged.
 
 The other asymmetry worth internalizing: **`extend`'s `settings` replace
 wholesale, `patch_table`'s `settings` merge (patch wins per key)**. An
@@ -920,14 +921,14 @@ hclexp locate -manifest manifest.hcl -layer-root ./schema -dump ./dumps events
 # Ad-hoc layer dirs or .hcl files, no manifest required (no placements)
 hclexp locate -layer ./schema/shared,./schema/ingestion events
 
-# CI guard: any object declared at more than one plain site exits 1
+# CI guard: any object defined at more than one site exits 1
 hclexp locate -manifest manifest.hcl -layer-root ./schema -duplicates
 ```
 
 For each matching object (tables, MVs, views, dictionaries, named
 collections, raw blocks), `locate` lists every declaration site as
-`file:line` plus its control flags (`[abstract]`, `[override]`,
-`[patch_table]`, `extends <parent>`, `[raw <kind>]`), and derives the
+`file:line` plus its control flags (`[abstract]`, `[override]`, an
+object-specific `[patch_*]`, `extends <parent>`, `[raw <kind>]`), and derives the
 **placements**: the (role, env) stacks whose manifest layer lists include
 the declaring layer. Unlike `plan`/`load`, the manifest is read across
 *all* envs. An object extended by others cross-links its children
@@ -948,11 +949,13 @@ object types share — so a stray `view "events"` next to a `table
 `-duplicates` (no name argument; requires `-manifest` or `-layer`) audits
 the once-only discipline: `load`/compose only reject a redeclaration when
 the two layers meet in one stack, so two layers that never co-compose can
-silently hold divergent copies of the same object. A site is a *plain*
-declaration unless it is a `patch_table` (additive), has `override =
-true` (deliberate replacement), or is `abstract` (dropped at resolve);
-any object with two or more plain sites is reported and the command
-exits 1.
+silently hold divergent copies of the same object. A definition site is a
+declaration that is not a patch or override and does not carry `extend`.
+Objects with two or more definition sites are reported and the command exits
+1; their output still includes every refinement site. Abstract declarations
+count as definitions, because copying a template copies its schema even though
+the abstract itself is dropped during resolution. An in-stack same-name
+redeclaration remains a compose error regardless of this cross-stack audit.
 
 Exit codes: 0 found / no duplicates; 1 any pattern without a match,
 duplicates found, or a load error; 2 usage.

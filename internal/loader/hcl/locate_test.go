@@ -140,6 +140,7 @@ func TestFindDuplicates(t *testing.T) {
 		// Plain duplicate: two plain declarations of posthog.person.
 		{ObjectType: KindTable, Database: "posthog", Name: "person", File: "b/aux.hcl", Line: 2},
 		{ObjectType: KindTable, Database: "posthog", Name: "person", File: "a/shared.hcl", Line: 10},
+		{ObjectType: KindTable, Database: "posthog", Name: "person", File: "c/refinement.hcl", Line: 8, Extends: "person_base"},
 		// Legitimate: base + override.
 		{ObjectType: KindTable, Database: "posthog", Name: "events", File: "a/shared.hcl", Line: 20},
 		{ObjectType: KindTable, Database: "posthog", Name: "events", File: "c/prod.hcl", Line: 3, Override: true},
@@ -149,6 +150,18 @@ func TestFindDuplicates(t *testing.T) {
 		// Legitimate: abstract base + same-named concrete child.
 		{ObjectType: KindTable, Database: "posthog", Name: "sessions", File: "a/shared.hcl", Line: 40, Abstract: true},
 		{ObjectType: KindTable, Database: "posthog", Name: "sessions", File: "c/prod.hcl", Line: 15, Extends: "sessions"},
+		// Legitimate refinement: a plain declaration plus a same-name extend
+		// declaration in a disjoint stack has only one defining site.
+		{ObjectType: KindTable, Database: "posthog", Name: "raw_sessions", File: "a/shared.hcl", Line: 45},
+		{ObjectType: KindTable, Database: "posthog", Name: "raw_sessions", File: "c/satellite.hcl", Line: 4, Extends: "raw_sessions_base"},
+		// Legitimate refinements: two same-name extend declarations share a
+		// common abstract shape but each carries only its site's delta.
+		{ObjectType: KindTable, Database: "posthog", Name: "events", File: "b/data.hcl", Line: 6, Extends: "events_base"},
+		{ObjectType: KindTable, Database: "posthog", Name: "events", File: "c/satellite.hcl", Line: 12, Extends: "events_base"},
+		// Abstract is still a definition: copying the same abstract shape at
+		// two sites is a real duplicate even though neither materializes.
+		{ObjectType: KindTable, Database: "posthog", Name: "copied_base", File: "a/shared.hcl", Line: 47, Abstract: true},
+		{ObjectType: KindTable, Database: "posthog", Name: "copied_base", File: "b/aux.hcl", Line: 5, Abstract: true},
 		// Cross-type duplicate: table and raw table share the namespace.
 		{ObjectType: KindTable, Database: "posthog", Name: "legacy", File: "a/shared.hcl", Line: 50},
 		{ObjectType: KindRaw, Database: "posthog", Name: "legacy", File: "b/aux.hcl", Line: 8, RawKind: "table"},
@@ -166,6 +179,10 @@ func TestFindDuplicates(t *testing.T) {
 			{ObjectType: KindNamedCollection, Name: "kafka_creds", File: "a/shared.hcl", Line: 60},
 			{ObjectType: KindNamedCollection, Name: "kafka_creds", File: "b/aux.hcl", Line: 12},
 		}},
+		{Database: "posthog", Name: "copied_base", Declarations: []Declaration{
+			{ObjectType: KindTable, Database: "posthog", Name: "copied_base", File: "a/shared.hcl", Line: 47, Abstract: true},
+			{ObjectType: KindTable, Database: "posthog", Name: "copied_base", File: "b/aux.hcl", Line: 5, Abstract: true},
+		}},
 		{Database: "posthog", Name: "legacy", Declarations: []Declaration{
 			{ObjectType: KindTable, Database: "posthog", Name: "legacy", File: "a/shared.hcl", Line: 50},
 			{ObjectType: KindRaw, Database: "posthog", Name: "legacy", File: "b/aux.hcl", Line: 8, RawKind: "table"},
@@ -173,6 +190,7 @@ func TestFindDuplicates(t *testing.T) {
 		{Database: "posthog", Name: "person", Declarations: []Declaration{
 			{ObjectType: KindTable, Database: "posthog", Name: "person", File: "a/shared.hcl", Line: 10},
 			{ObjectType: KindTable, Database: "posthog", Name: "person", File: "b/aux.hcl", Line: 2},
+			{ObjectType: KindTable, Database: "posthog", Name: "person", File: "c/refinement.hcl", Line: 8, Extends: "person_base"},
 		}},
 	}
 	assert.Equal(t, want, got)

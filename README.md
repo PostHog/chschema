@@ -579,7 +579,7 @@ hclexp locate -manifest manifest.hcl -layer-root ./schema -dump prod/eu events
 # Ad-hoc layer dirs or files, before a manifest exists (no placement info)
 hclexp locate -layer roles/shared,roles/ops/prod events
 
-# CI guard: every object declared at more than one plain site, even
+# CI guard: every object defined at more than one site, even
 # across layers that never co-compose into one stack
 hclexp locate -manifest manifest.hcl -layer-root ./schema -duplicates
 ```
@@ -598,8 +598,8 @@ table posthog.events
 ```
 
 Each site is marked when it is `[abstract]`, an `[override]`
-redeclaration, a `[patch_table]`, an `extends <parent>` child, or a
-`[raw <kind>]` block. An object extended by others lists its children
+redeclaration, an object-specific `[patch_*]`, an `extends <parent>` child,
+or a `[raw <kind>]` block. An object extended by others lists its children
 (`extended by: ...`), and each dump site names its node (from the dump's
 `node {}` block, else the filename).
 
@@ -621,12 +621,12 @@ redeclaration, a `[patch_table]`, an `extends <parent>` child, or a
   "objects": [...]}` / `{"duplicates": [...]}` document with per-site
   file/line/layer/markers/placements)
 - `-duplicates` — takes no name argument and requires `-manifest` or
-  `-layer` (mutually exclusive with `-dump`); lists every object declared
-  at more than one *plain* site and exits non-zero when any is found.
-  `override = true` redeclarations, additive `patch_table` blocks, and
-  `abstract` declarations (dropped at resolve) are exempt — so what
-  remains is exactly the accidental-duplication class that `load` only
-  catches when the two layers co-occur in one stack.
+  `-layer` (mutually exclusive with `-dump`); lists every object defined
+  at more than one site and exits non-zero when any is found. Patch sites,
+  `override = true` redeclarations, and declarations carrying `extend` are
+  refinements rather than definitions and do not count. Abstract declarations
+  do count: copying the same abstract schema is still duplication. Reported
+  groups retain every site, including refinements.
 
 Exit codes: `0` on success, `1` when any pattern matches nothing (a
 scriptable existence check) or `-duplicates` finds any, `2` on usage
