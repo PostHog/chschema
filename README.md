@@ -1229,10 +1229,11 @@ database "posthog" {
 }
 ```
 
-Patch timing follows the target: an abstract-table patch applies before
-`extend` and propagates to every child; a concrete-table patch applies after
-`extend`, so it can modify/drop inherited columns or position additions after
-inherited columns/indexes without changing siblings.
+Tables resolve parent-first, then apply their own patches. A patch can therefore
+modify/drop inherited columns or position additions after inherited
+columns/indexes. Any descendant inherits that completed result, while siblings
+remain on their own inheritance path. Abstract and concrete tables follow the
+same rule.
 
 `patch_materialized_view` does the same for MV queries and output columns;
 its column operations run after `extend`, so inherited columns are patchable.

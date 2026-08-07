@@ -131,9 +131,9 @@ type ViewSpec struct {
 // PatchTableSpec is a cross-layer modification of a table: the table stays
 // declared once, and an env layer patches just its delta (#152, #154).
 // Consumed during resolution; patches accumulate and apply in layer order,
-// before extend when they target an abstract table (so every child inherits
-// the patch), and after extend when they target a concrete table (so inherited
-// columns and indexes are visible). Per-field semantics:
+// after their target inherits its parent and before any child inherits the
+// resolved target. Inherited columns and indexes are therefore visible, and
+// every descendant sees the patched result. Per-field semantics:
 //
 //   - Columns add (a name already on the target errors); ModifyColumns
 //     replace an existing column in place (an unknown name errors);

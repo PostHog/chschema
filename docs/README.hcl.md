@@ -402,16 +402,13 @@ field:
   A table that differs beyond the patchable fields is genuinely different
   — use `override = true`.
 
-The target must exist somewhere in the merged config. Patches accumulate
-across layers and apply in layer order (a later layer's patch wins), in two
-phases:
-
-- A patch targeting an **abstract table** applies before `extend`, so every
-  child inherits the patched base.
-- A patch targeting a **concrete table** applies after `extend`, so it can
-  modify/drop inherited columns and position new columns or indexes relative
-  to inherited names. It changes only that concrete target; siblings and
-  tables extending a concrete parent do not inherit the patch.
+The target must exist somewhere in the merged config. Tables resolve
+parent-first: a table inherits its parent's resolved shape, then its own
+child-local `patch_column` blocks apply, followed by its `patch_table` deltas
+in layer order. Consequently a patch can modify/drop inherited columns or
+position new columns/indexes relative to inherited names. A child that extends
+the patched table inherits that completed shape; siblings inherit only their
+own parent path. This rule is identical for abstract and concrete tables.
 
 `patch_table` lives at any layer.
 
@@ -601,11 +598,12 @@ When the loader processes a layered set, this pipeline runs:
 2. **Merge** databases by name. Tables and materialized views collide on name
    unless the later declaration sets `override = true`. Patch blocks
    accumulate.
-3. **Apply abstract-table patches** before inheritance, plus view/dictionary
-   patches. Abstract-table deltas therefore propagate into every child.
-4. **Resolve table `extend` chains**, then apply concrete-table patches so
-   their column/index operations can target inherited members. Resolve MV
-   inheritance next, then apply `patch_materialized_view` for the same reason.
+3. **Apply view/dictionary patches.** Table patches remain attached to their
+   named targets while the inheritance graph resolves.
+4. **Resolve each table parent-first**: inherit the resolved parent, apply
+   child-local `patch_column`, then apply every `patch_table` for that target.
+   Descendants therefore inherit the completed result. Resolve MV inheritance
+   next, then apply `patch_materialized_view`.
 5. **Drop abstract tables and materialized views** from the emit set.
 6. **Validate** the remaining objects — including the engine requirement for
    concrete tables and `to_table`/`query` requirements for MVs.

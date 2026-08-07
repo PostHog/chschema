@@ -17,9 +17,6 @@ func Resolve(s *Schema) error {
 		return err
 	}
 	for di := range s.Databases {
-		if err := applyAbstractTablePatches(&s.Databases[di]); err != nil {
-			return err
-		}
 		if err := applyViewPatches(&s.Databases[di]); err != nil {
 			return err
 		}
@@ -225,31 +222,7 @@ func validateViews(db *DatabaseSpec) error {
 	return nil
 }
 
-// applyPatches applies every queued table patch immediately. Resolve uses the
-// phase-specific wrappers below; this flat-schema primitive remains useful to
-// callers that already have a fully composed target shape.
 func applyPatches(db *DatabaseSpec) error {
-	return applyMatchingTablePatches(db, func(*TableSpec) bool { return true })
-}
-
-// applyAbstractTablePatches runs before extend resolution so changes to an
-// abstract base continue to flow into every child. Concrete-targeted patches
-// remain queued until each table has inherited its parent shape.
-func applyAbstractTablePatches(db *DatabaseSpec) error {
-	return applyMatchingTablePatches(db, func(table *TableSpec) bool { return table.Abstract })
-}
-
-// applyConcreteTablePatches runs after extend resolution, allowing patches on
-// a concrete child to modify/drop inherited columns and position additions
-// relative to inherited columns or indexes.
-func applyConcreteTablePatches(db *DatabaseSpec) error {
-	return applyMatchingTablePatches(db, func(table *TableSpec) bool { return !table.Abstract })
-}
-
-// applyMatchingTablePatches applies matching patches in layer order and keeps
-// unmatched patches queued for the other resolution phase. Target existence
-// is validated in the first phase even when that target's patch applies later.
-func applyMatchingTablePatches(db *DatabaseSpec, matches func(*TableSpec) bool) error {
 	if len(db.Patches) == 0 {
 		return nil
 	}
@@ -257,25 +230,16 @@ func applyMatchingTablePatches(db *DatabaseSpec, matches func(*TableSpec) bool) 
 	for i := range db.Tables {
 		indexByName[db.Tables[i].Name] = i
 	}
-	remaining := make([]PatchTableSpec, 0, len(db.Patches))
 	for _, patch := range db.Patches {
 		idx, ok := indexByName[patch.Name]
 		if !ok {
 			return fmt.Errorf("%s: patch_table %q references unknown table", db.Name, patch.Name)
 		}
-		if !matches(&db.Tables[idx]) {
-			remaining = append(remaining, patch)
-			continue
-		}
 		if err := applyTablePatch(db.Name, &db.Tables[idx], patch); err != nil {
 			return err
 		}
 	}
-	if len(remaining) == 0 {
-		db.Patches = nil
-	} else {
-		db.Patches = remaining
-	}
+	db.Patches = nil
 	return nil
 }
 
@@ -515,18 +479,23 @@ func resolveDatabase(db *DatabaseSpec) error {
 		}
 		indexByName[name] = i
 	}
+	patchesByName := make(map[string][]PatchTableSpec, len(db.Patches))
+	for _, patch := range db.Patches {
+		if _, ok := indexByName[patch.Name]; !ok {
+			return fmt.Errorf("%s: patch_table %q references unknown table", db.Name, patch.Name)
+		}
+		patchesByName[patch.Name] = append(patchesByName[patch.Name], patch)
+	}
 
 	resolved := make(map[string]bool, len(db.Tables))
 	visiting := make(map[string]bool, len(db.Tables))
 
 	for i := range db.Tables {
-		if err := resolveTable(db, i, indexByName, resolved, visiting); err != nil {
+		if err := resolveTable(db, i, indexByName, patchesByName, resolved, visiting); err != nil {
 			return err
 		}
 	}
-	if err := applyConcreteTablePatches(db); err != nil {
-		return err
-	}
+	db.Patches = nil
 
 	// MV resolution must happen BEFORE the abstract-table drop below, so
 	// abstract parents are still present in db.Tables / indexByName when
@@ -786,7 +755,7 @@ func validateColumns(db string, t TableSpec) error {
 	return nil
 }
 
-func resolveTable(db *DatabaseSpec, idx int, indexByName map[string]int, resolved, visiting map[string]bool) error {
+func resolveTable(db *DatabaseSpec, idx int, indexByName map[string]int, patchesByName map[string][]PatchTableSpec, resolved, visiting map[string]bool) error {
 	t := &db.Tables[idx]
 	if resolved[t.Name] {
 		return nil
@@ -795,31 +764,35 @@ func resolveTable(db *DatabaseSpec, idx int, indexByName map[string]int, resolve
 		return fmt.Errorf("%s.%s: cycle in extend chain", db.Name, t.Name)
 	}
 
-	if t.Extend == nil {
+	if t.Extend != nil {
+		parentName := *t.Extend
+		parentIdx, ok := indexByName[parentName]
+		if !ok {
+			return fmt.Errorf("%s.%s: extend references unknown table %q", db.Name, t.Name, parentName)
+		}
+
+		visiting[t.Name] = true
+		if err := resolveTable(db, parentIdx, indexByName, patchesByName, resolved, visiting); err != nil {
+			return err
+		}
+		delete(visiting, t.Name)
+
+		parent := &db.Tables[parentIdx]
+		if err := mergeParent(t, parent); err != nil {
+			return fmt.Errorf("%s.%s: %w", db.Name, t.Name, err)
+		}
+		t.Extend = nil
+	} else {
 		if len(t.ColumnPatches) > 0 {
 			return fmt.Errorf("%s.%s: patch_column requires extend", db.Name, t.Name)
 		}
-		resolved[t.Name] = true
-		return nil
 	}
 
-	parentName := *t.Extend
-	parentIdx, ok := indexByName[parentName]
-	if !ok {
-		return fmt.Errorf("%s.%s: extend references unknown table %q", db.Name, t.Name, parentName)
+	for _, patch := range patchesByName[t.Name] {
+		if err := applyTablePatch(db.Name, t, patch); err != nil {
+			return err
+		}
 	}
-
-	visiting[t.Name] = true
-	if err := resolveTable(db, parentIdx, indexByName, resolved, visiting); err != nil {
-		return err
-	}
-	delete(visiting, t.Name)
-
-	parent := &db.Tables[parentIdx]
-	if err := mergeParent(t, parent); err != nil {
-		return fmt.Errorf("%s.%s: %w", db.Name, t.Name, err)
-	}
-	t.Extend = nil
 	resolved[t.Name] = true
 	return nil
 }

@@ -141,10 +141,10 @@ func TestLoadLayers_PatchPropagatesThroughExtend(t *testing.T) {
 	}, tbl.Columns)
 }
 
-// A patch addressed to a concrete extend child applies after inheritance, so
-// every column/index operation can refer to inherited members. The sibling
-// child remains untouched; abstract-targeted propagation is covered above.
-func TestLoadLayers_ConcretePatchAppliesAfterExtend(t *testing.T) {
+// Every table resolves parent-first and then applies its own patches. The
+// target can therefore refer to inherited members, its sibling stays
+// untouched, and a grandchild inherits the target's fully patched shape.
+func TestLoadLayers_TablePatchAppliesAfterTargetInheritance(t *testing.T) {
 	root := t.TempDir()
 	base := writePatchLayer(t, root, "base/events.hcl", `
 database "posthog" {
@@ -173,6 +173,10 @@ database "posthog" {
     order_by = ["uuid"]
     engine "merge_tree" {}
   }
+
+  table "regional_events" {
+    extend = "sharded_events"
+  }
 }`)
 	env := writePatchLayer(t, root, "env/events.hcl", `
 database "posthog" {
@@ -199,7 +203,7 @@ database "posthog" {
 	require.NoError(t, err)
 	require.NoError(t, Resolve(schema))
 	db := schema.Databases[0]
-	require.Len(t, db.Tables, 2)
+	require.Len(t, db.Tables, 3)
 	names := func(columns []ColumnSpec) []string {
 		out := make([]string, len(columns))
 		for i := range columns {
@@ -222,7 +226,14 @@ database "posthog" {
 	assert.Equal(t, []string{"uuid", "event", "properties", "legacy"}, names(sibling.Columns))
 	require.Len(t, sibling.Indexes, 1)
 	assert.Equal(t, "idx_event", sibling.Indexes[0].Name)
-	assert.Empty(t, db.Patches, "both patch phases consume their patches")
+
+	grandchild := db.Tables[2]
+	assert.Equal(t, "regional_events", grandchild.Name)
+	assert.Equal(t, []string{"uuid", "event", "mat_x", "properties"}, names(grandchild.Columns))
+	require.NotNil(t, grandchild.Columns[3].Materialized)
+	assert.Equal(t, "lower(event)", *grandchild.Columns[3].Materialized)
+	assert.Equal(t, []string{"idx_event", "idx_mat_x"}, []string{grandchild.Indexes[0].Name, grandchild.Indexes[1].Name})
+	assert.Empty(t, db.Patches, "table patches are consumed during resolution")
 }
 
 // TestLoadLayers_LaterLayerKeepsAllObjectTypes locks issue #80: an object
