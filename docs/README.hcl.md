@@ -409,6 +409,10 @@ in layer order. Consequently a patch can modify/drop inherited columns or
 position new columns/indexes relative to inherited names. A child that extends
 the patched table inherits that completed shape; siblings inherit only their
 own parent path. This rule is identical for abstract and concrete tables.
+The main README's
+[parent-first composition model](../README.md#core-composition-model-parent-first-resolution)
+contains the complete algorithm, propagation diagram, and multi-level worked
+example.
 
 `patch_table` lives at any layer.
 

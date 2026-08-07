@@ -13,8 +13,9 @@ state, and round-tripped against a live cluster.
    tables, materialized views, plain views, dictionaries, and named
    collections.
 2. **Load & resolve** — read an HCL schema (a single file or a stack of
-   layer directories), apply inheritance/patching, and emit the resolved,
-   flat schema as canonical HCL.
+   layer directories), apply the deterministic
+   [parent-first composition model](#core-composition-model-parent-first-resolution),
+   and emit the resolved, flat schema as canonical HCL.
 3. **Validate** — check that every cross-object reference (MV sources +
    destination, view sources, Distributed `remote_*`) in a resolved
    schema is satisfied, without connecting to a cluster.
@@ -1161,6 +1162,146 @@ Field names drop the `kafka_` prefix (implicit inside `engine "kafka"`). The `ex
 Layers let a base schema be specialized per environment. `-layer a,b,c`
 loads every `.hcl` file under each directory in order; later layers merge
 on top of earlier ones.
+
+### Core composition model: parent-first resolution
+
+This is the central mechanic of hclexp. Authored HCL may be spread across
+layers, inheritance parents, child-local column specializations, and
+environment patches, but the desired schema is always reduced to one flat
+table by the same rule:
+
+Before resolving inheritance, hclexp merges the selected layers in their
+declared order. A later `override = true` replaces the earlier declaration;
+patch blocks are collected rather than applied during that merge. The resolver
+then evaluates the table graph below.
+
+```text
+resolved(table) =
+  apply that table's patch_table blocks, in layer order, to
+    merge the table's declaration with its fully resolved parent
+```
+
+More explicitly, resolving a table performs these steps:
+
+1. **Resolve its parent recursively.** If the table has `extend`, the parent is
+   completed first—including every `patch_table` addressed to that parent.
+   Resolution is dependency-driven, so file/declaration order does not change
+   the result.
+2. **Build the child from the resolved parent and its own declaration.** Parent
+   columns come first. Child-local `patch_column` blocks partially specialize
+   inherited columns in place; ordinary child `column` blocks then append.
+   Parent and child indexes are combined similarly. Inheritable scalar fields
+   such as `engine`, `order_by`, and `settings` flow from the parent only when
+   the child does not declare its own value.
+3. **Apply `patch_table` blocks addressed to this table.** Patches run in layer
+   order, and each patch sees the result of the previous one. At this point the
+   complete inherited shape exists, so `modify_column`/`drop_columns` can target
+   inherited columns and positioned column/index additions can use inherited
+   names in `after`.
+4. **Publish the completed table to its descendants.** A child extending this
+   table inherits the patched result. A sibling does not: it resolves through
+   its own parent path.
+5. **Discard resolution-only syntax.** Once the graph is resolved,
+   `extend`, `abstract`, `patch_column`, and patch blocks are consumed;
+   abstract tables are removed, and the emitted desired schema is flat.
+
+There is no abstract-versus-concrete exception. Abstract tables participate in
+the same algorithm and are removed only after their descendants have inherited
+their resolved shapes. Likewise, a concrete table may be extended, and its
+descendants inherit its completed patched shape.
+
+The important propagation rule is therefore:
+
+```text
+patch parent  → parent and every descendant
+patch child   → child and that child's descendants
+sibling       → unaffected
+```
+
+For example, consider this inheritance graph:
+
+```text
+_event_base (abstract)
+├── events
+└── sharded_events
+    └── regional_events
+```
+
+It can be authored and specialized across layers like this:
+
+```hcl
+# base layer
+database "posthog" {
+  table "_event_base" {
+    abstract = true
+    column "uuid"       { type = "UUID" }
+    column "event"      { type = "String" }
+    column "properties" { type = "String" }
+  }
+
+  table "events" {
+    extend   = "_event_base"
+    order_by = ["uuid"]
+    engine "merge_tree" {}
+  }
+
+  table "sharded_events" {
+    extend   = "_event_base"
+    order_by = ["uuid"]
+    patch_column "uuid" { codec = "ZSTD(1)" }
+    engine "merge_tree" {}
+  }
+
+  table "regional_events" {
+    extend = "sharded_events"
+  }
+}
+
+# environment layer
+database "posthog" {
+  patch_table "sharded_events" {
+    modify_column "properties" {
+      type         = "String"
+      materialized = "lower(event)"
+    }
+    column "region" {
+      type  = "LowCardinality(String)"
+      after = "event"
+    }
+  }
+}
+```
+
+The resolved output has these effective shapes:
+
+| Table | Effective columns |
+|-------|-------------------|
+| `events` | `uuid`, `event`, `properties` |
+| `sharded_events` | `uuid CODEC(ZSTD(1))`, `event`, `region`, `properties MATERIALIZED lower(event)` |
+| `regional_events` | the completed `sharded_events` shape, including `region` and the materialized `properties` |
+| `_event_base` | not emitted (`abstract = true`) |
+
+This ordering is also why `patch_column` and `modify_column` are different:
+`patch_column` is a partial, child-local overlay applied while inheritance is
+being merged; `modify_column` is a full column replacement from a cross-layer
+`patch_table`, applied after the target's inherited shape exists.
+
+The resolver enforces several safety invariants around this model:
+
+- Inheritance copies the resolved parent shape into the child; specializing or
+  patching a child never mutates its parent or siblings.
+- A normal child `column`/`index` block is an addition. Reusing an inherited
+  name is an error; use `patch_column` for a partial inherited-column overlay or
+  `patch_table.modify_column` for a full cross-layer replacement.
+- Unknown parents, inheritance cycles, unknown patch targets, missing
+  modify/drop targets, and invalid `after` references fail resolution rather
+  than silently producing a different shape.
+- Patches keep layer order. A later patch observes and may deliberately build
+  on earlier patches for the same table.
+- Downstream diffing and SQL generation see only the final flat tables—not
+  inheritance or patch control syntax.
+
+### Inheritance and patching vocabulary
 
 **Table inheritance** within a database:
 
