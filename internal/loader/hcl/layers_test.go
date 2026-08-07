@@ -141,6 +141,90 @@ func TestLoadLayers_PatchPropagatesThroughExtend(t *testing.T) {
 	}, tbl.Columns)
 }
 
+// A patch addressed to a concrete extend child applies after inheritance, so
+// every column/index operation can refer to inherited members. The sibling
+// child remains untouched; abstract-targeted propagation is covered above.
+func TestLoadLayers_ConcretePatchAppliesAfterExtend(t *testing.T) {
+	root := t.TempDir()
+	base := writePatchLayer(t, root, "base/events.hcl", `
+database "posthog" {
+  table "_event_base" {
+    abstract = true
+    column "uuid"       { type = "UUID" }
+    column "event"      { type = "String" }
+    column "properties" { type = "String" }
+    column "legacy"     { type = "UInt8" }
+    index "idx_event" {
+      expr        = "event"
+      type        = "set(100)"
+      granularity = 1
+    }
+  }
+
+  table "sharded_events" {
+    extend   = "_event_base"
+    order_by = ["uuid"]
+    patch_column "uuid" { codec = "ZSTD(1)" }
+    engine "merge_tree" {}
+  }
+
+  table "events" {
+    extend   = "_event_base"
+    order_by = ["uuid"]
+    engine "merge_tree" {}
+  }
+}`)
+	env := writePatchLayer(t, root, "env/events.hcl", `
+database "posthog" {
+  patch_table "sharded_events" {
+    modify_column "properties" {
+      type         = "String"
+      materialized = "lower(event)"
+    }
+    drop_columns = ["legacy"]
+    column "mat_x" {
+      type  = "String"
+      after = "event"
+    }
+    index "idx_mat_x" {
+      expr        = "mat_x"
+      type        = "minmax"
+      granularity = 1
+      after       = "idx_event"
+    }
+  }
+}`)
+
+	schema, err := LoadLayers([]string{base, env})
+	require.NoError(t, err)
+	require.NoError(t, Resolve(schema))
+	db := schema.Databases[0]
+	require.Len(t, db.Tables, 2)
+	names := func(columns []ColumnSpec) []string {
+		out := make([]string, len(columns))
+		for i := range columns {
+			out[i] = columns[i].Name
+		}
+		return out
+	}
+
+	sharded := db.Tables[0]
+	assert.Equal(t, "sharded_events", sharded.Name)
+	assert.Equal(t, []string{"uuid", "event", "mat_x", "properties"}, names(sharded.Columns))
+	require.NotNil(t, sharded.Columns[0].Codec)
+	assert.Equal(t, "ZSTD(1)", *sharded.Columns[0].Codec, "child-local patch_column survives")
+	require.NotNil(t, sharded.Columns[3].Materialized)
+	assert.Equal(t, "lower(event)", *sharded.Columns[3].Materialized)
+	assert.Equal(t, []string{"idx_event", "idx_mat_x"}, []string{sharded.Indexes[0].Name, sharded.Indexes[1].Name})
+
+	sibling := db.Tables[1]
+	assert.Equal(t, "events", sibling.Name)
+	assert.Equal(t, []string{"uuid", "event", "properties", "legacy"}, names(sibling.Columns))
+	require.Len(t, sibling.Indexes, 1)
+	assert.Equal(t, "idx_event", sibling.Indexes[0].Name)
+	assert.Empty(t, db.Patches, "both patch phases consume their patches")
+}
+
 // TestLoadLayers_LaterLayerKeepsAllObjectTypes locks issue #80: an object
 // declared in a LATER layer, for a database already seen in an EARLIER layer,
 // must survive the merge. Before the fix, mergeIntoDatabase never iterated

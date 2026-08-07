@@ -1229,6 +1229,11 @@ database "posthog" {
 }
 ```
 
+Patch timing follows the target: an abstract-table patch applies before
+`extend` and propagates to every child; a concrete-table patch applies after
+`extend`, so it can modify/drop inherited columns or position additions after
+inherited columns/indexes without changing siblings.
+
 `patch_materialized_view` does the same for MV queries and output columns;
 its column operations run after `extend`, so inherited columns are patchable.
 `patch_view` and `patch_dictionary` cover views (`query`, `comment`) and
@@ -1269,4 +1274,3 @@ MIT — see [LICENSE](LICENSE).
 `chschema` links against [HCL](https://github.com/hashicorp/hcl) (MPL-2.0)
 and [clickhouse-go](https://github.com/ClickHouse/clickhouse-go) (Apache-2.0);
 their licenses apply to those components.
-
