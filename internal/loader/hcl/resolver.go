@@ -17,7 +17,7 @@ func Resolve(s *Schema) error {
 		return err
 	}
 	for di := range s.Databases {
-		if err := applyPatches(&s.Databases[di]); err != nil {
+		if err := applyAbstractTablePatches(&s.Databases[di]); err != nil {
 			return err
 		}
 		if err := applyViewPatches(&s.Databases[di]); err != nil {
@@ -225,7 +225,31 @@ func validateViews(db *DatabaseSpec) error {
 	return nil
 }
 
+// applyPatches applies every queued table patch immediately. Resolve uses the
+// phase-specific wrappers below; this flat-schema primitive remains useful to
+// callers that already have a fully composed target shape.
 func applyPatches(db *DatabaseSpec) error {
+	return applyMatchingTablePatches(db, func(*TableSpec) bool { return true })
+}
+
+// applyAbstractTablePatches runs before extend resolution so changes to an
+// abstract base continue to flow into every child. Concrete-targeted patches
+// remain queued until each table has inherited its parent shape.
+func applyAbstractTablePatches(db *DatabaseSpec) error {
+	return applyMatchingTablePatches(db, func(table *TableSpec) bool { return table.Abstract })
+}
+
+// applyConcreteTablePatches runs after extend resolution, allowing patches on
+// a concrete child to modify/drop inherited columns and position additions
+// relative to inherited columns or indexes.
+func applyConcreteTablePatches(db *DatabaseSpec) error {
+	return applyMatchingTablePatches(db, func(table *TableSpec) bool { return !table.Abstract })
+}
+
+// applyMatchingTablePatches applies matching patches in layer order and keeps
+// unmatched patches queued for the other resolution phase. Target existence
+// is validated in the first phase even when that target's patch applies later.
+func applyMatchingTablePatches(db *DatabaseSpec, matches func(*TableSpec) bool) error {
 	if len(db.Patches) == 0 {
 		return nil
 	}
@@ -233,16 +257,25 @@ func applyPatches(db *DatabaseSpec) error {
 	for i := range db.Tables {
 		indexByName[db.Tables[i].Name] = i
 	}
+	remaining := make([]PatchTableSpec, 0, len(db.Patches))
 	for _, patch := range db.Patches {
 		idx, ok := indexByName[patch.Name]
 		if !ok {
 			return fmt.Errorf("%s: patch_table %q references unknown table", db.Name, patch.Name)
 		}
+		if !matches(&db.Tables[idx]) {
+			remaining = append(remaining, patch)
+			continue
+		}
 		if err := applyTablePatch(db.Name, &db.Tables[idx], patch); err != nil {
 			return err
 		}
 	}
-	db.Patches = nil
+	if len(remaining) == 0 {
+		db.Patches = nil
+	} else {
+		db.Patches = remaining
+	}
 	return nil
 }
 
@@ -490,6 +523,9 @@ func resolveDatabase(db *DatabaseSpec) error {
 		if err := resolveTable(db, i, indexByName, resolved, visiting); err != nil {
 			return err
 		}
+	}
+	if err := applyConcreteTablePatches(db); err != nil {
+		return err
 	}
 
 	// MV resolution must happen BEFORE the abstract-table drop below, so

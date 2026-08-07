@@ -403,8 +403,16 @@ field:
   — use `override = true`.
 
 The target must exist somewhere in the merged config. Patches accumulate
-across layers and apply in layer order (a later layer's patch wins), before
-`extend` resolution — so patching an abstract base patches every child.
+across layers and apply in layer order (a later layer's patch wins), in two
+phases:
+
+- A patch targeting an **abstract table** applies before `extend`, so every
+  child inherits the patched base.
+- A patch targeting a **concrete table** applies after `extend`, so it can
+  modify/drop inherited columns and position new columns or indexes relative
+  to inherited names. It changes only that concrete target; siblings and
+  tables extending a concrete parent do not inherit the patch.
+
 `patch_table` lives at any layer.
 
 ## `patch_materialized_view` / `patch_view` / `patch_dictionary`
@@ -593,11 +601,11 @@ When the loader processes a layered set, this pipeline runs:
 2. **Merge** databases by name. Tables and materialized views collide on name
    unless the later declaration sets `override = true`. Patch blocks
    accumulate.
-3. **Apply table/view/dictionary patches** in layer order: columns
-   modify/drop/add, indexes/projections add, scalar clauses and
-   engine/query/source replace, settings patch-wins.
-4. **Resolve `extend` chains**, then apply `patch_materialized_view` so its
-   column operations can target inherited MV columns.
+3. **Apply abstract-table patches** before inheritance, plus view/dictionary
+   patches. Abstract-table deltas therefore propagate into every child.
+4. **Resolve table `extend` chains**, then apply concrete-table patches so
+   their column/index operations can target inherited members. Resolve MV
+   inheritance next, then apply `patch_materialized_view` for the same reason.
 5. **Drop abstract tables and materialized views** from the emit set.
 6. **Validate** the remaining objects — including the engine requirement for
    concrete tables and `to_table`/`query` requirements for MVs.

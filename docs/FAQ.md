@@ -289,6 +289,11 @@ add/drop, and merged `settings` — see the
 (`primary_key`, `comment`, constraints, or projection removal/redefinition) marks a table that
 genuinely differs: use `override = true` there.
 
+For an `extend` child, a concrete-targeted patch runs after inheritance, so
+`modify_column`, `drop_columns`, and positioned column/index additions can
+refer to inherited names. A patch targeting an abstract table still runs
+before inheritance and propagates to all of its children.
+
 ## How do I vary a Distributed table's target per environment?
 
 The common case: dev is single-cluster while prod has satellite clusters, so
