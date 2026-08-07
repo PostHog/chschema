@@ -289,10 +289,10 @@ add/drop, and merged `settings` — see the
 (`primary_key`, `comment`, constraints, or projection removal/redefinition) marks a table that
 genuinely differs: use `override = true` there.
 
-For an `extend` child, a concrete-targeted patch runs after inheritance, so
+Tables resolve parent-first and then apply patches addressed to themselves, so
 `modify_column`, `drop_columns`, and positioned column/index additions can
-refer to inherited names. A patch targeting an abstract table still runs
-before inheritance and propagates to all of its children.
+refer to inherited names. Descendants inherit the patched result. The same
+rule applies to abstract and concrete tables—there is no target-kind exception.
 
 ## How do I vary a Distributed table's target per environment?
 
