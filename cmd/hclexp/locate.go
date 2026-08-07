@@ -418,9 +418,9 @@ func renderDuplicatesText(w io.Writer, doc locateDoc) {
 
 // runLocate answers "where is object X declared?" across a manifest's layer
 // tree, ad-hoc -layer entries, and/or a dump directory, or (with
-// -duplicates) audits the layer tree for objects declared at more than one
-// plain site. Read-only; exits 1 when any pattern matches nothing or
-// duplicates exist, 2 on usage errors.
+// -duplicates) audits the layer tree for objects defined at more than one
+// site. Read-only; exits 1 when any pattern matches nothing or duplicates
+// exist, 2 on usage errors.
 func runLocate(args []string) {
 	fs := flag.NewFlagSet("hclexp locate", flag.ExitOnError)
 	manifestFlag := fs.String("manifest", "", "HCL manifest: role blocks with env blocks; every (role, env) stack is searched")
@@ -428,7 +428,7 @@ func runLocate(args []string) {
 	layersFlag := fs.String("layer", "", "comma-separated ad-hoc layer dirs or .hcl files to search too (or instead of a manifest); no placement info")
 	dumpFlag := fs.String("dump", "", "directory of per-node .hcl dumps to search as well")
 	formatFlag := fs.String("format", "text", "output format: text (default) or json")
-	duplicatesFlag := fs.Bool("duplicates", false, "list every object declared at more than one plain site (override/patch/abstract sites are legitimate); takes no name argument")
+	duplicatesFlag := fs.Bool("duplicates", false, "list every object defined at more than one site (patch/override/extend sites refine; abstracts define); takes no name argument")
 	_ = fs.Parse(args)
 
 	patterns := fs.Args()

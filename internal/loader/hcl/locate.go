@@ -179,11 +179,12 @@ func MatchesPattern(pattern, database, name string) bool {
 	return ok
 }
 
-// DuplicateGroup is one object name declared at more than one site without
-// the inheritance system explaining the extras: patch_table sites are
-// additive, override = true is a deliberate replacement, and abstract
-// declarations are dropped at resolve and never materialize. A group
-// qualifies when at least two plain declarations remain.
+// DuplicateGroup is one object name defined at more than one site without the
+// composition system explaining the extras: patch sites are additive,
+// override = true is a deliberate replacement, and extend-carrying sites
+// refine an inherited definition. Abstract declarations still define schema
+// and therefore count. A group qualifies when at least two definition sites
+// remain.
 type DuplicateGroup struct {
 	Database     string
 	Name         string
@@ -191,9 +192,10 @@ type DuplicateGroup struct {
 }
 
 // FindDuplicates groups declarations by (database, name) — the ClickHouse
-// namespace, which object types share — and returns the groups holding two
-// or more plain (non-patch, non-override, non-abstract) declarations,
-// sorted by database then name.
+// namespace, which object types share — and returns groups holding two or more
+// definition sites: declarations that are not patches or overrides and do not
+// carry extend. Every declaration is retained in a reported group's output.
+// Results are sorted by database then name.
 func FindDuplicates(decls []Declaration) []DuplicateGroup {
 	type key struct{ db, name string }
 	byKey := map[key][]Declaration{}
@@ -203,13 +205,13 @@ func FindDuplicates(decls []Declaration) []DuplicateGroup {
 	}
 	var out []DuplicateGroup
 	for k, group := range byKey {
-		plain := 0
+		definitions := 0
 		for _, d := range group {
-			if !d.Patch && !d.Override && !d.Abstract {
-				plain++
+			if !d.Patch && !d.Override && d.Extends == "" {
+				definitions++
 			}
 		}
-		if plain < 2 {
+		if definitions < 2 {
 			continue
 		}
 		sort.Slice(group, func(i, j int) bool {

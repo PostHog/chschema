@@ -263,8 +263,9 @@ They answer different questions. `extend` says *"these are **different
 tables** that share a shape"* — the child is a new table with its own name
 and engine, and always adds a declaration. `patch_table` says *"this is the
 **same table**, and one layer wants to adjust it"* — the table stays
-declared once, and the patch is a modification, not a declaration
-(`hclexp locate -duplicates` counts extend children, but not patches).
+declared once, and the patch is a modification, not a declaration. For the
+cross-stack once-only audit, `hclexp locate -duplicates` treats both patches
+and extend-carrying sites as refinements rather than definitions.
 
 | Aspect            | `table X { extend = "Y" }`                | `patch_table "Y" { ... }`               |
 | ----------------- | ------------------------------------------ | ---------------------------------------- |
@@ -272,7 +273,7 @@ declared once, and the patch is a modification, not a declaration
 | Engine identity   | `X` has its own engine                     | Unchanged unless the patch carries an `engine` block (wholesale replace) |
 | Can override anything? | Engine, order_by, ttl, settings; inherited columns can be partially specialized with `patch_column` | Columns (add/modify/drop), indexes (add/drop), projections (add), `order_by`/`partition_by`/`sample_by`/`ttl`, engine, settings — not `primary_key`/constraints |
 | `settings` semantics | **Replace wholesale** — a child that sets one key loses every inherited one | **Merge, patch wins per key** — the base keeps its other keys |
-| Declaration count | One per child (env-per-child breaks once-only) | Target stays declared once |
+| Declaration count | One per child; extend sites refine and do not count in `locate -duplicates` | Target stays declared once |
 | Where it lives    | Same layer, typical                        | Any layer (commonly higher overlays)     |
 | Use case          | "Similar but different" tables             | Per-environment deltas on the same table |
 
