@@ -347,6 +347,13 @@ ReplicatedAggregatingMergeTree, Distributed (with optional
 Log, Kafka. See `docs/README.hcl.md` for the
 attribute table.
 
+**ClickHouse Cloud** rewrites MergeTree-family DDL to `Shared*MergeTree`.
+When the connected server reports a `cloud_mode_engine` that rewrites DDL that
+way, introspection reads
+`Shared<X>MergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}', rest…)`
+as the plain `<X>MergeTree(rest…)`, so the HCL vocabulary is unchanged and one
+schema works on Cloud and self-hosted alike. See `docs/plans/2026-08-09-cloud-sharedmergetree.md`.
+
 ### Not Yet Supported
 - ❌ Inner-engine MVs, `REFRESH` MVs, window views
 - ❌ Distributed `policy_name` parameter (silently dropped on introspect)
