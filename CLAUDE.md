@@ -194,6 +194,17 @@ The `justfile` has the full recipe list.
   and window views are rejected with a clear error
 - ✅ **Views & Dictionaries** — round-tripped as HCL
 
+### Parsing
+- ✅ **Parser panics are contained** — the third-party SQL parser panics on
+  some grammar it doesn't cover (a column `DEFAULT` using `<=>`, for one).
+  Every call into it goes through `safeParseStmts` (`internal/loader/hcl/parse.go`),
+  which returns an ordinary parse error instead, so an unreadable object
+  degrades to the normal `-allow-raw` path rather than killing the run with a
+  stack trace. The panic surface isn't enumerable and the input is arbitrary
+  SQL — server DDL, authored view/MV queries, `sql2hcl` input — so calling
+  `chparser.NewParser` directly is a bug; `TestNoDirectParserCalls` enforces it
+
+
 ### Dependency Validation (`hclexp validate`)
 - ✅ Materialized views: source tables (parsed from `query`) and
   `to_table` destination must be declared

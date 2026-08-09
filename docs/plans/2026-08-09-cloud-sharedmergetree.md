@@ -1,6 +1,6 @@
 # ClickHouse Cloud — reading the `Shared*MergeTree` engines
 
-Status: design approved 2026-08-09; implementation in progress.
+Status: implemented 2026-08-09, awaiting review.
 First step of running `hclexp` against ClickHouse Cloud.
 
 ## Problem
@@ -168,16 +168,36 @@ a false "no drift".
   introspect. That covers `introspect`, `dump-cluster`, and the live
   side of `diff`, `plan`, `drift` and `load`.
 
+## Containing parser panics (found while verifying)
+
+Replaying all 341 real `create_table_query` values from a live Cloud service
+through the introspection path turned up a second blocker. The third-party
+SQL parser panics with a nil dereference on a column `DEFAULT` that uses
+ClickHouse's `<=>` operator:
+
+```sql
+`matches` Bool DEFAULT other_name <=> name
+```
+
+Nothing to do with Cloud — a self-hosted server carrying that column would
+panic too. It matters here because a panic takes down the whole run *and*
+bypasses `-allow-raw`, so a single such table makes the service impossible to
+introspect at all.
+
+Fixed by implementing `safeParseStmts`.
+
 ## Verification against a live Cloud service
 
 All 341 Shared* tables replayed through `processIntrospectRowsOpt`: 340
-introspect cleanly, and 1 aborts the run.
+introspect cleanly, and 1 does not.
 
 That table has a column `DEFAULT` using ClickHouse's `<=>` operator, which
 panics the third-party SQL parser. Nothing to do with Cloud — a self-hosted
-server carrying the same column would hit it too — and the panic bypasses
-`-allow-raw`, so the object cannot be captured as a raw block either. Tracked
-separately.
+server carrying the same column would hit it too. With `safeParseStmts` in
+place the panic becomes an ordinary parse error, so the table follows the
+normal unparseable-object route: strict mode reports a clean error naming
+`-allow-raw`, and `-allow-raw` captures it as a raw block. Either way the run
+completes and accounts for all 341.
 
 Collapsed engine kinds match the server's own counts exactly: 291
 `merge_tree`, 49 `replacing_merge_tree`, 1 `aggregating_merge_tree`. Every

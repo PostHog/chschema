@@ -318,9 +318,10 @@ func upsertView(db *DatabaseSpec, v ViewSpec) {
 
 // parseCreateStatement parses a single DDL statement (the value of
 // system.tables.create_table_query) and returns the first statement node.
+// safeParseStmts turns a parser panic into an ordinary error, so unreadable
+// DDL reaches the caller's -allow-raw fallback instead of killing the run.
 func parseCreateStatement(createSQL string) (chparser.Expr, error) {
-	p := chparser.NewParser(createSQL)
-	stmts, err := p.ParseStmts()
+	stmts, err := safeParseStmts(createSQL)
 	if err != nil {
 		return nil, fmt.Errorf("parser: %w", err)
 	}

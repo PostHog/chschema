@@ -217,7 +217,7 @@ func CollectDependencies(dbs []DatabaseSpec) ([]Dependency, error) {
 // Use this from test setup to derive the list of tables that must
 // exist before the CREATE statement is executable.
 func ExtractReferencedTables(createSQL string) ([]ObjectRef, error) {
-	stmts, err := chparser.NewParser(createSQL).ParseStmts()
+	stmts, err := safeParseStmts(createSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -325,7 +325,7 @@ type DeclaredColumn struct {
 // Returns an empty slice (no error) when the statement carries no column
 // list (e.g. CREATE VIEW v AS SELECT … without an explicit schema).
 func ExtractDeclaredColumns(createSQL string) ([]DeclaredColumn, error) {
-	stmts, err := chparser.NewParser(createSQL).ParseStmts()
+	stmts, err := safeParseStmts(createSQL)
 	if err != nil {
 		return nil, err
 	}
@@ -393,7 +393,7 @@ func stripBackticks(s string) string {
 // filtered out; they are query-local, not real tables. Database-unqualified
 // references are returned with an empty Database for the caller to default.
 func extractSourceTables(query string) ([]ObjectRef, error) {
-	stmts, err := chparser.NewParser(query).ParseStmts()
+	stmts, err := safeParseStmts(query)
 	if err != nil {
 		return nil, err
 	}
@@ -843,7 +843,7 @@ func sourceEngineKind(t TableSpec) string {
 // virtual-column-like names so the bare-Ident walk can't false-positive
 // on regular columns we couldn't attribute precisely.
 func mvVirtualPrefixedRefs(query string) (map[string]bool, bool) {
-	stmts, err := chparser.NewParser(query).ParseStmts()
+	stmts, err := safeParseStmts(query)
 	if err != nil || len(stmts) == 0 {
 		return nil, false
 	}

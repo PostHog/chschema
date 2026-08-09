@@ -629,7 +629,7 @@ func dropViewSQL(database, name string) string {
 // columns. When the query can't be parsed it returns false, leaving alias
 // emission unchanged.
 func viewQueryProjectsStar(query string) bool {
-	stmts, err := chparser.NewParser(query).ParseStmts()
+	stmts, err := safeParseStmts(query)
 	if err != nil || len(stmts) == 0 {
 		return false
 	}
