@@ -665,9 +665,24 @@ func loadExclude(path string) *hclload.ExcludeMatcher {
 }
 
 func introspectSchema(ctx context.Context, conn driver.Conn, databases []string, nodeName string, allowRaw bool, exclude *hclload.ExcludeMatcher) (*hclload.Schema, error) {
+	// Probe once per connection: whether the server rewrites MergeTree-family
+	// DDL to the Shared* engines is a property of the server, not a database.
+	collapseShared, err := hclload.DetectCloudEngineRewrite(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+	if collapseShared {
+		slog.Info("server rewrites engines to SharedMergeTree; reading them as their plain equivalents")
+	}
+	opts := hclload.IntrospectOptions{
+		AllowRaw:                allowRaw,
+		Exclude:                 exclude,
+		CollapseSharedMergeTree: collapseShared,
+	}
+
 	schema := &hclload.Schema{}
 	for _, name := range databases {
-		spec, err := hclload.IntrospectWithExclude(ctx, conn, name, allowRaw, exclude)
+		spec, err := hclload.IntrospectWithOptions(ctx, conn, name, opts)
 		if err != nil {
 			return nil, fmt.Errorf("introspect database %q: %w", name, err)
 		}
@@ -965,12 +980,19 @@ func loadFromClickHouse(uri string) (*hclload.Schema, error) {
 	defer conn.Close()
 
 	ctx := context.Background()
+	collapseShared, err := hclload.DetectCloudEngineRewrite(ctx, conn)
+	if err != nil {
+		return nil, err
+	}
+
 	schema := &hclload.Schema{}
 	for _, name := range databases {
 		// Diff's live side stays strict: an unparseable object surfaces as a
 		// diff error rather than being silently captured. Use `introspect
 		// -allow-raw` to materialize raw blocks into HCL first.
-		spec, err := hclload.Introspect(ctx, conn, name, false)
+		spec, err := hclload.IntrospectWithOptions(ctx, conn, name, hclload.IntrospectOptions{
+			CollapseSharedMergeTree: collapseShared,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("introspect %s: %w", name, err)
 		}

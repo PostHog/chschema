@@ -653,7 +653,7 @@ func TestProcessIntrospectRows_RawFallback_AllowRaw(t *testing.T) {
 		{name: "weird", sql: "this is definitely not valid clickhouse sql", engine: "Dictionary"},
 	}}
 	db := &DatabaseSpec{Name: "db"}
-	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, true, nil))
+	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, IntrospectOptions{AllowRaw: true}))
 
 	require.Len(t, db.Tables, 1, "the parseable table is still introspected normally")
 	require.Len(t, db.Raws, 1)
@@ -668,7 +668,7 @@ func TestProcessIntrospectRows_RawFallback_StrictErrorsWithFlagHint(t *testing.T
 		{name: "weird", sql: "this is definitely not valid clickhouse sql", engine: "Dictionary"},
 	}}
 	db := &DatabaseSpec{Name: "db"}
-	err := processIntrospectRowsOpt(db, "db", rows, false, nil)
+	err := processIntrospectRowsOpt(db, "db", rows, IntrospectOptions{})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "-allow-raw")
 	assert.Empty(t, db.Raws, "strict mode captures nothing")
@@ -687,7 +687,7 @@ func TestProcessIntrospectRows_ExcludeSkipsBeforeParse(t *testing.T) {
 	exclude := NewExcludeMatcher("_tmp_replace_*", "tmp_*")
 
 	// strict mode (allowRaw=false): would normally abort on the unparseable rows.
-	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, false, exclude))
+	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, IntrospectOptions{Exclude: exclude}))
 	require.Len(t, db.Tables, 1)
 	assert.Equal(t, "events", db.Tables[0].Name)
 	assert.Empty(t, db.Raws, "excluded objects are not captured as raw either")
