@@ -1055,7 +1055,10 @@ differs in flags, or lacks it entirely reports `[HIDDEN]` on **both** sides — 
 could not verify equality, and printing the known side would leak a real secret into
 CI logs. Identically-redacted params (hidden on both sides, flags equal) are not a
 difference at all, so identically-redacted dumps compare clean. A dictionary's
-`source.<secret>` reports the same way, for the same reason.
+`source.<secret>` reports the same way, for the same reason. For dictionaries,
+`[HIDDEN]` versus absent remains a visible source difference; when the hidden
+value is on the live side, however, reconciliation is unsafe-only because the
+replacement cannot preserve it.
 
 ### Secrets and the `[HIDDEN]` marker
 
@@ -1069,10 +1072,13 @@ HCL dump: a dump with `password = "[HIDDEN]"` says *"this object has a secret I
 cannot see"*, which a dump with no `password` at all cannot. Three rules follow,
 and they are the same for both object kinds.
 
-**It is never written back.** No generated statement may contain `[HIDDEN]` —
-writing the literal would overwrite the real credential with a placeholder. Any
-statement built from a spec carrying the marker is refused, with an unsafe
-reason naming the offending fields.
+**It is never written back or silently omitted.** No generated statement may
+contain `[HIDDEN]` — writing the literal would overwrite the real credential
+with a placeholder. A whole-object dictionary rewrite is also refused when the
+live/source spec has a redacted credential and the same target source omits it;
+otherwise `CREATE OR REPLACE` would silently remove the credential even though
+the generated SQL contains no marker. Refused rewrites produce no DDL and carry
+an unsafe reason naming the field.
 
 **It compares as unknown, not as a value.** Both sides `[HIDDEN]` → equal, and
 silently (the normal `drift` case, where every node was dumped by the same user;
@@ -1112,8 +1118,12 @@ If an object reports an unverifiable secret on every run, pick one:
 3. `-exclude` the object entirely — the bluntest option.
 
 A passworded dictionary whose authored HCL simply *omits* the password is a
-genuine difference, and the generated `CREATE OR REPLACE` will **remove** the
-live password. Say what you mean: the real value, or the marker.
+genuine difference, not an unmanaged declaration. If the live password is
+visible, `CREATE OR REPLACE` can remove it. If introspection returned
+`[HIDDEN]`, hclexp refuses the rewrite as unsafe and emits no DDL: automatic
+reconciliation must not strip a credential it cannot see. To suppress that
+permanent difference, declare the field as `[HIDDEN]`; to remove it, introspect
+with secrets visible or apply the change manually.
 
 ### `drift -format json`
 

@@ -12,17 +12,31 @@ like `kafka_broker_list` — inside `create_table_query` / `SHOW CREATE` /
 3. the query enables the `format_display_secrets_in_show_and_select` session
    setting.
 
-## Default behavior: secrets are dropped, never overwritten
+## Default behavior: secrets are marked unknown, never overwritten
 
 hclexp controls only #3 and leaves it **off by default**. With redaction on, a
-captured secret comes back as `[HIDDEN]`. hclexp does **not** re-emit `[HIDDEN]`:
+captured secret comes back as `[HIDDEN]`. hclexp retains that marker in an HCL
+dump so later comparisons can distinguish "a secret exists but is unknown" from
+"there is no secret". It does **not** re-emit `[HIDDEN]`:
 
-- dictionary source passwords are dropped on `introspect` (a warning is logged);
-- named-collection params with redacted values are skipped by `diff`.
+- dictionary `CREATE`/`CREATE OR REPLACE` is blocked when its target contains a
+  marker;
+- an altered dictionary is also blocked when its live source contains a marker
+  and the same target source would omit that credential;
+- named-collection params with redacted values are skipped by `diff`, while
+  whole-collection creates/recreates containing them are blocked.
 
-This is deliberate — applying a dump that contained `[HIDDEN]` would overwrite
-the real secret with the literal string `[HIDDEN]`. Dropping it means a
-re-applied dump leaves the existing secret untouched.
+Blocked dictionary rewrites produce no DDL and are reported unsafe. This covers
+both failure modes: writing the literal placeholder and rendering apparently
+clean SQL that silently omits a real-but-hidden credential. A visible target
+credential remains safe to write, including a deliberate rotation.
+
+In authored HCL, use `password = "[HIDDEN]"` (or
+`credentials_password = "[HIDDEN]"`) to declare a credential managed outside
+hclexp. Simply omitting a live credential is still a real difference. If the
+live value was redacted, hclexp will report it but refuse to remove it
+automatically; reveal the secret during introspection or make that removal
+manually.
 
 ## Capturing real secrets: `-show-secrets`
 

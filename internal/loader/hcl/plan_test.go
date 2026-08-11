@@ -192,3 +192,38 @@ func TestBuildPlanRoleComparisons(t *testing.T) {
 	assert.Equal(t, plan.Operations[0].Order, plan.Roles[0].Objects[0].Operations[0].Order)
 	assert.Equal(t, plan.Operations[0].Order, plan.Roles[1].Objects[0].Operations[0].Order)
 }
+
+// A plan diffs current -> desired, the opposite direction from a common
+// `diff -left declared -right dumped` invocation. The safety decision must be
+// symmetric: a hidden live password omitted from HCL cannot become a routine
+// CREATE OR REPLACE that strips the credential (#178).
+func TestBuildPlan_RedactedDictionarySecretOmittedByDesiredIsUnsafeOnly(t *testing.T) {
+	live := mkDict("demo_dict", SourceClickHouse{
+		User: ptr("dict_reader"), Password: ptr(RedactedValue), Table: ptr("control_table"),
+	}, LayoutComplexKeyHashed{}, DictionaryAttribute{Name: "k", Type: "String"})
+	desired := mkDict("demo_dict", SourceClickHouse{
+		User: ptr("dict_reader"), Table: ptr("control_table"),
+	}, LayoutComplexKeyHashed{}, DictionaryAttribute{Name: "k", Type: "String"})
+
+	plan := BuildPlan([]RoleDiff{{
+		Role:    "data",
+		Current: &Schema{Databases: []DatabaseSpec{{Name: "posthog", Dictionaries: []DictionarySpec{live}}}},
+		Desired: &Schema{Databases: []DatabaseSpec{{Name: "posthog", Dictionaries: []DictionarySpec{desired}}}},
+	}})
+
+	assert.Empty(t, plan.Operations, "no auto-applicable SQL may omit the live password")
+	require.Len(t, plan.Unsafe, 1)
+	assert.Equal(t, "posthog", plan.Unsafe[0].Database)
+	assert.Equal(t, "demo_dict", plan.Unsafe[0].Object)
+	assert.Contains(t, plan.Unsafe[0].Reason, `dictionary source secret "password" is unknown to hclexp`)
+
+	require.Len(t, plan.Roles, 1)
+	require.Len(t, plan.Roles[0].Objects, 1)
+	comparison := plan.Roles[0].Objects[0]
+	assert.Equal(t, KindDictionary, comparison.ObjectType)
+	assert.Equal(t, StatusAltered, comparison.Status)
+	assert.True(t, comparison.Unsafe)
+	assert.Equal(t, plan.Unsafe[0].Reason, comparison.UnsafeReason)
+	assert.Empty(t, comparison.Operations)
+	assert.Equal(t, CompareSummary{DictsAltered: 1}, plan.Roles[0].Summary)
+}

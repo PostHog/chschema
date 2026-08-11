@@ -52,13 +52,21 @@ type RawChange struct {
 // not destructive.
 func (rc RawChange) IsUnsafe() bool { return rc.Kind == "table" }
 
-// DictionaryDiff describes a change to a dictionary. ClickHouse has no
-// useful in-place ALTER DICTIONARY, so any non-empty diff is materialized
-// as a CREATE OR REPLACE DICTIONARY statement — safe, not flagged as
-// unsafe. Changed lists field paths that differ, for rendering.
+// DictionaryDiff describes a change to a dictionary. ClickHouse has no useful
+// in-place ALTER DICTIONARY, so a change is normally materialized as CREATE OR
+// REPLACE DICTIONARY. Replacing the object is non-destructive, but sqlgen still
+// refuses a rewrite when a redacted source credential cannot be preserved.
+// Changed lists field paths that differ, for rendering.
 type DictionaryDiff struct {
 	Name    string
 	Changed []string
+
+	// Old is the source spec. Dictionary reconciliation rewrites the whole
+	// object, so sqlgen needs the old source as well as the target to detect a
+	// credential that exists on the live object but was redacted to [HIDDEN].
+	// Without it, a target that omits the credential looks safe even though
+	// CREATE OR REPLACE would silently remove the unknown live value (#178).
+	Old DictionarySpec
 
 	// New is the target spec. The CREATE OR REPLACE DICTIONARY that
 	// reconciles the change is rendered from it.
@@ -567,7 +575,7 @@ func indexDictionaries(ds []DictionarySpec) map[string]*DictionarySpec {
 // path that differs. Source/layout comparison uses reflect.DeepEqual on
 // the decoded typed value (Body and Kind are diff-skipped artifacts).
 func diffDictionary(from, to *DictionarySpec) DictionaryDiff {
-	d := DictionaryDiff{Name: to.Name, New: *to}
+	d := DictionaryDiff{Name: to.Name, Old: *from, New: *to}
 	if !reflect.DeepEqual(from.PrimaryKey, to.PrimaryKey) {
 		d.Changed = append(d.Changed, "primary_key")
 	}

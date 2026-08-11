@@ -230,7 +230,7 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 			if len(dd.Changed) == 0 {
 				continue
 			}
-			if reason := redactedSecretBlock(dd.New); reason != "" {
+			if reason := redactedSecretRewriteBlock(dd.Old, dd.New); reason != "" {
 				out.Unsafe = append(out.Unsafe, UnsafeChange{Database: dc.Database, Table: dd.Name, Reason: reason})
 				continue
 			}
