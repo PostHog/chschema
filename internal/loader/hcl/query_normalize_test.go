@@ -281,3 +281,62 @@ func TestNormalizeType_LeavesNonEnumAndUnparseable(t *testing.T) {
 	assert.False(t, ok, "unparseable type reports ok=false")
 	assert.Equal(t, raw, got, "unparseable type keeps raw text")
 }
+
+// TestNormalizeType_RejectsInputBeyondTheType pins the silent-truncation guard.
+// The canonicalizer parses its input as the column type of a throwaway CREATE
+// TABLE, and SQL does not stop at the type: `String DEFAULT 'x'` parses as a
+// type *plus* a DEFAULT clause, and a stray `)` lets the input rewrite the rest
+// of the statement. Returning just the type would silently drop the remainder —
+// turning a malformed declaration into a plausible-looking canonical value and
+// erasing a DEFAULT from every statement generated from it. Such input must be
+// rejected so the raw text survives and the difference stays visible.
+func TestNormalizeType_RejectsInputBeyondTheType(t *testing.T) {
+	for _, ty := range []string{
+		"String DEFAULT 'x'",        // belongs in the column's `default`
+		"String CODEC(ZSTD)",        // belongs in `codec`
+		"String COMMENT 'c'",        // belongs in `comment`
+		"UInt64 MATERIALIZED a + b", // belongs in `materialized`
+		"String, y UInt8",           // two columns, only the first survives
+		"String) ENGINE = Log --",   // closes the column list and rewrites the engine
+		"Int) ENGINE = MergeTree ORDER BY _x TTL _x + toIntervalDay(1) --", // and the TTL
+	} {
+		got, ok := normalizeType(ty)
+		assert.False(t, ok, "normalizeType(%q) must reject input beyond the type", ty)
+		assert.Equal(t, ty, got, "rejected type keeps raw text")
+	}
+}
+
+// TestNormalizeExpr_RejectsInputBeyondTheExpression is the expression-side
+// counterpart: an expression is parsed inside a throwaway SELECT, so trailing
+// clauses would be silently dropped rather than kept as visible drift.
+func TestNormalizeExpr_RejectsInputBeyondTheExpression(t *testing.T) {
+	for _, expr := range []string{
+		"x FROM t",
+		"x WHERE y > 1",
+		"1 AS z",
+	} {
+		got, ok := normalizeExpr(expr)
+		assert.False(t, ok, "normalizeExpr(%q) must reject input beyond the expression", expr)
+		assert.Equal(t, expr, got, "rejected expression keeps raw text")
+	}
+
+	// The guard must not disturb the paren stripping the expression
+	// canonicalizer exists for.
+	got, ok := normalizeExpr("(a + b)")
+	require.True(t, ok)
+	assert.Equal(t, "a + b", got)
+}
+
+// TestNormalizeTTL_RejectsInputBeyondTheClause is the TTL-side counterpart. The
+// INTERVAL folding and move rules must keep working — the guard compares the
+// clause's structure-preserving rendering, not its canonical one.
+func TestNormalizeTTL_RejectsInputBeyondTheClause(t *testing.T) {
+	trailing := "ts + INTERVAL 1 DAY SETTINGS merge_with_ttl_timeout = 3600"
+	got, ok := normalizeTTL(trailing)
+	assert.False(t, ok, "a SETTINGS tail must not be silently dropped")
+	assert.Equal(t, trailing, got, "rejected TTL keeps raw text")
+
+	moved, ok := normalizeTTL("ts + INTERVAL 7 DAY TO VOLUME 'cold', ts + INTERVAL 90 DAY")
+	require.True(t, ok)
+	assert.Equal(t, "ts + toIntervalDay(7) TO VOLUME 'cold', ts + toIntervalDay(90)", moved)
+}
