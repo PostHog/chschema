@@ -150,6 +150,18 @@ The `justfile` has the full recipe list.
 - ✅ Long view/MV `query` as a one-liner, HCL heredoc, or `file("x.sql")`;
   all normalize to a canonical beautified form so formatting never diffs as
   drift (see `docs/README.hcl.md`)
+- ✅ Canonicalization (`canonicalize`, run at the tail of **both** the load and
+  the introspect path) is what keeps authored text comparable with a live
+  cluster's: view/MV/projection queries, column `default`/`materialized`/
+  `alias`, index `expr`/`type`, table `ttl`, and column **types** (ClickHouse
+  stores `Enum8('a' = 1)`, the canonical form is `Enum8('a'=1)`). It must cover
+  every field introspection renders through `formatNode`, on every object kind
+  that has one — table columns, MV column lists, dictionary attributes,
+  TimeSeries inner columns, and the patch collections; a missed field is
+  permanent phantom drift. Each normalizer parses its fragment inside a
+  throwaway statement and **rejects input that reaches past the fragment**
+  (`type = "String DEFAULT 'x'"`), keeping the raw text and warning rather than
+  silently dropping the clause
 - ✅ A layer stack entry is a directory (every `*.hcl` in it) **or a single
   `.hcl` file** — same merge semantics either way (`hclload.LayerFiles` owns the
   dir/file decision, so every `-layer`/`-left`/manifest `layers` path gets it);

@@ -32,7 +32,6 @@ func ParseFile(path string) (*Schema, error) {
 
 	for di := range spec.Databases {
 		db := &spec.Databases[di]
-		canonicalize(db)
 		for i := range db.Raws {
 			r := &db.Raws[i]
 			if !rawKinds[r.Kind] {
@@ -99,6 +98,10 @@ func ParseFile(path string) (*Schema, error) {
 				p.Layout.Decoded = decoded
 			}
 		}
+		// Canonicalization runs last: a TimeSeries engine's inner column list
+		// is only reachable through EngineSpec.Decoded, so the engine blocks
+		// must be decoded first. Nothing above depends on canonical text.
+		canonicalize(db)
 	}
 	return &Schema{
 		Databases:        spec.Databases,
