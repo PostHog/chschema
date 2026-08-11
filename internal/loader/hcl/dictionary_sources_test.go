@@ -143,6 +143,26 @@ func TestDecodeDictionarySource_AllSupportedKinds(t *testing.T) {
 	}
 }
 
+func TestDecodeDictionarySource_NamedCollectionKinds(t *testing.T) {
+	for _, tc := range []struct {
+		kind string
+		want DictionarySource
+	}{
+		{"clickhouse", SourceClickHouse{Collection: ptr("dict_credentials")}},
+		{"mysql", SourceMySQL{Collection: ptr("dict_credentials")}},
+		{"postgresql", SourcePostgreSQL{Collection: ptr("dict_credentials")}},
+		{"http", SourceHTTP{Collection: ptr("dict_credentials")}},
+	} {
+		t.Run(tc.kind, func(t *testing.T) {
+			got, err := decodeSource(t, `dictionary "d" {
+				source "`+tc.kind+`" { collection = "dict_credentials" }
+			}`)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
 func TestDecodeDictionarySource_Unsupported(t *testing.T) {
 	src := `dictionary "d" {
 		source "mongodb" { connection_string = "mongodb://x" }

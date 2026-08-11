@@ -32,7 +32,7 @@ type ObjectComparison struct {
 	Operations   []JSONOperation `json:"operations"`        // the DDL that reconciles this object; may be empty (unsafe-only changes)
 	Unsafe       bool            `json:"unsafe"`
 	UnsafeReason string          `json:"unsafe_reason,omitempty"`
-	Error        string          `json:"error,omitempty"` // unsupported transition (e.g. named collection external<->managed)
+	Error        string          `json:"error,omitempty"` // unsupported transition
 }
 
 // FieldChange is one attribute-level difference on an altered object. The

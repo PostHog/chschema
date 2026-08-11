@@ -280,7 +280,8 @@ func buildDictionarySourceFromAST(dictName string, s *chparser.DictionarySourceC
 	switch kind {
 	case "clickhouse":
 		decoded = SourceClickHouse{
-			Host: takeStr(args, "host"), Port: takeInt64(args, "port"),
+			Collection: takeStr(args, "name"),
+			Host:       takeStr(args, "host"), Port: takeInt64(args, "port"),
 			User: takeStr(args, "user"), Password: optSecret("password"),
 			DB: takeStr(args, "db"), Table: takeStr(args, "table"),
 			Query:           takeStr(args, "query"),
@@ -290,7 +291,8 @@ func buildDictionarySourceFromAST(dictName string, s *chparser.DictionarySourceC
 		}
 	case "mysql":
 		decoded = SourceMySQL{
-			Host: takeStr(args, "host"), Port: takeInt64(args, "port"),
+			Collection: takeStr(args, "name"),
+			Host:       takeStr(args, "host"), Port: takeInt64(args, "port"),
 			User: takeStr(args, "user"), Password: optSecret("password"),
 			DB: takeStr(args, "db"), Table: takeStr(args, "table"),
 			Query:           takeStr(args, "query"),
@@ -300,7 +302,8 @@ func buildDictionarySourceFromAST(dictName string, s *chparser.DictionarySourceC
 		}
 	case "postgresql":
 		decoded = SourcePostgreSQL{
-			Host: takeStr(args, "host"), Port: takeInt64(args, "port"),
+			Collection: takeStr(args, "name"),
+			Host:       takeStr(args, "host"), Port: takeInt64(args, "port"),
 			User: takeStr(args, "user"), Password: optSecret("password"),
 			DB: takeStr(args, "db"), Table: takeStr(args, "table"),
 			Query:           takeStr(args, "query"),
@@ -310,7 +313,8 @@ func buildDictionarySourceFromAST(dictName string, s *chparser.DictionarySourceC
 		}
 	case "http":
 		decoded = SourceHTTP{
-			URL: takeArg(args, "url"), Format: takeArg(args, "format"),
+			Collection: takeStr(args, "name"),
+			URL:        takeArg(args, "url"), Format: takeArg(args, "format"),
 			CredentialsUser:     takeStr(args, "credentials_user"),
 			CredentialsPassword: optSecret("credentials_password"),
 		}

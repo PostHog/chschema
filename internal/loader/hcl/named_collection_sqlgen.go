@@ -35,7 +35,7 @@ func redactedNCBlock(nc NamedCollectionSpec) string {
 		return ""
 	}
 	return fmt.Sprintf("named collection param(s) [%s] are unknown to hclexp (%s: redacted by the server at introspection, "+
-		"or declared unmanaged in HCL); CREATE NAMED COLLECTION would write the literal placeholder over the real value. "+
+		"and unavailable in this plan); CREATE NAMED COLLECTION would write the literal placeholder over the real value. "+
 		"Grant displaySecretsInShowAndSelect AND set display_secrets_in_show_and_select=1, or apply this change manually",
 		strings.Join(keys, ", "), RedactedValue)
 }

@@ -90,10 +90,16 @@ func redactedSecretRewriteBlock(old, target DictionarySpec) string {
 	if !redacted {
 		return ""
 	}
-	if target.Source != nil && target.Source.Decoded != nil && old.Source.Kind != target.Source.Kind {
-		return ""
-	}
 	if target.Source != nil && target.Source.Decoded != nil {
+		// NAME delegates credential resolution to a cluster-side named
+		// collection; the target rewrite does not need to preserve the old
+		// inline value.
+		if collection := dictSourceCollection(target.Source.Decoded); collection != nil && *collection != "" {
+			return ""
+		}
+		if old.Source.Kind != target.Source.Kind {
+			return ""
+		}
 		_, targetSecret := dictSecret(target.Source.Decoded)
 		if targetSecret != nil {
 			return ""
@@ -103,8 +109,8 @@ func redactedSecretRewriteBlock(old, target DictionarySpec) string {
 }
 
 func redactedSecretReason(field string) string {
-	return fmt.Sprintf("dictionary source secret %q is unknown to hclexp (%s: redacted by the server at introspection, "+
-		"or declared unmanaged in HCL); CREATE OR REPLACE DICTIONARY would write the dictionary without the real value. "+
+	return fmt.Sprintf("dictionary source secret %q is unknown to hclexp (%s: redacted by the server at introspection); "+
+		"CREATE OR REPLACE DICTIONARY would write the dictionary without the real value. "+
 		"Grant displaySecretsInShowAndSelect AND set display_secrets_in_show_and_select=1, or apply this change manually",
 		field, RedactedValue)
 }
@@ -135,6 +141,7 @@ func sourceSQL(s DictionarySource) string {
 	switch v := s.(type) {
 	case SourceClickHouse:
 		return "CLICKHOUSE(" + joinSourceArgs([]sourceArg{
+			{"NAME", identVal(v.Collection)},
 			{"HOST", strVal(v.Host)},
 			{"PORT", intVal(v.Port)},
 			{"USER", strVal(v.User)},
@@ -148,6 +155,7 @@ func sourceSQL(s DictionarySource) string {
 		}) + ")"
 	case SourceMySQL:
 		return "MYSQL(" + joinSourceArgs([]sourceArg{
+			{"NAME", identVal(v.Collection)},
 			{"HOST", strVal(v.Host)},
 			{"PORT", intVal(v.Port)},
 			{"USER", strVal(v.User)},
@@ -161,6 +169,7 @@ func sourceSQL(s DictionarySource) string {
 		}) + ")"
 	case SourcePostgreSQL:
 		return "POSTGRESQL(" + joinSourceArgs([]sourceArg{
+			{"NAME", identVal(v.Collection)},
 			{"HOST", strVal(v.Host)},
 			{"PORT", intVal(v.Port)},
 			{"USER", strVal(v.User)},
@@ -174,8 +183,9 @@ func sourceSQL(s DictionarySource) string {
 		}) + ")"
 	case SourceHTTP:
 		return "HTTP(" + joinSourceArgs([]sourceArg{
-			{"URL", strVal(&v.URL)},
-			{"FORMAT", strVal(&v.Format)},
+			{"NAME", identVal(v.Collection)},
+			{"URL", nonEmptyStrVal(v.URL)},
+			{"FORMAT", nonEmptyStrVal(v.Format)},
 			{"CREDENTIALS_USER", strVal(v.CredentialsUser)},
 			{"CREDENTIALS_PASSWORD", strVal(v.CredentialsPassword)},
 		}) + ")"
@@ -319,6 +329,20 @@ func strVal(p *string) string {
 		return ""
 	}
 	return "'" + strings.ReplaceAll(*p, "'", "''") + "'"
+}
+
+func identVal(p *string) string {
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+func nonEmptyStrVal(v string) string {
+	if v == "" {
+		return ""
+	}
+	return strVal(&v)
 }
 
 func intVal(p *int64) string {

@@ -36,11 +36,45 @@ func Resolve(s *Schema) error {
 	if err := validateKafkaEngines(s); err != nil {
 		return err
 	}
+	if err := validateDictionaryCollections(s); err != nil {
+		return err
+	}
 	if err := validateReplacingEngines(s); err != nil {
 		return err
 	}
 	if err := validateDistributedEngines(s); err != nil {
 		return err
+	}
+	return nil
+}
+
+// validateDictionaryCollections enforces the same explicit declaration rule
+// as Kafka engines: a collection-backed dictionary source must name a
+// top-level named_collection block. The block may be external, which is the
+// production credential pattern — the cluster supplies its values and
+// chschema owns only the reference.
+func validateDictionaryCollections(s *Schema) error {
+	declared := make(map[string]bool, len(s.NamedCollections))
+	for _, nc := range s.NamedCollections {
+		declared[nc.Name] = true
+	}
+	for _, db := range s.Databases {
+		for _, d := range db.Dictionaries {
+			if d.Source == nil || d.Source.Decoded == nil {
+				continue
+			}
+			collection := dictSourceCollection(d.Source.Decoded)
+			if collection == nil {
+				continue
+			}
+			if *collection == "" {
+				return fmt.Errorf("%s.%s: dictionary source collection must not be empty", db.Name, d.Name)
+			}
+			if !declared[*collection] {
+				return fmt.Errorf("%s.%s: dictionary source references collection %q which is not declared in the schema (declare with `named_collection %q { external = true }` when credentials are provisioned on the cluster)",
+					db.Name, d.Name, *collection, *collection)
+			}
+		}
 	}
 	return nil
 }
@@ -185,6 +219,11 @@ func validateDictionaries(db *DatabaseSpec) error {
 		}
 		if len(d.PrimaryKey) == 0 {
 			return fmt.Errorf("%s.%s: dictionary requires a non-empty primary_key", db.Name, d.Name)
+		}
+		if source, ok := d.Source.Decoded.(SourceHTTP); ok && source.Collection == nil {
+			if source.URL == "" || source.Format == "" {
+				return fmt.Errorf("%s.%s: http dictionary source requires url and format unless collection is set", db.Name, d.Name)
+			}
 		}
 		if d.Range != nil {
 			switch d.Layout.Kind {

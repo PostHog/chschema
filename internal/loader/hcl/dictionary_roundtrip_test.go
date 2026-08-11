@@ -234,6 +234,14 @@ func TestDictionaryRT_Sources(t *testing.T) {
 			wantHCL: []string{`host = "ch1"`, `port = 9000`, `update_lag = 15`},
 		},
 		{
+			name:   "clickhouse_named_collection",
+			source: "CLICKHOUSE(NAME dict_credentials TABLE 'src')",
+			want: SourceClickHouse{
+				Collection: ptr("dict_credentials"), Table: ptr("src"),
+			},
+			wantHCL: []string{`collection = "dict_credentials"`, `table = "src"`},
+		},
+		{
 			name: "mysql",
 			source: "MYSQL(HOST 'my1' PORT 3306 USER 'app' PASSWORD 'pw' DB 'd1' TABLE 't1'" +
 				" QUERY 'SELECT * FROM d1.t1')",
@@ -267,6 +275,12 @@ func TestDictionaryRT_Sources(t *testing.T) {
 				`format = "JSONEachRow"`,
 				`credentials_user = "reader"`,
 			},
+		},
+		{
+			name:    "http_named_collection",
+			source:  "HTTP(NAME http_credentials)",
+			want:    SourceHTTP{Collection: ptr("http_credentials")},
+			wantHCL: []string{`collection = "http_credentials"`},
 		},
 		{
 			name:    "file",

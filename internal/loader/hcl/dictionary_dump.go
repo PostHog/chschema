@@ -64,6 +64,7 @@ func writeDictionarySource(parent *hclwrite.Body, s DictionarySource) {
 	b := block.Body()
 	switch v := s.(type) {
 	case SourceClickHouse:
+		writeOptStr(b, "collection", v.Collection)
 		writeOptStr(b, "host", v.Host)
 		writeOptInt(b, "port", v.Port)
 		writeOptStr(b, "user", v.User)
@@ -75,6 +76,7 @@ func writeDictionarySource(parent *hclwrite.Body, s DictionarySource) {
 		writeOptStr(b, "update_field", v.UpdateField)
 		writeOptInt(b, "update_lag", v.UpdateLag)
 	case SourceMySQL:
+		writeOptStr(b, "collection", v.Collection)
 		writeOptStr(b, "host", v.Host)
 		writeOptInt(b, "port", v.Port)
 		writeOptStr(b, "user", v.User)
@@ -86,6 +88,7 @@ func writeDictionarySource(parent *hclwrite.Body, s DictionarySource) {
 		writeOptStr(b, "update_field", v.UpdateField)
 		writeOptInt(b, "update_lag", v.UpdateLag)
 	case SourcePostgreSQL:
+		writeOptStr(b, "collection", v.Collection)
 		writeOptStr(b, "host", v.Host)
 		writeOptInt(b, "port", v.Port)
 		writeOptStr(b, "user", v.User)
@@ -97,8 +100,13 @@ func writeDictionarySource(parent *hclwrite.Body, s DictionarySource) {
 		writeOptStr(b, "update_field", v.UpdateField)
 		writeOptInt(b, "update_lag", v.UpdateLag)
 	case SourceHTTP:
-		b.SetAttributeValue("url", cty.StringVal(v.URL))
-		b.SetAttributeValue("format", cty.StringVal(v.Format))
+		writeOptStr(b, "collection", v.Collection)
+		if v.URL != "" {
+			b.SetAttributeValue("url", cty.StringVal(v.URL))
+		}
+		if v.Format != "" {
+			b.SetAttributeValue("format", cty.StringVal(v.Format))
+		}
 		writeOptStr(b, "credentials_user", v.CredentialsUser)
 		writeOptStr(b, "credentials_password", v.CredentialsPassword)
 	case SourceFile:
