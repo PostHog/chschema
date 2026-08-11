@@ -118,6 +118,30 @@ column "name" {
 of `default`, `materialized`, `ephemeral`, or `alias`; it may also carry
 `codec`, `ttl`, `comment`, and `renamed_from`.
 
+### Type canonicalization
+
+`type` is parsed and re-rendered to one canonical form on both load and
+introspection, so a hand-authored type compares cleanly with ClickHouse's
+stored `create_table_query`. The visible case is an `Enum`: ClickHouse stores
+`Enum8('a' = 1, 'b' = 2)` while the canonical form is the compact
+`Enum8('a'=1, 'b'=2)`. Both input forms are accepted, and the compact one is
+what the resolved schema, generated DDL, and `introspect` / `dump-cluster`
+output carry. Other types are unaffected — nesting is canonicalized too, so
+`Array(Enum8('x' = 1))` becomes `Array(Enum8('x'=1))`.
+
+The same canonicalization applies everywhere a type can be authored: table
+columns, `patch_column` and `patch_table` columns, a `materialized_view`'s
+explicit column list, a `dictionary` attribute, and a `time_series` engine's
+inner column list.
+
+`type` must be **only** a type. Clauses that belong in their own attribute —
+`String DEFAULT 'x'`, `String CODEC(ZSTD)`, `String COMMENT 'c'` — are rejected
+by the canonicalizer, which logs a warning and keeps the text verbatim rather
+than silently dropping the clause. A verbatim type still loads and still
+generates DDL, but it compares as raw text, so it will most likely show up as
+drift against a live cluster; move the clause to `default` / `codec` /
+`comment`. The same warning covers a type the SQL parser cannot express yet.
+
 ## `patch_column`
 
 Inside a table with `extend`, `patch_column` partially specializes one column

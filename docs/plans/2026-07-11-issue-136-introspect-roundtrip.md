@@ -4,6 +4,10 @@ Status: **implemented & verified** (2026-07-11). Scope: correctness items 1–3.
 Item 4 (Distributed system-proxy column subset tolerance) deferred as a design
 decision.
 
+The same bug class in column **types** (an Enum's `=` spacing) — and the object
+kinds `canonicalize` never walked — is covered by
+`2026-08-11-column-type-canonicalization.md`.
+
 ## Context
 
 After posthog bumped the pinned `hclexp` image, the multinode live-convergence
