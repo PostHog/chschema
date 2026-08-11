@@ -621,7 +621,7 @@ func diffDictionary(from, to *DictionarySpec) DictionaryDiff {
 //	  secrets read as equal. No observer without displaySecretsInShowAndSelect
 //	  can do better.
 //	[HIDDEN] vs a real value — unverifiable. The field is masked out of the
-//	  equality check and reported, so an authored secret is never mistaken for
+//	  equality check and reported, so a visible value is never mistaken for
 //	  a change against a cluster that would not show its own.
 //	[HIDDEN] vs absent — a real difference. Present-vs-absent is visible even
 //	  when the value is not.

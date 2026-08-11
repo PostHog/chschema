@@ -8,6 +8,7 @@ import (
 
 // SourceClickHouse — SOURCE(CLICKHOUSE(...)).
 type SourceClickHouse struct {
+	Collection      *string `hcl:"collection,optional"`
 	Host            *string `hcl:"host,optional"`
 	Port            *int64  `hcl:"port,optional"`
 	User            *string `hcl:"user,optional"`
@@ -24,6 +25,7 @@ func (SourceClickHouse) Kind() string { return "clickhouse" }
 
 // SourceMySQL — SOURCE(MYSQL(...)).
 type SourceMySQL struct {
+	Collection      *string `hcl:"collection,optional"`
 	Host            *string `hcl:"host,optional"`
 	Port            *int64  `hcl:"port,optional"`
 	User            *string `hcl:"user,optional"`
@@ -40,6 +42,7 @@ func (SourceMySQL) Kind() string { return "mysql" }
 
 // SourcePostgreSQL — SOURCE(POSTGRESQL(...)).
 type SourcePostgreSQL struct {
+	Collection      *string `hcl:"collection,optional"`
 	Host            *string `hcl:"host,optional"`
 	Port            *int64  `hcl:"port,optional"`
 	User            *string `hcl:"user,optional"`
@@ -56,8 +59,9 @@ func (SourcePostgreSQL) Kind() string { return "postgresql" }
 
 // SourceHTTP — SOURCE(HTTP(...)).
 type SourceHTTP struct {
-	URL                 string  `hcl:"url"`
-	Format              string  `hcl:"format"`
+	Collection          *string `hcl:"collection,optional"`
+	URL                 string  `hcl:"url,optional"`
+	Format              string  `hcl:"format,optional"`
 	CredentialsUser     *string `hcl:"credentials_user,optional"`
 	CredentialsPassword *string `hcl:"credentials_password,optional"`
 }
@@ -85,6 +89,24 @@ func (SourceExecutable) Kind() string { return "executable" }
 type SourceNull struct{}
 
 func (SourceNull) Kind() string { return "null" }
+
+// dictSourceCollection returns the ClickHouse named collection that supplies
+// a source's connection parameters, or nil for an inline/non-supporting
+// source. ClickHouse resolves NAME at DDL execution, so credentials can stay
+// in cluster-side configuration rather than HCL or generated SQL.
+func dictSourceCollection(s DictionarySource) *string {
+	switch v := s.(type) {
+	case SourceClickHouse:
+		return v.Collection
+	case SourceMySQL:
+		return v.Collection
+	case SourcePostgreSQL:
+		return v.Collection
+	case SourceHTTP:
+		return v.Collection
+	}
+	return nil
+}
 
 // dictSecret returns the source's credential field: its DDL argument name and
 // its value (nil when unset). At most one field per source kind is a secret —

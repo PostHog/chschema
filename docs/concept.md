@@ -21,6 +21,10 @@ that state.
   individually — never with `ON CLUSTER`, which proved too fragile in
   operation. `hclexp plan` / `diff -format json` emit the dependency-ordered
   statement list that an executor replays per node.
+- **Cluster-side runtime secrets.** HCL and plan JSON never need dictionary
+  passwords. A dictionary source refers to an externally provisioned ClickHouse
+  named collection; the executor sends `SOURCE(... NAME ...)` unchanged and the
+  target node resolves the credential locally.
 - **Round-trippable.** `hclexp introspect` / `dump-cluster` turn an existing
   cluster into HCL files the loader can consume.
 
@@ -47,6 +51,8 @@ that state.
    migration DDL; in-place-impossible changes surface as `-- UNSAFE`,
    operator-run statements as `-- MANUAL`.
 4. PR review and merge.
-5. The reviewed statements are executed on each node (per-node, no
+5. The deployment ensures every external named collection referenced by a
+   dictionary exists on each target node (or in shared Keeper-backed storage).
+6. The reviewed statements are executed on each node (per-node, no
    `ON CLUSTER`); `MANUAL` statements are run by an operator when
    appropriate.

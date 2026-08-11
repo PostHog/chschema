@@ -855,7 +855,18 @@ func TestDiff_ExternalNCs_Ignored(t *testing.T) {
 	assert.True(t, cs.IsEmpty(), "external collections should be diff-skipped regardless of attribute changes")
 }
 
-func TestDiff_ExternalToManaged_Errors(t *testing.T) {
+func TestDiff_ManagedLiveNCToExternalDesiredIsIgnored(t *testing.T) {
+	from := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name: "dict_credentials", Params: []NamedCollectionParam{{Key: "password", Value: RedactedValue}},
+	}}}
+	to := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name: "dict_credentials", External: true,
+	}}}
+	assert.True(t, Diff(from, to).IsEmpty(),
+		"external on the desired side declares out-of-band ownership, regardless of how live introspection classified it")
+}
+
+func TestDiff_ExternalToManagedIsIgnored(t *testing.T) {
 	from := &Schema{NamedCollections: []NamedCollectionSpec{
 		{Name: "x", External: true},
 	}}
@@ -863,10 +874,7 @@ func TestDiff_ExternalToManaged_Errors(t *testing.T) {
 		{Name: "x", Params: []NamedCollectionParam{{Key: "a", Value: "1"}}},
 	}}
 	cs := Diff(from, to)
-	require.Len(t, cs.NamedCollections, 1)
-	c := cs.NamedCollections[0]
-	assert.NotEmpty(t, c.Error)
-	assert.Contains(t, c.Error, "external")
+	assert.True(t, cs.IsEmpty(), "external is an ownership boundary in either diff direction")
 }
 
 func TestDiff_NamedCollections_HIDDEN_SkipsValueChange(t *testing.T) {

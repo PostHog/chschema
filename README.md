@@ -990,9 +990,16 @@ views fail introspection with a clear error.
 A `dictionary` block declares a ClickHouse dictionary — a key/value
 lookup loaded from an external source (another ClickHouse table, a
 relational database, an HTTP endpoint, a file, etc.) and queried at
-runtime via `dictGet*` functions.
+runtime via `dictGet*` functions. Credentials do not belong in HCL; the
+recommended form refers to a named collection provisioned on the target
+cluster:
 
 ```hcl
+named_collection "exchange_rate_source" {
+  external = true
+  comment  = "credentials are provisioned by the cluster deployment"
+}
+
 database "posthog" {
   dictionary "exchange_rate_dict" {
     primary_key = ["currency"]
@@ -1005,9 +1012,8 @@ database "posthog" {
     attribute "rate"       { type = "Decimal64(10)" }
 
     source "clickhouse" {
-      query    = "SELECT currency, start_date, end_date, rate FROM default.exchange_rate"
-      user     = "default"
-      password = "[HIDDEN]"
+      collection = "exchange_rate_source"
+      query      = "SELECT currency, start_date, end_date, rate FROM default.exchange_rate"
     }
     layout "complex_key_range_hashed" {
       range_lookup_strategy = "max"
@@ -1031,11 +1037,78 @@ database "posthog" {
 **Supported source kinds:** `clickhouse`, `mysql`, `postgresql`, `http`, `file`, `executable`, `null`.
 **Supported layout kinds:** `flat`, `hashed`, `sparse_hashed`, `complex_key_hashed`, `complex_key_sparse_hashed`, `range_hashed`, `complex_key_range_hashed`, `cache`, `ip_trie`, `direct`.
 
+`clickhouse`, `mysql`, `postgresql`, and `http` sources accept an optional
+`collection` attribute. It renders as ClickHouse's native `NAME` argument and
+may be combined with non-secret overrides such as `table` or `query`:
+
+```sql
+SOURCE(CLICKHOUSE(NAME exchange_rate_source QUERY 'SELECT ...'))
+```
+
 Kinds outside these lists error during introspection with `unsupported dictionary source/layout kind: <name>`. Adding a new kind is a small change — one typed struct + one switch case in `dictionary_sources.go` / `dictionary_layouts.go`.
 
-**Diff & apply.** ClickHouse has no useful in-place `ALTER DICTIONARY`. `hclexp diff` reports any non-empty change with `~ dictionary <name> (changed: ...)`; `-sql` emits a `CREATE OR REPLACE DICTIONARY` statement, which is the idiomatic ClickHouse update path and is treated as safe.
+**Diff & apply.** ClickHouse has no useful in-place `ALTER DICTIONARY`. `hclexp diff` reports any non-empty change with `~ dictionary <name> (changed: ...)`; `-sql` emits a `CREATE OR REPLACE DICTIONARY` statement, which is the idiomatic ClickHouse update path and is treated as safe when every required runtime value is resolvable.
 
-**`PASSWORD '[HIDDEN]'` caveat.** ClickHouse's `system.tables.create_table_query` redacts secrets, so an introspected dictionary's `password` is the literal string `[HIDDEN]`. Applying a dumped dictionary verbatim will leave it unable to load data from its source. Edit dumped HCL to restore real credentials (or wire secrets through some out-of-band mechanism) before deploying.
+#### Runtime dictionary credentials
+
+The credential boundary is deliberately cluster-side. `hclexp plan` is an
+ordered statement producer, not a secret provider, and its JSON is commonly
+stored as a CI artifact. Neither HCL nor `operation.sql` should contain a
+dictionary password.
+
+The execution contract is:
+
+1. Before schema operations run, the deployment system creates the named
+   collection on every target node, or makes it available through ClickHouse's
+   Keeper-backed named-collection storage. It obtains the password from the
+   environment's secret manager.
+2. HCL declares that collection with `external = true`. This is a reference and
+   ownership marker: hclexp validates the name but emits no CREATE/ALTER/DROP for
+   the collection and never compares its values.
+3. The dictionary source sets `collection = "..."`. hclexp emits
+   `SOURCE(<KIND>(NAME <collection> ...))` with only non-secret overrides.
+4. The executor sends that DDL unchanged. ClickHouse resolves `NAME` against
+   the collection already present on that node, so the password enters the
+   dictionary source only inside ClickHouse.
+
+For example, the cluster bootstrap—not a committed migration—may execute a
+secret-injected statement like:
+
+```sql
+CREATE NAMED COLLECTION exchange_rate_source AS
+  host = 'localhost', user = 'dict_reader', password = '<from secret manager>';
+```
+
+The reviewed plan still contains only:
+
+```sql
+CREATE OR REPLACE DICTIONARY posthog.exchange_rate_dict (...)
+SOURCE(CLICKHOUSE(NAME exchange_rate_source QUERY 'SELECT ...'))
+LAYOUT(...);
+```
+
+Important operational details:
+
+- The collection is a precondition. Because `external = true` emits no DDL, a
+  missing collection makes ClickHouse reject the dictionary statement rather
+  than silently creating a passwordless source.
+- Per-node execution means the collection must be available on every node that
+  receives the dictionary DDL. Keeper-backed storage is the convenient shared
+  option; server XML/config or per-node bootstrap also works.
+- The execution user needs `NAMED COLLECTION ON <name>` access in addition to
+  its dictionary DDL privileges.
+- Source arguments after `NAME` are named-collection overrides. ClickHouse
+  allows them by default; if `allow_named_collection_override_by_default` is
+  disabled, declare those keys overridable in the cluster-side collection or
+  put them in the collection itself.
+- `clickhouse`, `mysql`, `postgresql`, and `http` dictionary sources support
+  this form. `file`, `executable`, and `null` have no connection password.
+
+An inline live dictionary may introspect as `password = "[HIDDEN]"`. If HCL
+merely omits that password, hclexp reports an unsafe-only difference and emits
+no replacement DDL—the safe fallback from #178. To migrate it, provision the
+external collection and add `collection = "..."`; the resulting source change
+is executable because ClickHouse, rather than hclexp, can resolve the secret.
 
 ### Raw escape hatch
 
@@ -1097,20 +1170,17 @@ database "posthog" {
 
 | Block / attribute | Required | Meaning |
 |-------------------|----------|---------|
-| `external`        | no       | `true` marks an NC managed outside hclexp (e.g. server XML config); hclexp emits no DDL for it but lets Kafka references resolve. |
+| `external`        | no       | `true` marks an NC managed outside hclexp (e.g. server XML config); hclexp emits no DDL for it but lets Kafka and dictionary-source references resolve. |
 | `cluster`         | no       | `ON CLUSTER` target. Changing it forces a DROP+CREATE recreate. |
 | `comment`         | no       | NC comment. |
 | `param`           | yes (unless `external = true`) | one per key, with required `value` and optional `overridable` boolean. |
 
-**Diff & apply.** `hclexp diff` uses `ALTER NAMED COLLECTION ... SET / DELETE` for surgical param changes and a `DROP+CREATE` pair (emitted adjacently) when `cluster` changes. External↔managed transitions are flagged as unsupported migrations.
+**Diff & apply.** `hclexp diff` uses `ALTER NAMED COLLECTION ... SET / DELETE` for surgical param changes and a `DROP+CREATE` pair (emitted adjacently) when `cluster` changes. A collection marked `external = true` on either side is ignored: external is an ownership boundary, not a property introspection can recover from the live object.
 
-**Production secret pattern.** The natural way to keep secret NC values out of VCS is the layered HCL pattern:
-
-```bash
-hclexp -layer schema/base,schema/prod-secrets ...
-```
-
-The base layer commits the NC declaration with placeholder values; the override layer (gitignored or vault-sourced) declares the same NC with `override = true` and the real values. Layer merging applies the override.
+**Production secret pattern.** Secret-bearing collections should be external:
+the cluster deployment obtains their values from its secret manager, while HCL
+commits only their names and references. Managed named collections remain useful
+for non-secret settings.
 
 **Externally-managed NCs (PostHog-style XML config).** When a collection is defined in the ClickHouse server's XML config rather than via DDL, declare it in HCL with `external = true`:
 
@@ -1121,9 +1191,11 @@ named_collection "kafka_main" {
 }
 ```
 
-hclexp emits no DDL for external collections, but their declaration makes engine `collection = "..."` references resolvable and validatable at parse time.
+hclexp emits no DDL for external collections, but their declaration makes
+Kafka engine and dictionary source `collection = "..."` references resolvable
+and validatable at parse time.
 
-**Privilege & redaction caveat.** ClickHouse redacts named-collection values to `[HIDDEN]` for users without `SHOW_NAMED_COLLECTIONS_SECRETS`. The introspection in this package relies on the cluster exposing real values. In production with restricted users, introspected NCs come back with `[HIDDEN]` placeholders — use the override-layer pattern (or external NCs) to keep the real values out of VCS.
+**Privilege & redaction caveat.** ClickHouse redacts named-collection values to `[HIDDEN]` for users without `SHOW_NAMED_COLLECTIONS_SECRETS`. In production, declare secret-bearing collections external so comparison never needs their values. Use `-show-secrets` only for controlled debugging or export workflows; it writes plaintext secrets to the output.
 
 ### Kafka engine with named collections
 

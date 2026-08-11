@@ -1078,28 +1078,33 @@ with a placeholder. A whole-object dictionary rewrite is also refused when the
 live/source spec has a redacted credential and the same target source omits it;
 otherwise `CREATE OR REPLACE` would silently remove the credential even though
 the generated SQL contains no marker. Refused rewrites produce no DDL and carry
-an unsafe reason naming the field.
+an unsafe reason naming the field. A target `collection` reference is the safe
+exception: ClickHouse resolves its credential from the named collection at DDL
+execution, so hclexp does not need the old inline value.
 
 **It compares as unknown, not as a value.** Both sides `[HIDDEN]` → equal, and
 silently (the normal `drift` case, where every node was dumped by the same user;
 two genuinely different hidden secrets do read as equal — no observer without
 the grant can do better). One side `[HIDDEN]` and the other a real value → the
 field is reported as unverifiable and excluded from the comparison, so an
-authored secret is not mistaken for a change on every run. `[HIDDEN]` versus
+visible value is not mistaken for a change on every run. `[HIDDEN]` versus
 *absent* is a real difference: present-vs-absent is visible even when the value
 is not.
 
-**You may write it deliberately.** `password = "[HIDDEN]"` in authored HCL
-declares a secret managed outside hclexp. It compares clean against a redacting
-cluster.
+**Do not put dictionary credentials in authored HCL.** `[HIDDEN]` may appear in
+an introspected dump, but the production authored form declares an external
+named collection and sets `collection = "..."` on the dictionary source. The
+cluster deployment supplies the collection before plan execution; generated SQL
+contains `NAME <collection>`, never `PASSWORD`.
 
 What a blocked emission costs you differs by kind, because the two reconcile
 differently:
 
 - A **dictionary** is rewritten whole (`CREATE OR REPLACE DICTIONARY` — how
-  *every* dictionary change is applied), and that rewrite includes the source
-  credential. So an unknown secret blocks **any** change to that dictionary; a
-  whole-object rewrite cannot preserve a secret it does not know.
+  *every* dictionary change is applied). An unknown inline secret blocks a
+  rewrite because it cannot be preserved. A `collection`-backed source remains
+  executable: the rewrite contains `NAME`, and ClickHouse resolves the secret
+  on the target node.
 - A **named collection** has surgical DDL (`ALTER … SET` / `DELETE`), so a
   normal param change still applies while a secret stays unknown. Only the
   statements that write every param — `CREATE NAMED COLLECTION`, and the
@@ -1109,21 +1114,23 @@ differently:
 
 If an object reports an unverifiable secret on every run, pick one:
 
-1. Grant `displaySecretsInShowAndSelect` and set
+1. **For a dictionary, migrate it to an external named collection** (the
+   production pattern documented in the main README): provision the collection
+   on every target node, declare it with `external = true`, and set the source's
+   `collection` attribute.
+2. Grant `displaySecretsInShowAndSelect` and set
    `display_secrets_in_show_and_select=1` for the introspecting user — the
    secret becomes visible, comparisons are exact, and rotating a credential
    through hclexp works. Note that dumps then contain real secrets in
    plaintext; treat the artifacts accordingly.
-2. Declare it unmanaged: `password = "[HIDDEN]"` (above).
 3. `-exclude` the object entirely — the bluntest option.
 
 A passworded dictionary whose authored HCL simply *omits* the password is a
-genuine difference, not an unmanaged declaration. If the live password is
-visible, `CREATE OR REPLACE` can remove it. If introspection returned
+genuine difference, not a runtime binding. If introspection returned
 `[HIDDEN]`, hclexp refuses the rewrite as unsafe and emits no DDL: automatic
-reconciliation must not strip a credential it cannot see. To suppress that
-permanent difference, declare the field as `[HIDDEN]`; to remove it, introspect
-with secrets visible or apply the change manually.
+reconciliation must not strip a credential it cannot see. Add a `collection`
+reference to make the credential resolvable at execution; to intentionally
+remove it, introspect with secrets visible or apply the change manually.
 
 ### `drift -format json`
 

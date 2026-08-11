@@ -760,6 +760,23 @@ func TestSQLGen_AlterDictionary_RedactedOldSecretReplacedByVisibleTargetIsSafe(t
 	assert.Empty(t, out.Unsafe)
 }
 
+func TestSQLGen_AlterDictionary_RedactedOldSecretReplacedByCollectionIsSafe(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "db",
+		AlterDictionaries: []DictionaryDiff{{
+			Name:    "d",
+			Changed: []string{"source"},
+			Old:     dictSpec("d", SourceClickHouse{Password: ptr(RedactedValue), Table: ptr("control_table")}),
+			New:     dictSpec("d", SourceClickHouse{Collection: ptr("dict_credentials"), Table: ptr("control_table")}),
+		}},
+	}}}
+	out := GenerateSQL(cs)
+	require.Len(t, out.Statements, 1)
+	assert.Contains(t, out.Statements[0], "SOURCE(CLICKHOUSE(NAME dict_credentials TABLE 'control_table'))")
+	assert.NotContains(t, out.Statements[0], "PASSWORD")
+	assert.Empty(t, out.Unsafe)
+}
+
 func TestSQLGen_AddDictionary_RedactedSecretIsBlocked(t *testing.T) {
 	cs := ChangeSet{Databases: []DatabaseChange{{
 		Database:        "db",
@@ -901,6 +918,11 @@ func TestSQLGen_Dictionary_SourceSQL_AllKinds(t *testing.T) {
 			"CLICKHOUSE(QUERY 'SELECT 1')",
 		},
 		{
+			"clickhouse (named collection with override)",
+			SourceClickHouse{Collection: ptr("dict_credentials"), Table: ptr("control_table")},
+			"CLICKHOUSE(NAME dict_credentials TABLE 'control_table')",
+		},
+		{
 			"mysql", SourceMySQL{Host: ptr("h"), Port: ptr(int64(3306)), DB: ptr("d"), Table: ptr("t")},
 			"MYSQL(HOST 'h' PORT 3306 DB 'd' TABLE 't')",
 		},
@@ -911,6 +933,10 @@ func TestSQLGen_Dictionary_SourceSQL_AllKinds(t *testing.T) {
 		{
 			"http", SourceHTTP{URL: "https://x/y", Format: "JSONEachRow", CredentialsUser: ptr("u"), CredentialsPassword: ptr("p")},
 			"HTTP(URL 'https://x/y' FORMAT 'JSONEachRow' CREDENTIALS_USER 'u' CREDENTIALS_PASSWORD 'p')",
+		},
+		{
+			"http (named collection only)", SourceHTTP{Collection: ptr("http_credentials")},
+			"HTTP(NAME http_credentials)",
 		},
 		{
 			"file", SourceFile{Path: "/data/x.csv", Format: "CSV"},

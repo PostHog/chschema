@@ -17,8 +17,8 @@ import "sort"
 // statement containing it: writing the string "[HIDDEN]" over a real cluster
 // credential would be actively destructive.
 //
-// Authored HCL may also use it deliberately — `password = "[HIDDEN]"` declares
-// a secret that is managed outside hclexp.
+// Authored production HCL should use an external named collection instead of
+// carrying either a real secret or this marker.
 const RedactedValue = "[HIDDEN]"
 
 // NamedCollectionChange describes a planned change to a named collection.
@@ -49,8 +49,8 @@ type NamedCollectionChange struct {
 	// surfaces these so operators know hclexp couldn't verify equality.
 	SkippedRedactedParams []string
 
-	// Error is non-empty when the diff describes an unsupported transition
-	// (e.g. external↔managed). sqlgen emits no DDL; the CLI surfaces it.
+	// Error is non-empty when the diff describes an unsupported transition.
+	// sqlgen emits no DDL; the CLI surfaces it.
 	Error string
 }
 
@@ -105,14 +105,12 @@ func diffNamedCollections(from, to []NamedCollectionSpec) []NamedCollectionChang
 			}
 			out = append(out, NamedCollectionChange{Name: n, Drop: true})
 		default:
-			if f.External && ft.External {
-				continue
-			}
-			if f.External != ft.External {
-				out = append(out, NamedCollectionChange{
-					Name:  n,
-					Error: "external↔managed migration not supported; promote/demote manually",
-				})
+			// External is an ownership boundary, not live schema state. If either
+			// side declares it, chschema must not compare or mutate cluster-side
+			// values. This stays direction-independent for `diff`, while `plan`
+			// also compares a normal-looking introspected collection cleanly
+			// against the desired external declaration.
+			if f.External || ft.External {
 				continue
 			}
 			change := diffOneNamedCollection(n, f, ft)

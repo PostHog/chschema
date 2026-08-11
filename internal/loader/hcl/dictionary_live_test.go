@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/posthog/chschema/config"
 	"github.com/posthog/chschema/test/testhelpers"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -72,6 +73,61 @@ func TestCHLive_Dictionary_ApplyRoundTrip(t *testing.T) {
 	require.NotNil(t, got.Lifetime)
 	require.NotNil(t, got.Comment)
 	assert.Equal(t, "a richly-attributed dictionary", *got.Comment)
+}
+
+// The production credential path: chschema emits only NAME plus schema-owned
+// overrides, while ClickHouse resolves the connection password from a named
+// collection that already exists on the target cluster.
+func TestCHLive_Dictionary_NamedCollectionCredential(t *testing.T) {
+	if !*clickhouseLive {
+		t.Skip("pass -clickhouse to run against a live ClickHouse")
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	ctx := context.Background()
+	cfg := config.GetDefaultConfig()
+	collection := "dict_credentials_" + strings.TrimPrefix(dbName, "chschema_test_")
+
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
+		"CREATE NAMED COLLECTION %s AS host = %s, port = %d, user = %s, password = %s, secure = %t",
+		collection, quoteString(cfg.Host), cfg.Port, quoteString(cfg.User), quoteString(cfg.Password), cfg.Secure)))
+	t.Cleanup(func() {
+		_ = conn.Exec(context.Background(), "DROP NAMED COLLECTION IF EXISTS "+collection)
+	})
+
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
+		"CREATE TABLE %s.src (`k` UInt64, `v` String) ENGINE = MergeTree ORDER BY k", dbName)))
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf("INSERT INTO %s.src VALUES (1, 'loaded')", dbName)))
+
+	query := fmt.Sprintf("SELECT k, v FROM %s.src", dbName)
+	spec := DictionarySpec{
+		Name:       "collection_dict",
+		PrimaryKey: []string{"k"},
+		Attributes: []DictionaryAttribute{{Name: "k", Type: "UInt64"}, {Name: "v", Type: "String"}},
+		Source: &DictionarySourceSpec{Kind: "clickhouse", Decoded: SourceClickHouse{
+			Collection: &collection,
+			Query:      &query,
+		}},
+		Layout:   &DictionaryLayoutSpec{Kind: "hashed", Decoded: LayoutHashed{}},
+		Lifetime: &DictionaryLifetime{Min: ptr(int64(0))},
+	}
+	stmt := createDictionarySQL(dbName, spec)
+	assert.Contains(t, stmt, "SOURCE(CLICKHOUSE(NAME "+collection)
+	assert.NotContains(t, stmt, "PASSWORD")
+	require.NoError(t, conn.Exec(ctx, stmt), "DDL rejected:\n%s", stmt)
+
+	var gotValue string
+	require.NoError(t, conn.QueryRow(ctx,
+		fmt.Sprintf("SELECT dictGet(%s, 'v', toUInt64(1))", quoteString(dbName+".collection_dict"))).Scan(&gotValue))
+	assert.Equal(t, "loaded", gotValue)
+
+	db, err := Introspect(ctx, conn, dbName, false)
+	require.NoError(t, err)
+	got := findDictByName(db.Dictionaries, "collection_dict")
+	require.NotNil(t, got)
+	source, ok := got.Source.Decoded.(SourceClickHouse)
+	require.True(t, ok)
+	assert.Equal(t, &collection, source.Collection)
 }
 
 // The #140 scenario, end to end against a real server: an existing dictionary

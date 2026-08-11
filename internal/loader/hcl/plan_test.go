@@ -227,3 +227,29 @@ func TestBuildPlan_RedactedDictionarySecretOmittedByDesiredIsUnsafeOnly(t *testi
 	assert.Empty(t, comparison.Operations)
 	assert.Equal(t, CompareSummary{DictsAltered: 1}, plan.Roles[0].Summary)
 }
+
+func TestBuildPlan_RedactedDictionarySecretMovesToExternalCollection(t *testing.T) {
+	live := mkDict("demo_dict", SourceClickHouse{
+		User: ptr("dict_reader"), Password: ptr(RedactedValue), Table: ptr("control_table"),
+	}, LayoutComplexKeyHashed{}, DictionaryAttribute{Name: "k", Type: "String"})
+	desired := mkDict("demo_dict", SourceClickHouse{
+		Collection: ptr("demo_dict_source"), Table: ptr("control_table"),
+	}, LayoutComplexKeyHashed{}, DictionaryAttribute{Name: "k", Type: "String"})
+
+	plan := BuildPlan([]RoleDiff{{
+		Role:    "data",
+		Current: &Schema{Databases: []DatabaseSpec{{Name: "posthog", Dictionaries: []DictionarySpec{live}}}},
+		Desired: &Schema{
+			NamedCollections: []NamedCollectionSpec{{Name: "demo_dict_source", External: true}},
+			Databases:        []DatabaseSpec{{Name: "posthog", Dictionaries: []DictionarySpec{desired}}},
+		},
+	}})
+
+	require.Len(t, plan.Operations, 1)
+	op := plan.Operations[0]
+	assert.Equal(t, KindDictionary, op.ObjectType)
+	assert.Contains(t, op.SQL, "SOURCE(CLICKHOUSE(NAME demo_dict_source TABLE 'control_table'))")
+	assert.NotContains(t, op.SQL, "PASSWORD")
+	assert.False(t, op.Unsafe)
+	assert.Empty(t, plan.Unsafe)
+}

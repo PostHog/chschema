@@ -320,6 +320,26 @@ func TestResolve_NamedCollection_Validation(t *testing.T) {
 	}
 }
 
+func TestResolve_DictionarySourceCollectionMustBeDeclared(t *testing.T) {
+	dict := mkDict("d", SourceClickHouse{Collection: ptr("dict_credentials")}, LayoutHashed{},
+		DictionaryAttribute{Name: "k", Type: "UInt64"})
+
+	t.Run("external collection is a valid runtime binding", func(t *testing.T) {
+		s := &Schema{
+			NamedCollections: []NamedCollectionSpec{{Name: "dict_credentials", External: true}},
+			Databases:        []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{dict}}},
+		}
+		assert.NoError(t, Resolve(s))
+	})
+
+	t.Run("undeclared collection is rejected", func(t *testing.T) {
+		s := &Schema{Databases: []DatabaseSpec{{Name: "db", Dictionaries: []DictionarySpec{dict}}}}
+		err := Resolve(s)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `references collection "dict_credentials" which is not declared`)
+	})
+}
+
 func TestResolve_KafkaEngine_XOR(t *testing.T) {
 	mkTblWithKafka := func(eng EngineKafka) *Schema {
 		return &Schema{Databases: []DatabaseSpec{{
