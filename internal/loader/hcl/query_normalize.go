@@ -195,6 +195,48 @@ func normalizeTTLPtr(p **string) {
 	}
 }
 
+// normalizeType canonicalizes a column type to the same compact form
+// introspection renders, so an authored type and its live-introspected
+// counterpart compare equal (issue #136, column-type case). ClickHouse stores
+// an Enum in create_table_query with spaces around '=' (Enum8('a' = 1, 'b' =
+// 2)), while the printer every introspected type is rendered through emits
+// Enum8('a'=1, 'b'=2); a raw string compare of an authored Enum8('a' = 1)
+// against its introspected form therefore never matches and the diff emits a
+// perpetual no-op MODIFY COLUMN. Parsing both sides through the same printer
+// removes the asymmetry. The type is parsed as the column type of a throwaway
+// CREATE TABLE — the same node path introspect uses — and rendered via
+// formatNode. Returns ok=false with the input unchanged when it can't be
+// parsed, so the caller keeps the raw text.
+func normalizeType(s string) (string, bool) {
+	if strings.TrimSpace(s) == "" {
+		return s, true
+	}
+	stmt, err := parseCreateStatement("CREATE TABLE _norm_type (_x " + s + ") ENGINE = MergeTree ORDER BY _x")
+	if err != nil {
+		return s, false
+	}
+	ct, ok := stmt.(*chparser.CreateTable)
+	if !ok || ct.TableSchema == nil || len(ct.TableSchema.Columns) == 0 {
+		return s, false
+	}
+	cd, ok := ct.TableSchema.Columns[0].(*chparser.ColumnDef)
+	if !ok || cd.Type == nil {
+		return s, false
+	}
+	return formatNode(cd.Type), true
+}
+
+// normalizeTypePtr canonicalizes an optional column type in place, leaving it
+// untouched when unset or unparseable.
+func normalizeTypePtr(p **string) {
+	if *p == nil {
+		return
+	}
+	if nt, ok := normalizeType(**p); ok {
+		*p = &nt
+	}
+}
+
 // canonicalize brings every expression-bearing field of db to a single
 // canonical string form, so a schema composed from HCL and the same schema
 // introspected from a live cluster reduce to identical text and diff clean
@@ -259,11 +301,14 @@ func canonicalize(db *DatabaseSpec) {
 	}
 }
 
-// normalizeColumnExprs canonicalizes the expression-bearing fields of each
-// column in place.
+// normalizeColumnExprs canonicalizes the type and expression-bearing fields of
+// each column in place.
 func normalizeColumnExprs(cols []ColumnSpec) {
 	for ci := range cols {
 		c := &cols[ci]
+		if nt, ok := normalizeType(c.Type); ok {
+			c.Type = nt
+		}
 		normalizeExprPtr(&c.Default)
 		normalizeExprPtr(&c.Materialized)
 		normalizeExprPtr(&c.Alias)
@@ -271,11 +316,13 @@ func normalizeColumnExprs(cols []ColumnSpec) {
 	}
 }
 
-// normalizePatchColumnExprs canonicalizes the expression-bearing fields of
-// partial inherited-column patches exactly like full column declarations.
+// normalizePatchColumnExprs canonicalizes the type and expression-bearing
+// fields of partial inherited-column patches exactly like full column
+// declarations.
 func normalizePatchColumnExprs(patches []PatchColumnSpec) {
 	for i := range patches {
 		p := &patches[i]
+		normalizeTypePtr(&p.Type)
 		normalizeExprPtr(&p.Default)
 		normalizeExprPtr(&p.Materialized)
 		normalizeExprPtr(&p.Alias)

@@ -236,3 +236,48 @@ func TestNormalizeTTL_WhereIntervalSemanticEquivalence(t *testing.T) {
 
 	assert.Equal(t, stored, authored)
 }
+
+// TestNormalizeType_CanonicalizesEnumSpacing covers the column-type
+// canonicalizer. ClickHouse stores an Enum with spaces around '=', while the
+// printer every introspected type is rendered through drops them, so an
+// authored Enum8('a' = 1) must reduce to the same string as its introspected
+// Enum8('a'=1) or the diff reports a perpetual no-op MODIFY COLUMN (issue #136).
+func TestNormalizeType_CanonicalizesEnumSpacing(t *testing.T) {
+	authored := "Enum8('a' = 1, 'b' = 2, 'tie' = 3)"
+	introspected := "Enum8('a'=1, 'b'=2, 'tie'=3)"
+
+	a, ok := normalizeType(authored)
+	require.True(t, ok, "normalizeType(%q)", authored)
+	i, ok := normalizeType(introspected)
+	require.True(t, ok, "normalizeType(%q)", introspected)
+	assert.Equal(t, i, a, "authored and introspected Enum types must canonicalize to the same string")
+
+	again, ok := normalizeType(a)
+	require.True(t, ok)
+	assert.Equal(t, a, again, "normalizeType must be idempotent")
+
+	// The '=' inside a nested Enum is canonicalized too.
+	nested, ok := normalizeType("Array(Enum8('x' = 1, 'y' = 2))")
+	require.True(t, ok)
+	assert.Equal(t, "Array(Enum8('x'=1, 'y'=2))", nested)
+}
+
+// TestNormalizeType_LeavesNonEnumAndUnparseable verifies the canonicalizer is a
+// no-op on types with no Enum '=' and keeps the raw text when it can't parse.
+func TestNormalizeType_LeavesNonEnumAndUnparseable(t *testing.T) {
+	for _, ty := range []string{
+		"String",
+		"LowCardinality(String)",
+		"Nullable(DateTime64(3, 'UTC'))",
+		"Decimal(10, 2)",
+	} {
+		got, ok := normalizeType(ty)
+		require.True(t, ok, "normalizeType(%q)", ty)
+		assert.Equal(t, ty, got, "non-enum type must be unchanged")
+	}
+
+	raw := "Enum8('a' = "
+	got, ok := normalizeType(raw)
+	assert.False(t, ok, "unparseable type reports ok=false")
+	assert.Equal(t, raw, got, "unparseable type keeps raw text")
+}
