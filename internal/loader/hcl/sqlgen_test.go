@@ -723,6 +723,43 @@ func TestSQLGen_AlterDictionary_RedactedTargetIsBlocked(t *testing.T) {
 	assert.Contains(t, out.Unsafe[0].Reason, `dictionary source secret "password" is unknown to hclexp`)
 }
 
+// The target itself contains no marker, but the live/source side proves that a
+// credential exists and that hclexp cannot preserve it. This is the dangerous
+// plan direction from #178: CREATE OR REPLACE must not silently omit PASSWORD.
+func TestSQLGen_AlterDictionary_RedactedOldSecretOmittedByTargetIsBlocked(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "db",
+		AlterDictionaries: []DictionaryDiff{{
+			Name:    "d",
+			Changed: []string{"source"},
+			Old:     dictSpec("d", SourceMySQL{Host: ptr("h"), Password: ptr(RedactedValue)}),
+			New:     dictSpec("d", SourceMySQL{Host: ptr("h")}),
+		}},
+	}}}
+	out := GenerateSQL(cs)
+	assert.Empty(t, out.Statements, "a rewrite would remove the live password")
+	require.Len(t, out.Unsafe, 1)
+	assert.Equal(t, "db", out.Unsafe[0].Database)
+	assert.Equal(t, "d", out.Unsafe[0].Table)
+	assert.Contains(t, out.Unsafe[0].Reason, `dictionary source secret "password" is unknown to hclexp`)
+}
+
+func TestSQLGen_AlterDictionary_RedactedOldSecretReplacedByVisibleTargetIsSafe(t *testing.T) {
+	cs := ChangeSet{Databases: []DatabaseChange{{
+		Database: "db",
+		AlterDictionaries: []DictionaryDiff{{
+			Name:    "d",
+			Changed: []string{"lifetime"},
+			Old:     dictSpec("d", SourceMySQL{Host: ptr("h"), Password: ptr(RedactedValue)}),
+			New:     dictSpec("d", SourceMySQL{Host: ptr("h"), Password: ptr("known")}),
+		}},
+	}}}
+	out := GenerateSQL(cs)
+	require.Len(t, out.Statements, 1)
+	assert.Contains(t, out.Statements[0], "PASSWORD 'known'")
+	assert.Empty(t, out.Unsafe)
+}
+
 func TestSQLGen_AddDictionary_RedactedSecretIsBlocked(t *testing.T) {
 	cs := ChangeSet{Databases: []DatabaseChange{{
 		Database:        "db",

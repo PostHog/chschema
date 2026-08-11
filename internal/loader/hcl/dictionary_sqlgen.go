@@ -55,7 +55,9 @@ func dropDictionarySQL(database, name string) string {
 // credential. If that credential is the RedactedValue marker, hclexp does not
 // know the real one, so the statement would install the dictionary without it
 // (or, worse, with the literal placeholder). There is no partial form to fall
-// back on, so the whole object is handed to the operator instead.
+// back on, so the whole object is handed to the operator instead. Altered
+// dictionaries use redactedSecretRewriteBlock, which additionally protects a
+// redacted credential present only on the old/live side.
 func redactedSecretBlock(d DictionarySpec) string {
 	if d.Source == nil || d.Source.Decoded == nil {
 		return ""
@@ -64,6 +66,43 @@ func redactedSecretBlock(d DictionarySpec) string {
 	if !redacted {
 		return ""
 	}
+	return redactedSecretReason(field)
+}
+
+// redactedSecretRewriteBlock reports why an altered dictionary cannot be
+// rewritten safely. Checking only the target is insufficient: introspection
+// may reveal that the live source has a credential while hiding its value, and
+// authored HCL may omit that credential. Rendering only the target would then
+// silently remove the live secret (#178).
+//
+// A visible target credential is safe because CREATE OR REPLACE can write it.
+// A source-kind change is also explicit and does not preserve configuration
+// from the old source kind. For the same source kind, however, an old redacted
+// credential plus an absent target credential must block the whole rewrite.
+func redactedSecretRewriteBlock(old, target DictionarySpec) string {
+	if reason := redactedSecretBlock(target); reason != "" {
+		return reason
+	}
+	if old.Source == nil || old.Source.Decoded == nil {
+		return ""
+	}
+	field, redacted := dictSecretIsRedacted(old.Source.Decoded)
+	if !redacted {
+		return ""
+	}
+	if target.Source != nil && target.Source.Decoded != nil && old.Source.Kind != target.Source.Kind {
+		return ""
+	}
+	if target.Source != nil && target.Source.Decoded != nil {
+		_, targetSecret := dictSecret(target.Source.Decoded)
+		if targetSecret != nil {
+			return ""
+		}
+	}
+	return redactedSecretReason(field)
+}
+
+func redactedSecretReason(field string) string {
 	return fmt.Sprintf("dictionary source secret %q is unknown to hclexp (%s: redacted by the server at introspection, "+
 		"or declared unmanaged in HCL); CREATE OR REPLACE DICTIONARY would write the dictionary without the real value. "+
 		"Grant displaySecretsInShowAndSelect AND set display_secrets_in_show_and_select=1, or apply this change manually",
