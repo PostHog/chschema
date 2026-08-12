@@ -104,7 +104,36 @@ semantics:
 - the same two revisions always produce the same migration, independent of
   node state.
 
-### 3. Add manifest-to-manifest cross-role planning
+### 3. Scope dump-based `plan` to desired objects
+
+Directly address the original issue's command by adding a plan-specific scope:
+
+```bash
+hclexp plan \
+  -manifest schema/manifest.hcl \
+  -layer-root schema \
+  -env prod-us \
+  -dump ./clickhouse-schema/prod-us \
+  -scope desired \
+  -format json
+```
+
+For dump-based planning, accept `-scope all|desired`, defaulting to `all` for
+compatibility. For each role:
+
+```text
+scope=desired: Diff(current intersect identities(desired), desired)
+scope=all:     Diff(current, desired)
+```
+
+`desired` makes `plan -manifest ... -dump ...` a managed live-convergence plan:
+it ignores whole live-only objects, still creates managed objects missing live,
+and fully reconciles fields inside managed objects. It cannot infer an
+intentional deletion because an object absent from desired is outside the
+ownership set; intentional removals come from exact reference-to-proposed
+migration planning.
+
+### 4. Add manifest-to-manifest cross-role planning
 
 `plan` currently gets its `Current` schemas from a topology `-dump`. For
 deterministic migrations with global cross-role dependency ordering, add an
@@ -122,10 +151,9 @@ hclexp plan \
 
 `-from-manifest` and `-dump` are mutually exclusive. Both feed the existing
 `RoleDiff{Current, Desired}` and `BuildPlan`; the former is the migration mode,
-while the latter remains available for compatibility and topology analysis.
-The dump-based mode must not be described as a safe migration generator for a
-subset-managed node unless its live-only objects have been explicitly scoped
-or excluded.
+while `-dump -scope desired` is the managed live-convergence mode. Unscoped dump
+planning remains available for compatibility and exact whole-node management,
+but may drop every live-only object.
 
 There is deliberately no built-in Git fetch/show logic. The caller resolves the
 previous deployed revision into files, for example with a temporary worktree.
@@ -149,6 +177,25 @@ hclexp diff \
 The operations in this direction are descriptive: they show how the live dump
 differs from the reference. They are not automatically a production repair
 script.
+
+For a globally ordered, cross-role convergence plan against the live topology,
+use the same ownership rule through `plan`:
+
+```bash
+hclexp plan \
+  -manifest schema/manifest.hcl \
+  -layer-root schema \
+  -env prod-us \
+  -dump ./clickhouse-schema/prod-us \
+  -scope desired \
+  -exclude schema/exclude.hcl \
+  -format json
+```
+
+This is the safe form of the command reported in #75. It emits CREATE/ALTER or
+replace operations for managed objects but no DROP for a live-only unmanaged
+object. Because it cannot represent intentional deletion, it does not replace
+the exact reference-to-proposed migration plan below.
 
 ### Step 2: Resolve every managed drift
 
@@ -219,10 +266,28 @@ explicitly.
   wrappers and node metadata are preserved while object slices are scoped.
 - `-exclude` applies to both sides before `-scope` is calculated. An excluded
   object cannot be brought back into the comparison by the scope side.
+- In dump-based `plan`, `desired` means each role's composed desired schema;
+  current is scoped independently for every role before `RoleDiff` is built.
 - Output JSON and operation shapes do not change. Scoping changes which
   comparisons exist, not their serialization.
 - A scoped-out live object appears in no object comparison, operation, unsafe
   entry, or summary count.
+
+## Dump-based plan scope rules
+
+- `-scope all` is the default and preserves today's exact full-node behavior.
+- `-scope desired` is valid only with `-dump`; it scopes every role's current
+  dump schema to that role's desired object identities.
+- A desired object missing from the dump remains in the diff and produces a
+  CREATE. A shared object's internal differences remain fully authoritative.
+- A live-only object appears nowhere in role comparisons, merged operations,
+  unsafe entries, or summary counts.
+- `-exclude` filters desired and current before desired identities are
+  collected.
+- A role absent from the dump still uses an empty current schema, so all of its
+  desired objects produce CREATE operations.
+- `-scope desired` with `-from-manifest` is rejected: migration planning must
+  remain exact and include intentional removals.
 
 ## Manifest-to-manifest role rules
 
@@ -305,7 +370,42 @@ Tests:
   diff semantics;
 - [ ] invalid scope values exit with a precise usage error.
 
-### Task 3: Add manifest-to-manifest `plan`
+### Task 3: Add desired scope to dump-based `plan`
+
+**Files:**
+
+- Modify `cmd/hclexp/plan.go`.
+- Extend `cmd/hclexp/plan_test.go`.
+
+- [ ] Register `-scope all|desired`, defaulting to `all`; reject other values
+  and reject `desired` unless `-dump` is the current source.
+- [ ] Apply `-exclude` to every role's desired and current schemas before
+  scoping.
+- [ ] In desired scope, replace current with
+  `ScopeSchemaToObjects(current, desired)` before constructing `RoleDiff`.
+- [ ] Feed the effective current consistently into role comparisons, merged
+  operations, engine metadata, and dependency ordering.
+- [ ] Preserve the existing empty-current behavior for roles absent from the
+  dump.
+
+Tests:
+
+- [ ] reproduce the exact issue #75 plan fixture: desired has `managed`; the
+  matching dump role has `managed` and `unmanaged_adhoc`; `-scope desired`
+  yields no DROP and no comparison for the unmanaged table;
+- [ ] omitted scope and `-scope all` retain the existing unmanaged DROP;
+- [ ] a managed object missing from live produces CREATE;
+- [ ] a shared managed object with field drift produces ALTER/replace;
+- [ ] live-only objects of every supported kind, including named collections
+  and raw objects, are absent from per-role and global output;
+- [ ] scoping is independent per role and preserves cross-role operation
+  deduplication and provenance;
+- [ ] `-exclude` cannot reintroduce a scoped-out object;
+- [ ] a role absent from the dump still plans all desired creates;
+- [ ] invalid scope values and scope/current-source combinations fail with
+  precise usage errors.
+
+### Task 4: Add manifest-to-manifest `plan`
 
 **Files:**
 
@@ -322,7 +422,7 @@ Tests:
 - [ ] Use an empty previous schema for proposed-only roles.
 - [ ] Reject previous-only roles with a decommissioning-specific error.
 - [ ] Apply `-exclude` to both revisions before building each role diff.
-- [ ] Preserve dump mode unchanged when `-dump` is selected.
+- [ ] Preserve dump mode and its `all|desired` scope when `-dump` is selected.
 
 Tests:
 
@@ -336,7 +436,7 @@ Tests:
   of role provenance;
 - [ ] default roots and invalid flag combinations behave as documented.
 
-### Task 4: Correct cross-role metadata and DROP ordering
+### Task 5: Correct cross-role metadata and DROP ordering
 
 **Files:**
 
@@ -362,7 +462,7 @@ Tests:
 - [ ] CREATE/ALTER ordering and metadata remain unchanged;
 - [ ] operation deduplication and per-role order remapping remain consistent.
 
-### Task 5: Document the two-pipeline contract
+### Task 6: Document the two-pipeline contract
 
 **Files:**
 
@@ -379,12 +479,14 @@ Tests:
 - [ ] Explain object-level authority: scope ignores whole unmanaged objects,
   not extra fields inside managed objects.
 - [ ] Document manifest-to-manifest planning and its Git worktree workflow.
-- [ ] Warn that dump-based planning over subset-managed nodes is not an apply
-  migration unless live-only objects are explicitly controlled.
+- [ ] Document `plan -dump -scope desired` as the direct fix for #75 and warn
+  that unscoped dump planning may drop live-only objects.
+- [ ] Explain that desired-scoped dump planning converges managed live objects
+  but cannot express intentional deletion; exact manifest planning does that.
 - [ ] Explain `-exclude`, external collections, role-set changes, and new-table
   name collisions.
 
-### Task 6: Verification
+### Task 7: Verification
 
 - [ ] `gofmt -s -l .` produces no output.
 - [ ] `go test ./internal/loader/hcl` passes.
@@ -394,10 +496,13 @@ Tests:
 - [ ] `go vet ./...` passes.
 - [ ] `git diff --check` passes.
 - [ ] Build the CLI and smoke-test:
-  reference-scoped clean drift, managed drift, reverse correction, exact
-  reference-to-proposed addition, and an intentional deletion.
+  reference-scoped clean drift, managed drift, reverse correction,
+  desired-scoped dump plan, exact reference-to-proposed addition, and an
+  intentional deletion.
 - [ ] Counterfactual check: omit `-scope left` from the issue fixture and
   confirm the unmanaged live object reappears in the comparison.
+- [ ] Counterfactual check: omit `-scope desired` from the issue's `plan`
+  fixture and confirm it again emits `DROP TABLE ...unmanaged_adhoc`.
 
 ## Acceptance criteria
 
@@ -414,13 +519,17 @@ the commands behave as follows:
 ```text
 diff reference -> live     with scope=left: no differences
 diff reference -> live     with scope=all:  unmanaged_adhoc is reported
+plan desired vs live dump  with scope=desired: no operations
+plan desired vs live dump  with scope=all:     DROP unmanaged_adhoc
 diff reference -> proposed with scope=all:  exactly CREATE new_table
 ```
 
 If the managed table differs live, the scoped drift reports it. Reversing the
 sides with `scope=right` produces the correction toward reference without a
-DROP for `unmanaged_adhoc`. Removing an object between reference revisions
-produces its DROP in exact diff and manifest-to-manifest plan modes.
+DROP for `unmanaged_adhoc`. Desired-scoped dump planning produces the same
+managed convergence operations with cross-role ordering and never mentions the
+unmanaged object. Removing an object between reference revisions produces its
+DROP in exact diff and manifest-to-manifest plan modes.
 
 ## Non-goals
 
