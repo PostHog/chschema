@@ -22,13 +22,13 @@ RUN CGO_ENABLED=0 GOOS=linux go build \
     -ldflags="-s -w -X main.version=${VERSION} -X main.commit=${COMMIT} -X main.buildTime=${BUILD_TIME}" \
     -o /out/hclexp ./cmd/hclexp
 
-# ---- Ops runtime (shell-capable: sh + git + curl) ----
+# ---- Ops runtime (shell-capable: sh + git + curl + jq) ----
 # Built only on demand with `docker build --target ops .`. Intended as a
 # deployment-time schema-dump hook: a Kubernetes Job runs `hclexp introspect`
 # per ClickHouse node and git-commits the output, so it needs a shell, git,
-# and curl that the distroless image deliberately lacks.
+# curl, and jq that the distroless image deliberately lacks.
 FROM alpine:3.20.3 AS ops
-RUN apk add --no-cache git curl ca-certificates \
+RUN apk add --no-cache git curl ca-certificates jq \
     && addgroup -S hclexp \
     && adduser -S -G hclexp -h /home/hclexp -s /bin/sh hclexp
 COPY --from=build /out/hclexp /usr/local/bin/hclexp
