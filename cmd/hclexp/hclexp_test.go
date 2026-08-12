@@ -1161,6 +1161,81 @@ database "d" {
 	require.True(t, hclload.Diff(left, right).IsEmpty())
 }
 
+func TestApplyDiffScope(t *testing.T) {
+	managedLeft := hclload.TableSpec{
+		Name: "managed", Columns: []hclload.ColumnSpec{{Name: "id", Type: "UInt64"}},
+	}
+	managedRight := hclload.TableSpec{
+		Name: "managed", Columns: []hclload.ColumnSpec{
+			{Name: "id", Type: "UInt64"},
+			{Name: "drift", Type: "String"},
+		},
+	}
+	left := &hclload.Schema{Databases: []hclload.DatabaseSpec{{
+		Name: "db", Tables: []hclload.TableSpec{managedLeft, {Name: "left_only"}},
+	}}}
+	right := &hclload.Schema{Databases: []hclload.DatabaseSpec{{
+		Name: "db", Tables: []hclload.TableSpec{managedRight, {Name: "right_only"}},
+	}}}
+
+	t.Run("issue 75 managed subset is clean", func(t *testing.T) {
+		reference := &hclload.Schema{Databases: []hclload.DatabaseSpec{{
+			Name: "db", Tables: []hclload.TableSpec{managedLeft},
+		}}}
+		live := &hclload.Schema{Databases: []hclload.DatabaseSpec{{
+			Name: "db", Tables: []hclload.TableSpec{managedLeft, {Name: "unmanaged_adhoc"}},
+		}}}
+		gotReference, gotLive := applyDiffScope(reference, live, "left")
+		require.True(t, hclload.Diff(gotReference, gotLive).IsEmpty())
+	})
+
+	t.Run("reverse correction retains managed field drift but not unmanaged drop", func(t *testing.T) {
+		live := &hclload.Schema{Databases: []hclload.DatabaseSpec{{
+			Name: "db", Tables: []hclload.TableSpec{managedRight, {Name: "unmanaged_adhoc"}},
+		}}}
+		reference := &hclload.Schema{Databases: []hclload.DatabaseSpec{{
+			Name: "db", Tables: []hclload.TableSpec{managedLeft},
+		}}}
+		gotLive, gotReference := applyDiffScope(live, reference, "right")
+		gen := hclload.GenerateSQL(hclload.Diff(gotLive, gotReference))
+		require.Len(t, gen.Statements, 1)
+		require.Contains(t, gen.Statements[0], "ALTER TABLE db.managed DROP COLUMN drift")
+		require.NotContains(t, gen.Statements[0], "unmanaged_adhoc")
+	})
+
+	t.Run("all is exact and preserves both side-only objects", func(t *testing.T) {
+		gotLeft, gotRight := applyDiffScope(left, right, "all")
+		cs := hclload.Diff(gotLeft, gotRight)
+		require.Len(t, cs.Databases, 1)
+		require.Len(t, cs.Databases[0].AddTables, 1)
+		require.Equal(t, "right_only", cs.Databases[0].AddTables[0].Name)
+		require.Len(t, cs.Databases[0].DropTables, 1)
+		require.Equal(t, "left_only", cs.Databases[0].DropTables[0].Name)
+		require.Len(t, cs.Databases[0].AlterTables, 1,
+			"scope is object-level; drift inside managed remains authoritative")
+	})
+
+	t.Run("left ignores right-only but keeps left-only missing and field drift", func(t *testing.T) {
+		gotLeft, gotRight := applyDiffScope(left, right, "left")
+		cs := hclload.Diff(gotLeft, gotRight)
+		require.Len(t, cs.Databases, 1)
+		require.Empty(t, cs.Databases[0].AddTables)
+		require.Len(t, cs.Databases[0].DropTables, 1)
+		require.Equal(t, "left_only", cs.Databases[0].DropTables[0].Name)
+		require.Len(t, cs.Databases[0].AlterTables, 1)
+	})
+
+	t.Run("right ignores left-only but keeps right-only missing and field drift", func(t *testing.T) {
+		gotLeft, gotRight := applyDiffScope(left, right, "right")
+		cs := hclload.Diff(gotLeft, gotRight)
+		require.Len(t, cs.Databases, 1)
+		require.Len(t, cs.Databases[0].AddTables, 1)
+		require.Equal(t, "right_only", cs.Databases[0].AddTables[0].Name)
+		require.Empty(t, cs.Databases[0].DropTables)
+		require.Len(t, cs.Databases[0].AlterTables, 1)
+	})
+}
+
 func TestQualifiedName(t *testing.T) {
 	require.Equal(t, "posthog.events", qualifiedName("posthog", "events"))
 	// Named collections are cluster-scoped, not database-scoped: no leading dot.

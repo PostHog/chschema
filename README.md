@@ -25,10 +25,11 @@ state, and round-tripped against a live cluster.
 
 Additional commands:
 
-- **plan** — diff every node role in a `-manifest` against a `-dump`
-  topology in one run, emitting a single globally-ordered, cross-role
-  operation list (storage before its Distributed/Buffer proxies before the
-  MV). See **[Cross-role planning](#cross-role-planning)** and the runnable
+- **plan** — diff every node role in a desired `-manifest` against either a
+  live `-dump` topology or a previous `-from-manifest` composition, emitting a
+  single globally-ordered, cross-role operation list (storage before its
+  Distributed/Buffer proxies before the MV). See
+  **[Cross-role planning](#cross-role-planning)** and the runnable
   **[`examples/manifest/`](examples/manifest/)**.
 - **drift** — detect cross-node schema drift across per-node HCL dumps.
 - **locate** — find every declaration site of an object across manifest
@@ -279,6 +280,11 @@ hclexp diff -left ./schema/posthog.hcl \
 **Flags:**
 
 - `-left`, `-right` — the two schemas to compare (both required)
+- `-scope all|left|right` — object ownership for the comparison. `all` is the
+  default exact diff. `left` ignores right-only objects; `right` ignores
+  left-only objects. Scoping removes whole unmanaged objects only: once an
+  object is present on the scope side, all of its columns, engine, TTL,
+  settings, and other fields still compare exactly.
 - `-sql` — emit the migration DDL (`CREATE` / `ALTER` / `DROP`) that turns
   the left side into the right side, instead of the change summary.
   Changes ClickHouse can't apply in place (engine swap, `ORDER BY`,
@@ -288,6 +294,23 @@ hclexp diff -left ./schema/posthog.hcl \
   out as `-- MANUAL:` lines — run them deliberately, never as part of an
   automated apply. In `-format json` output the same statements carry
   `"manual": true`.
+
+This supports a reference schema that owns only part of a live node:
+
+```bash
+# Managed drift: live-only objects are outside the reference's ownership set.
+hclexp diff -left ./reference -right ./clickhouse-schema/node-01.hcl \
+  -scope left -format json
+
+# Correct production back to the reference without dropping live-only objects.
+hclexp diff -left ./clickhouse-schema/node-01.hcl -right ./reference \
+  -scope right -sql
+```
+
+Use an unscoped exact diff for migrations between repository revisions:
+`hclexp diff -left ./reference -right ./proposed -format json`. Every managed
+drift must first be corrected in production or accepted into the reference;
+the reviewed migration should never be adapted to an unresolved live state.
 
 The default output is an indented `+`/`-`/`~` summary:
 
@@ -533,22 +556,47 @@ summary: 58 nodes, 8 groups, 2 groups with drift, 28 drifting nodes
 
 ## Cross-role planning
 
-`hclexp plan` diffs **every role in a manifest** against a `-dump` topology
-in one run and emits a single globally-ordered, cross-role operation list —
+`hclexp plan` diffs **every role in a manifest** in one run and emits a single
+globally-ordered, cross-role operation list —
 storage tables before the Distributed/Buffer proxies that front them,
 proxies before the MVs that read them — with `roles` provenance on every
-operation, so one command plans a whole environment.
+operation. It has two deliberately separate current-state modes.
+
+For managed convergence against a live topology, use `-dump -scope desired`:
 
 ```bash
 hclexp plan -manifest manifest.hcl -env prod-us -layer-root ./schema \
-  -dump ./prod/us -format json | jq '.operations[] | {order, kind, object_type, object, roles}'
+  -dump ./prod/us -scope desired -format json \
+  | jq '.operations[] | {order, kind, object_type, object, roles}'
 ```
 
 Desired state is each role's composed layer stack from the manifest;
 current state is the matching node in the dump (nodes matched by their
 `hostClusterRole` macro, replicas collapsed to one representative per
-role; a role absent from the dump plans as all-CREATE). `-format text`
-prints the same ordered list human-readably.
+role; a role absent from the dump plans as all-CREATE). `desired` ignores
+live-only objects but still creates missing managed objects and reconciles all
+fields inside managed objects. The default `-scope all` is exact and may emit
+DROPs for live-only objects. Desired scope cannot represent an intentional
+deletion from the reference.
+
+For a deterministic migration, compare the previous and proposed manifest
+compositions exactly. Resolve the deployed revision into files (for example,
+with a temporary Git worktree) and pass it as `-from-manifest`:
+
+```bash
+git worktree add /tmp/chschema-reference "$DEPLOYED_SHA"
+hclexp plan \
+  -from-manifest /tmp/chschema-reference/schema/manifest.hcl \
+  -from-layer-root /tmp/chschema-reference/schema \
+  -manifest schema/manifest.hcl -layer-root schema -env prod-us \
+  -format json
+```
+
+`-from-manifest` and `-dump` are mutually exclusive. A proposed-only role
+plans as all-CREATE; a previous-only role is rejected because decommissioning
+a role must be explicit. `-format text` prints the same ordered list
+human-readably. Require the reference-scoped live drift check to be empty
+immediately before applying this reference-to-proposed plan.
 
 See **[Cross-role planning](docs/README.hcl.md#cross-role-planning--hclexp-plan)**
 in the reference for the manifest format, and

@@ -1,6 +1,7 @@
 # Issue #75 — managed-subset drift and deterministic migrations
 
-Status: **proposed**. Issue: [#75](https://github.com/PostHog/chschema/issues/75).
+Status: **implemented in PR #181**. Issue:
+[#75](https://github.com/PostHog/chschema/issues/75).
 
 ## Goal
 
@@ -305,7 +306,7 @@ explicitly.
 - `-from-layer-root` without `-from-manifest`, or combining `-from-manifest`
   with `-dump`, is a usage error.
 
-## Implementation plan
+## Implementation checklist
 
 ### Task 1: Add a non-mutating schema scope helper
 
@@ -314,9 +315,9 @@ explicitly.
 - Create `internal/loader/hcl/scope.go`.
 - Create `internal/loader/hcl/scope_test.go`.
 
-- [ ] Define an internal logical object identity with separate database-object
+- [x] Define an internal logical object identity with separate database-object
   and named-collection namespaces.
-- [ ] Implement:
+- [x] Implement:
 
   ```go
   func ScopeSchemaToObjects(source, scope *Schema) *Schema
@@ -325,18 +326,18 @@ explicitly.
   It returns only source objects whose logical identities occur in scope and
   must not mutate either input. Copy `Schema`, `Databases`, and filtered object
   slices; object specs can be shared because the helper does not edit them.
-- [ ] Preserve database wrappers and node metadata.
-- [ ] Match raw and modeled representations by logical database/name identity,
+- [x] Preserve database wrappers and node metadata.
+- [x] Match raw and modeled representations by logical database/name identity,
   not by Go slice or HCL block kind.
 
 Tests:
 
-- [ ] source-only objects of every modeled kind are removed;
-- [ ] identities present in scope are retained;
-- [ ] raw-to-modeled and modeled-to-raw identities match;
-- [ ] named collections use their separate namespace;
-- [ ] database and node metadata are preserved;
-- [ ] the source, scope, and all backing slices remain unchanged.
+- [x] source-only objects of every modeled kind are removed;
+- [x] identities present in scope are retained;
+- [x] raw-to-modeled and modeled-to-raw identities match;
+- [x] named collections use their separate namespace;
+- [x] database and node metadata are preserved;
+- [x] the source, scope, and all backing slices remain unchanged.
 
 ### Task 2: Add `diff -scope`
 
@@ -345,30 +346,30 @@ Tests:
 - Modify `cmd/hclexp/hclexp.go`.
 - Extend `cmd/hclexp/hclexp_test.go`.
 
-- [ ] Register `-scope all|left|right`, defaulting to `all`; reject other
+- [x] Register `-scope all|left|right`, defaulting to `all`; reject other
   values as usage errors.
-- [ ] Apply `-exclude` to both schemas first.
-- [ ] For `left`, scope the right schema to left identities. For `right`, scope
+- [x] Apply `-exclude` to both schemas first.
+- [x] For `left`, scope the right schema to left identities. For `right`, scope
   the left schema to right identities. For `all`, preserve both inputs.
-- [ ] Pass the effective sides consistently into `Diff`, `RenderDiffJSON`, and
+- [x] Pass the effective sides consistently into `Diff`, `RenderDiffJSON`, and
   text comparison rendering so objects, operations, summaries, and human text
   cannot disagree.
-- [ ] Keep the existing `Diff(from, to)` API and behavior unchanged.
+- [x] Keep the existing `Diff(from, to)` API and behavior unchanged.
 
 Tests:
 
-- [ ] exact issue #75 fixture: reference has `managed`; live has `managed` and
+- [x] exact issue #75 fixture: reference has `managed`; live has `managed` and
   `unmanaged_adhoc`; `-scope left` yields no differences;
-- [ ] a reference-owned object missing live remains a reported difference;
-- [ ] an extra column inside a reference-owned live table remains a reported
+- [x] a reference-owned object missing live remains a reported difference;
+- [x] an extra column inside a reference-owned live table remains a reported
   field change;
-- [ ] reversing the sides with `-scope right -sql` generates corrective DDL
+- [x] reversing the sides with `-scope right -sql` generates corrective DDL
   without dropping unmanaged live objects;
-- [ ] `-scope all` and omitted `-scope` retain byte-for-byte current output;
-- [ ] `-exclude` plus scope cannot reintroduce excluded objects;
-- [ ] raw/model transitions and external named collections preserve existing
+- [x] `-scope all` and omitted `-scope` retain byte-for-byte current output;
+- [x] `-exclude` plus scope cannot reintroduce excluded objects;
+- [x] raw/model transitions and external named collections preserve existing
   diff semantics;
-- [ ] invalid scope values exit with a precise usage error.
+- [x] invalid scope values exit with a precise usage error.
 
 ### Task 3: Add desired scope to dump-based `plan`
 
@@ -377,32 +378,32 @@ Tests:
 - Modify `cmd/hclexp/plan.go`.
 - Extend `cmd/hclexp/plan_test.go`.
 
-- [ ] Register `-scope all|desired`, defaulting to `all`; reject other values
+- [x] Register `-scope all|desired`, defaulting to `all`; reject other values
   and reject `desired` unless `-dump` is the current source.
-- [ ] Apply `-exclude` to every role's desired and current schemas before
+- [x] Apply `-exclude` to every role's desired and current schemas before
   scoping.
-- [ ] In desired scope, replace current with
+- [x] In desired scope, replace current with
   `ScopeSchemaToObjects(current, desired)` before constructing `RoleDiff`.
-- [ ] Feed the effective current consistently into role comparisons, merged
+- [x] Feed the effective current consistently into role comparisons, merged
   operations, engine metadata, and dependency ordering.
-- [ ] Preserve the existing empty-current behavior for roles absent from the
+- [x] Preserve the existing empty-current behavior for roles absent from the
   dump.
 
 Tests:
 
-- [ ] reproduce the exact issue #75 plan fixture: desired has `managed`; the
+- [x] reproduce the exact issue #75 plan fixture: desired has `managed`; the
   matching dump role has `managed` and `unmanaged_adhoc`; `-scope desired`
   yields no DROP and no comparison for the unmanaged table;
-- [ ] omitted scope and `-scope all` retain the existing unmanaged DROP;
-- [ ] a managed object missing from live produces CREATE;
-- [ ] a shared managed object with field drift produces ALTER/replace;
-- [ ] live-only objects of every supported kind, including named collections
+- [x] omitted scope and `-scope all` retain the existing unmanaged DROP;
+- [x] a managed object missing from live produces CREATE;
+- [x] a shared managed object with field drift produces ALTER/replace;
+- [x] live-only objects of every supported kind, including named collections
   and raw objects, are absent from per-role and global output;
-- [ ] scoping is independent per role and preserves cross-role operation
+- [x] scoping is independent per role and preserves cross-role operation
   deduplication and provenance;
-- [ ] `-exclude` cannot reintroduce a scoped-out object;
-- [ ] a role absent from the dump still plans all desired creates;
-- [ ] invalid scope values and scope/current-source combinations fail with
+- [x] `-exclude` cannot reintroduce a scoped-out object;
+- [x] a role absent from the dump still plans all desired creates;
+- [x] invalid scope values and scope/current-source combinations fail with
   precise usage errors.
 
 ### Task 4: Add manifest-to-manifest `plan`
@@ -412,29 +413,29 @@ Tests:
 - Modify `cmd/hclexp/plan.go`.
 - Extend `cmd/hclexp/plan_test.go`.
 
-- [ ] Add `-from-manifest` and `-from-layer-root` with the validation and
+- [x] Add `-from-manifest` and `-from-layer-root` with the validation and
   defaults above.
-- [ ] Refactor manifest environment selection so each manifest is parsed and
+- [x] Refactor manifest environment selection so each manifest is parsed and
   indexed independently by role.
-- [ ] In from-manifest mode, iterate proposed roles, compose the previous and
+- [x] In from-manifest mode, iterate proposed roles, compose the previous and
   proposed layer stacks from their respective roots, and build ordinary
   `RoleDiff{Current: previous, Desired: proposed}` values.
-- [ ] Use an empty previous schema for proposed-only roles.
-- [ ] Reject previous-only roles with a decommissioning-specific error.
-- [ ] Apply `-exclude` to both revisions before building each role diff.
-- [ ] Preserve dump mode and its `all|desired` scope when `-dump` is selected.
+- [x] Use an empty previous schema for proposed-only roles.
+- [x] Reject previous-only roles with a decommissioning-specific error.
+- [x] Apply `-exclude` to both revisions before building each role diff.
+- [x] Preserve dump mode and its `all|desired` scope when `-dump` is selected.
 
 Tests:
 
-- [ ] an added table/column is generated from previous reference regardless of
+- [x] an added table/column is generated from previous reference regardless of
   the contents of any live dump;
-- [ ] an intentional object removal produces a DROP with the correct role;
-- [ ] changed layer lists load from their own manifests and roots;
-- [ ] proposed-only roles produce creates;
-- [ ] previous-only roles fail rather than dropping a role's schema;
-- [ ] identical operations still deduplicate across roles and retain the union
+- [x] an intentional object removal produces a DROP with the correct role;
+- [x] changed layer lists load from their own manifests and roots;
+- [x] proposed-only roles produce creates;
+- [x] previous-only roles fail rather than dropping a role's schema;
+- [x] identical operations still deduplicate across roles and retain the union
   of role provenance;
-- [ ] default roots and invalid flag combinations behave as documented.
+- [x] default roots and invalid flag combinations behave as documented.
 
 ### Task 5: Correct cross-role metadata and DROP ordering
 
@@ -446,21 +447,21 @@ Tests:
 Intentional removals are absent from desired, so existing desired-only lookup
 cannot fully describe or dependency-order their DROP operations.
 
-- [ ] Build CREATE/ALTER dependency ranks from merged desired schemas.
-- [ ] Build DROP dependency ranks from merged current schemas.
-- [ ] Populate table `engine` and `replicated` from desired for CREATE/ALTER,
+- [x] Build CREATE/ALTER dependency ranks from merged desired schemas.
+- [x] Build DROP dependency ranks from merged current schemas.
+- [x] Populate table `engine` and `replicated` from desired for CREATE/ALTER,
   and current for DROP.
-- [ ] Keep phase ordering CREATE, ALTER/RENAME, DROP and stable ordering for
+- [x] Keep phase ordering CREATE, ALTER/RENAME, DROP and stable ordering for
   unrelated ties.
 
 Tests:
 
-- [ ] a removed dependent object drops before its removed dependency,
+- [x] a removed dependent object drops before its removed dependency,
   including across roles;
-- [ ] a dropped replicated table retains its actual engine and
+- [x] a dropped replicated table retains its actual engine and
   `replicated=true` metadata;
-- [ ] CREATE/ALTER ordering and metadata remain unchanged;
-- [ ] operation deduplication and per-role order remapping remain consistent.
+- [x] CREATE/ALTER ordering and metadata remain unchanged;
+- [x] operation deduplication and per-role order remapping remain consistent.
 
 ### Task 6: Document the two-pipeline contract
 
@@ -470,38 +471,38 @@ Tests:
 - Modify `docs/README.hcl.md` (comparison scope and plan modes).
 - Modify `docs/concept.md` (reference/live/proposed workflow).
 
-- [ ] Explain reference-scoped drift separately from migration generation.
-- [ ] State that every managed live drift must be accepted into reference or
+- [x] Explain reference-scoped drift separately from migration generation.
+- [x] State that every managed live drift must be accepted into reference or
   corrected in production before migration generation/application.
-- [ ] State prominently that unscoped two-way diff is exact and reports every
+- [x] State prominently that unscoped two-way diff is exact and reports every
   side-only object.
-- [ ] Document `-scope left|right` with drift and reverse-correction examples.
-- [ ] Explain object-level authority: scope ignores whole unmanaged objects,
+- [x] Document `-scope left|right` with drift and reverse-correction examples.
+- [x] Explain object-level authority: scope ignores whole unmanaged objects,
   not extra fields inside managed objects.
-- [ ] Document manifest-to-manifest planning and its Git worktree workflow.
-- [ ] Document `plan -dump -scope desired` as the direct fix for #75 and warn
+- [x] Document manifest-to-manifest planning and its Git worktree workflow.
+- [x] Document `plan -dump -scope desired` as the direct fix for #75 and warn
   that unscoped dump planning may drop live-only objects.
-- [ ] Explain that desired-scoped dump planning converges managed live objects
+- [x] Explain that desired-scoped dump planning converges managed live objects
   but cannot express intentional deletion; exact manifest planning does that.
-- [ ] Explain `-exclude`, external collections, role-set changes, and new-table
+- [x] Explain `-exclude`, external collections, role-set changes, and new-table
   name collisions.
 
 ### Task 7: Verification
 
-- [ ] `gofmt -s -l .` produces no output.
-- [ ] `go test ./internal/loader/hcl` passes.
-- [ ] `go test ./internal/... ./cmd/...` passes.
-- [ ] `go test ./test/...` passes.
-- [ ] `go test -race ./internal/... ./cmd/...` passes.
-- [ ] `go vet ./...` passes.
-- [ ] `git diff --check` passes.
-- [ ] Build the CLI and smoke-test:
+- [x] `gofmt -s -l .` produces no output.
+- [x] `go test ./internal/loader/hcl` passes.
+- [x] `go test ./internal/... ./cmd/...` passes.
+- [x] `go test ./test/...` passes.
+- [x] `go test -race ./internal/... ./cmd/...` passes.
+- [x] `go vet ./...` passes.
+- [x] `git diff --check` passes.
+- [x] Build the CLI and smoke-test:
   reference-scoped clean drift, managed drift, reverse correction,
   desired-scoped dump plan, exact reference-to-proposed addition, and an
   intentional deletion.
-- [ ] Counterfactual check: omit `-scope left` from the issue fixture and
+- [x] Counterfactual check: omit `-scope left` from the issue fixture and
   confirm the unmanaged live object reappears in the comparison.
-- [ ] Counterfactual check: omit `-scope desired` from the issue's `plan`
+- [x] Counterfactual check: omit `-scope desired` from the issue's `plan`
   fixture and confirm it again emits `DROP TABLE ...unmanaged_adhoc`.
 
 ## Acceptance criteria

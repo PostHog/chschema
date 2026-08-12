@@ -53,8 +53,8 @@ type PlanResult struct {
 }
 
 // BuildPlan diffs every role, unions the per-role operations into one global
-// operation list, and orders it by a cross-role dependency graph built over the
-// unioned desired schema. Because every role's objects share one
+// operation list, and orders it by cross-role dependency graphs built over the
+// unioned desired and current schemas. Because every role's objects share one
 // (database, object) keyspace, a Distributed/Buffer object that forwards to a
 // table physically hosted on another role (e.g. a per-role
 // writable_query_log_archive -> the OPS sharded_query_log_archive) gets a real
@@ -103,14 +103,22 @@ func BuildPlan(roles []RoleDiff) PlanResult {
 		}
 	}
 
-	merged := mergeDesiredSchemas(roles)
-	rank := dependencyRank(merged.Databases)
+	desiredMerged := mergeDesiredSchemas(roles)
+	currentMerged := mergeCurrentSchemas(roles)
+	desiredRank := dependencyRank(desiredMerged.Databases)
+	currentRank := dependencyRank(currentMerged.Databases)
 
 	ops := make([]*PlanOperation, 0, len(firstSeen))
 	for _, k := range firstSeen {
 		po := byKey[k]
 		if po.ObjectType == KindTable {
-			po.Engine = engineFor(po.Database, po.Object, merged)
+			// A removed table no longer exists in desired. Read DROP metadata
+			// from current so engine and replication information are retained.
+			metadataSchema := desiredMerged
+			if po.Kind == OpDrop {
+				metadataSchema = currentMerged
+			}
+			po.Engine = engineFor(po.Database, po.Object, metadataSchema)
 			po.Replicated = strings.HasPrefix(po.Engine, "Replicated")
 		}
 		if reason, ok := unsafeByRef[ObjectRef{Database: po.Database, Name: po.Object}]; ok {
@@ -128,6 +136,12 @@ func BuildPlan(roles []RoleDiff) PlanResult {
 		pi, pj := planPhase(ops[i].Kind), planPhase(ops[j].Kind)
 		if pi != pj {
 			return pi < pj
+		}
+		rank := desiredRank
+		if ops[i].Kind == OpDrop {
+			// Removed objects are absent from desired. Their dependency graph
+			// must come from current, then run in reverse.
+			rank = currentRank
 		}
 		ri := rank[ObjectRef{Database: ops[i].Database, Name: ops[i].Object}]
 		rj := rank[ObjectRef{Database: ops[j].Database, Name: ops[j].Object}]
@@ -226,6 +240,17 @@ func dependencyRank(dbs []DatabaseSpec) map[ObjectRef]int {
 // deduping objects by (database, name) — first role wins. The union is the
 // keyspace the cross-role dependency graph is built over.
 func mergeDesiredSchemas(roles []RoleDiff) *Schema {
+	return mergeRoleSchemas(roles, func(rd RoleDiff) *Schema { return rd.Desired })
+}
+
+// mergeCurrentSchemas is the current-side counterpart of
+// mergeDesiredSchemas. DROP ordering and metadata use this union because a
+// removed object is, by definition, absent from the desired union.
+func mergeCurrentSchemas(roles []RoleDiff) *Schema {
+	return mergeRoleSchemas(roles, func(rd RoleDiff) *Schema { return rd.Current })
+}
+
+func mergeRoleSchemas(roles []RoleDiff, selectSchema func(RoleDiff) *Schema) *Schema {
 	merged := &Schema{}
 	dbIndex := make(map[string]int)
 	getDB := func(name string) *DatabaseSpec {
@@ -248,10 +273,11 @@ func mergeDesiredSchemas(roles []RoleDiff) *Schema {
 	}
 
 	for _, rd := range roles {
-		if rd.Desired == nil {
+		schema := selectSchema(rd)
+		if schema == nil {
 			continue
 		}
-		for _, db := range rd.Desired.Databases {
+		for _, db := range schema.Databases {
 			d := getDB(db.Name)
 			for _, t := range db.Tables {
 				if mark(db.Name, t.Name) {
