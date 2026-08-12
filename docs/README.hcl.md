@@ -708,6 +708,37 @@ hclexp validate -config schema.hcl -skip-validation='*'
 the generated DDL, a table is created before any Distributed table that
 forwards to it, and dropped after it.
 
+## Directional object scope — `hclexp diff -scope`
+
+An ordinary two-way diff is exact: every object present on only one side is a
+difference. Keep that default (`-scope all`) when generating a migration from
+one repository revision to another.
+
+When the HCL reference deliberately manages only a subset of a live node, use
+one side as the object ownership set:
+
+```bash
+# Report drift only for objects owned by the reference.
+hclexp diff -left ./reference -right ./dumps/node-01.hcl \
+  -scope left -format json
+
+# Generate the reverse correction, live -> reference, without dropping
+# live-only objects owned elsewhere.
+hclexp diff -left ./dumps/node-01.hcl -right ./reference \
+  -scope right -sql
+```
+
+`-scope left` removes right-only objects before the ordinary diff;
+left-only objects remain missing from the right. `-scope right` is symmetric.
+Scope is an **object-level** boundary, not a partial-table comparison: when a
+table identity is owned, its columns, indexes, projections, constraints,
+engine, TTL, settings, and every other modeled field remain authoritative.
+Database objects match by `(database, name)` even when one side is a `raw`
+representation; named collections use their own top-level name namespace.
+An `external = true` named collection retains its existing behavior: the
+reference is in scope, but its cluster-side values are not compared or
+mutated. `-exclude` filters both sides before the ownership set is collected.
+
 ## Cross-node drift — `hclexp drift`
 
 `hclexp drift -dir <dir>` compares the per-node dumps in a directory and
@@ -895,10 +926,12 @@ object physically hosted on another — a per-role `writable_query_log_archive`
 single-role diff sees both ends, so the migration order can't be reconstructed
 by merging per-role diffs. `hclexp plan` diffs **every role in one run** and
 emits a single, globally-ordered operation list with cross-role dependency
-ordering.
+ordering. It can compare the desired manifest either with a live dump or
+exactly with a previous manifest composition.
 
 ```bash
-hclexp plan -manifest roles.hcl -env prod-us -dump ./topology -format json
+hclexp plan -manifest roles.hcl -env prod-us -layer-root ./schema \
+  -dump ./topology -scope desired -format json
 ```
 
 The **manifest** is HCL, role-first with one `env` block per environment a role
@@ -924,6 +957,11 @@ role "data" {
   [`dump-cluster`](#cross-node-drift--hclexp-drift)); nodes are matched to roles
   by their `hostClusterRole` macro, and replicas collapse to one representative
   per role. `role` must equal `hostClusterRole`.
+- With a dump, `-scope desired` limits current to the desired role schema's
+  object identities. Live-only objects appear in no comparison or operation;
+  desired objects missing live still produce CREATE, and every field inside a
+  shared object still compares normally. The default `-scope all` is exact and
+  may emit `DROP` for every live-only object.
 - `-layer-root` prefixes the manifest's layer paths (point it at a committed
   snapshot or the working tree).
 - Output: `-format json` (default) or `text`. CREATE and widening ALTERs flow in
@@ -934,6 +972,45 @@ role "data" {
   [object comparisons](#structured-comparison-output) with derived counts,
   deliberately **not** deduped (triage is per role, execution is global).
 - `-exclude` drops matching objects from both sides of every role's diff.
+
+Desired-scoped dump planning is the safe live-convergence form for a managed
+subset, and directly avoids the unmanaged-object DROPs from issue #75. It
+cannot infer that removing an object from the reference is an intentional
+deletion—the absent identity is outside its scope. Generate reviewed
+migrations with an exact previous-to-proposed manifest plan instead:
+
+```bash
+git worktree add /tmp/chschema-reference "$DEPLOYED_SHA"
+
+hclexp plan \
+  -from-manifest /tmp/chschema-reference/schema/roles.hcl \
+  -from-layer-root /tmp/chschema-reference/schema \
+  -manifest schema/roles.hcl \
+  -layer-root schema \
+  -env prod-us \
+  -format json
+```
+
+`-from-manifest` and `-dump` are mutually exclusive, and manifest-to-manifest
+planning is always exact (`-scope desired` is rejected). Each revision's role
+layer list is loaded from that revision's own root;
+`-from-layer-root` defaults to the directory containing `-from-manifest`. A
+role present only in the proposed manifest plans from an empty schema. A role
+present only in the previous manifest is rejected instead of silently
+dropping every object on a decommissioned role.
+
+The operational contract has two gates:
+
+1. Compare reference to live with `diff -scope left` (or use
+   `plan -dump -scope desired`) and resolve every managed drift by correcting
+   production or accepting it into the reference.
+2. Generate the migration exactly from the committed reference to the
+   proposal with `plan -from-manifest`, then require the managed live drift
+   check to remain empty immediately before apply.
+
+A proposed table name that already exists live as an unmanaged object is a
+collision, not an implicit adoption: the exact CREATE should fail until the
+ownership conflict is resolved explicitly.
 
 ## Locating declarations — `hclexp locate`
 

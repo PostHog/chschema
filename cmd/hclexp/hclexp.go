@@ -854,6 +854,7 @@ func runDiff(args []string) {
 	asSQL := fs.Bool("sql", false, "emit migration DDL (left -> right) instead of a change summary")
 	formatFlag := fs.String("format", "text", "output format: text (default) or json (structured, dependency-ordered operations)")
 	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects matching its patterns/object_types are dropped from both sides before diffing")
+	scopeFlag := fs.String("scope", "all", "object scope: all (exact), left (ignore right-only objects), or right (ignore left-only objects)")
 	_ = fs.Parse(args)
 
 	if *leftFlag == "" || *rightFlag == "" {
@@ -862,6 +863,10 @@ func runDiff(args []string) {
 	}
 	if *formatFlag != "text" && *formatFlag != "json" {
 		slog.Error("invalid -format (want text or json)", "format", *formatFlag)
+		os.Exit(2)
+	}
+	if *scopeFlag != "all" && *scopeFlag != "left" && *scopeFlag != "right" {
+		slog.Error("invalid -scope (want all, left, or right)", "scope", *scopeFlag)
 		os.Exit(2)
 	}
 
@@ -879,6 +884,7 @@ func runDiff(args []string) {
 		hclload.FilterSchema(left, m)
 		hclload.FilterSchema(right, m)
 	}
+	left, right = applyDiffScope(left, right, *scopeFlag)
 
 	cs := hclload.Diff(left, right)
 	gen := hclload.GenerateSQL(cs)
@@ -916,6 +922,20 @@ func runDiff(args []string) {
 	}
 	hclload.RenderObjectComparisons(os.Stdout,
 		hclload.BuildObjectComparisons(cs, gen, left, right))
+}
+
+// applyDiffScope narrows one side of a two-way comparison to the logical
+// object identities declared by the authoritative side. Field comparison
+// inside retained objects remains exact. Callers validate scope first.
+func applyDiffScope(left, right *hclload.Schema, scope string) (*hclload.Schema, *hclload.Schema) {
+	switch scope {
+	case "left":
+		return left, hclload.ScopeSchemaToObjects(right, left)
+	case "right":
+		return hclload.ScopeSchemaToObjects(left, right), right
+	default:
+		return left, right
+	}
 }
 
 // loadExcludeFlag loads an -exclude config, exiting on error. An empty path

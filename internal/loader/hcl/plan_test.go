@@ -134,6 +134,53 @@ func TestBuildPlan_CrossRoleAlterOrdering(t *testing.T) {
 	assert.True(t, sharded.Replicated)
 }
 
+// Removed objects exist only in current, so the current-side union must drive
+// DROP ordering and metadata. This also exercises the cross-role case where
+// the storage table and its dependants are discovered in different role diffs.
+func TestBuildPlan_CrossRoleDropOrderingUsesCurrentSchema(t *testing.T) {
+	id := ColumnSpec{Name: "id", Type: "UInt64"}
+	storage := mkTable("sharded_query_log_archive", EngineReplicatedMergeTree{}, id)
+	proxy := distTable("writable_query_log_archive", "sharded_query_log_archive", id)
+	mv := MaterializedViewSpec{
+		Name:    "ops_query_log_archive_mv",
+		ToTable: "posthog.writable_query_log_archive",
+		Query:   "SELECT id FROM posthog.writable_query_log_archive",
+	}
+
+	plan := BuildPlan([]RoleDiff{
+		{
+			Role:    "ops",
+			Current: &Schema{Databases: []DatabaseSpec{mkDB("posthog", storage)}},
+			Desired: &Schema{},
+		},
+		{
+			Role: "data",
+			Current: &Schema{Databases: []DatabaseSpec{{
+				Name: "posthog", Tables: []TableSpec{proxy}, MaterializedViews: []MaterializedViewSpec{mv},
+			}}},
+			Desired: &Schema{},
+		},
+	})
+
+	require.Len(t, plan.Operations, 3)
+	assert.Equal(t, []string{
+		"ops_query_log_archive_mv",
+		"writable_query_log_archive",
+		"sharded_query_log_archive",
+	}, []string{
+		plan.Operations[0].Object,
+		plan.Operations[1].Object,
+		plan.Operations[2].Object,
+	})
+	for _, op := range plan.Operations {
+		assert.Equal(t, OpDrop, op.Kind)
+	}
+
+	storageDrop := plan.Operations[2]
+	assert.Equal(t, "ReplicatedMergeTree", storageDrop.Engine)
+	assert.True(t, storageDrop.Replicated)
+}
+
 // The Manual flag (operator-run statements like MATERIALIZE INDEX) must survive
 // the per-role merge into plan operations.
 func TestBuildPlan_ManualMaterializeIndexPropagates(t *testing.T) {

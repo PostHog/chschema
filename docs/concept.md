@@ -9,8 +9,9 @@ that state.
 
 ## Goals
 
-- **Declarative source of truth.** HCL files describe the entire schema; no
-  migration history is tracked.
+- **Declarative source of truth.** HCL files describe every schema object
+  chschema owns; that ownership set may deliberately be a subset of a live
+  node. No migration history is tracked.
 - **Idempotent reconciliation.** Re-running with no schema change is a no-op.
   The diff engine compares desired vs introspected state.
 - **Strong static validation.** Catch broken materialized views, missing
@@ -43,16 +44,31 @@ that state.
 
 ## Workflow
 
-1. Edit HCL files describing tables, materialized views, dictionaries.
-2. `hclexp validate -layer ... -layer ...` runs in CI: static dependency and
-   engine checks.
-3. `hclexp diff -left <layers> -right clickhouse://... -sql` (or
-   `hclexp plan -manifest ... -dump ...` across roles) shows the ordered
-   migration DDL; in-place-impossible changes surface as `-- UNSAFE`,
-   operator-run statements as `-- MANUAL`.
-4. PR review and merge.
+The workflow keeps three artifacts and two comparisons separate:
+
+```text
+managed drift: reference <-> live, scoped to reference-owned objects
+migration:     reference  -> proposed, exact and independent of live state
+```
+
+1. Dump live nodes, then compare the committed reference with live using
+   `diff -scope left` or `plan -dump ... -scope desired`. Resolve every
+   managed drift: correct production when the reference is right, or update
+   the reference when production is intentionally right.
+2. Edit the HCL proposal and run static validation.
+3. Generate the migration from the committed reference to the proposal with
+   an exact `diff`, or across roles with `plan -from-manifest`. This exact
+   comparison includes intentional additions and removals and is deterministic
+   across nodes; it must not adapt itself to an unresolved live state.
+4. PR review and merge. Immediately before apply, require the managed live
+   drift check to remain empty.
 5. The deployment ensures every external named collection referenced by a
    dictionary exists on each target node (or in shared Keeper-backed storage).
 6. The reviewed statements are executed on each node (per-node, no
    `ON CLUSTER`); `MANUAL` statements are run by an operator when
    appropriate.
+
+Directional scope ignores whole objects outside the ownership set, never
+fields inside a managed object. Unscoped diff and manifest-to-manifest plan
+remain exact. Desired-scoped dump planning deliberately cannot express an
+intentional deletion; that belongs to the exact reference-to-proposed plan.
