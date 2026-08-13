@@ -43,29 +43,6 @@ func Introspect(ctx context.Context, conn driver.Conn, database string, allowRaw
 // neither appear in the dump nor abort introspection when their DDL can't be
 // parsed. A nil matcher excludes nothing.
 func IntrospectWithExclude(ctx context.Context, conn driver.Conn, database string, allowRaw bool, exclude *ExcludeMatcher) (*DatabaseSpec, error) {
-	return IntrospectWithOptions(ctx, conn, database, IntrospectOptions{AllowRaw: allowRaw, Exclude: exclude})
-}
-
-// IntrospectOptions carries the per-run switches for introspection.
-type IntrospectOptions struct {
-	// AllowRaw captures an object whose DDL cannot be expressed in the
-	// schema language as a verbatim RawSpec instead of failing.
-	AllowRaw bool
-
-	// Exclude skips matching objects before their DDL is parsed. Nil
-	// excludes nothing.
-	Exclude *ExcludeMatcher
-
-	// CollapseSharedMergeTree reads ClickHouse Cloud's Shared<X>MergeTree
-	// engines as the plain <X>MergeTree the DDL was written as. Set it from
-	// DetectCloudEngineRewrite against the same connection — never
-	// unconditionally, because only the server can tell us its arguments
-	// were generated rather than authored.
-	CollapseSharedMergeTree bool
-}
-
-// IntrospectWithOptions is Introspect with the full option set.
-func IntrospectWithOptions(ctx context.Context, conn driver.Conn, database string, opts IntrospectOptions) (*DatabaseSpec, error) {
 	db := &DatabaseSpec{Name: database}
 
 	const q = `SELECT name, create_table_query, engine
@@ -78,86 +55,13 @@ func IntrospectWithOptions(ctx context.Context, conn driver.Conn, database strin
 	}
 	defer rows.Close()
 
-	if err := processIntrospectRowsOpt(db, database, rows, opts); err != nil {
+	if err := processIntrospectRowsOpt(db, database, rows, allowRaw, exclude); err != nil {
 		return nil, err
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("rows iteration error: %w", err)
 	}
 	return db, nil
-}
-
-// classifyCloudModeEngine reads a cloud_mode_engine value. It reports whether
-// that server rewrites MergeTree-family DDL to Shared*MergeTree, and whether
-// this build recognises the value at all.
-//
-// What matters is the write direction. Reading a Shared* engine is
-// unambiguous — it exists only on Cloud — but collapsing it is only safe if
-// the server turns the plain engine sqlgen emits back into a Shared one. Under
-// 0 it stays a plain MergeTree and under 1 it becomes a ReplicatedMergeTree,
-// so collapsing there would silently change the engine.
-//
-// The known values are matched exactly rather than tested with >= 2, so a mode
-// this build has never seen is reported as unknown instead of being assumed to
-// rewrite the same way as the modes below it.
-func classifyCloudModeEngine(value string) (rewrites, known bool) {
-	switch value {
-	case "2", "3", "4":
-		// 2 outright; 3 except when the CREATE names its own remote disk;
-		// 4 as 3, plus swapping Distributed for Alias.
-		return true, true
-	case "0", "1":
-		// Deliberately not rewriting to Shared*. A known answer, not a
-		// surprise, so callers stay quiet about it.
-		return false, true
-	case "":
-		// No such setting: a self-hosted server. The common case.
-		return false, true
-	}
-	return false, false
-}
-
-// DetectCloudEngineRewrite reports whether the server rewrites
-// MergeTree-family CREATE statements to the Shared* engines. ClickHouse Cloud
-// says so through the cloud_mode_engine setting; a self-hosted server has no
-// such setting, which reads as false rather than an error.
-//
-// Pass the result as IntrospectOptions.CollapseSharedMergeTree. Probe once per
-// connection: the answer is a property of the server, not of a database.
-func DetectCloudEngineRewrite(ctx context.Context, conn driver.Conn) (bool, error) {
-	const q = `SELECT value FROM system.settings WHERE name = 'cloud_mode_engine'`
-	rows, err := conn.Query(ctx, q)
-	if err != nil {
-		return false, fmt.Errorf("query cloud_mode_engine: %w", err)
-	}
-	defer rows.Close()
-	return cloudEngineRewriteFromRows(rows)
-}
-
-// cloudEngineRewriteFromRows reads the cloud_mode_engine value from an
-// already-issued query. No row means the server has no such setting, which is
-// the self-hosted case: false, not an error.
-func cloudEngineRewriteFromRows(rows rowScanner) (bool, error) {
-	var value string
-	if rows.Next() {
-		if err := rows.Scan(&value); err != nil {
-			return false, fmt.Errorf("scan cloud_mode_engine: %w", err)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("read cloud_mode_engine: %w", err)
-	}
-
-	rewrites, known := classifyCloudModeEngine(value)
-	if !known {
-		// ClickHouse has added a behaviour this build does not model. Not
-		// fatal on its own — a server with no Shared* tables is unaffected —
-		// but say it out loud, because the unsupported-engine error that
-		// follows on a Cloud service does not report what the server said.
-		slog.Warn("unrecognised cloud_mode_engine: Shared* engines will not be read as their plain equivalents",
-			"value", value, "values_that_rewrite", "2, 3, 4")
-	}
-	return rewrites, nil
 }
 
 // rawKindForEngine maps a system.tables.engine value to a RawSpec kind. The
@@ -181,7 +85,7 @@ func rawKindForEngine(engine string) string {
 // create_table_query) via Scan. Plain views (CREATE VIEW) are silently
 // skipped; inner-engine and refreshable MVs return an error.
 func processIntrospectRows(db *DatabaseSpec, database string, rows rowScanner) error {
-	return processIntrospectRowsOpt(db, database, rows, IntrospectOptions{})
+	return processIntrospectRowsOpt(db, database, rows, false, nil)
 }
 
 // processIntrospectRowsOpt fills db from rows. When allowRaw is false (the
@@ -190,20 +94,20 @@ func processIntrospectRows(db *DatabaseSpec, database string, rows rowScanner) e
 // When allowRaw is true, such an object is instead captured verbatim as a
 // RawSpec (its kind taken from system.tables.engine) and introspection
 // continues, so one unparseable object never breaks the whole dump.
-func processIntrospectRowsOpt(db *DatabaseSpec, database string, rows rowScanner, opts IntrospectOptions) error {
+func processIntrospectRowsOpt(db *DatabaseSpec, database string, rows rowScanner, allowRaw bool, exclude *ExcludeMatcher) error {
 	for rows.Next() {
 		var name, createSQL, engine string
 		if err := rows.Scan(&name, &createSQL, &engine); err != nil {
 			return fmt.Errorf("scan system.tables: %w", err)
 		}
-		if pattern, ok := opts.Exclude.Match(database, name); ok {
+		if pattern, ok := exclude.Match(database, name); ok {
 			// Skip before parsing: transient objects (tmp_*, _tmp_replace_*, …)
 			// shouldn't land in the dump, and their DDL often can't be parsed.
 			slog.Info("skipping excluded object", "object", database+"."+name, "pattern", pattern)
 			continue
 		}
-		if err := introspectOneObject(db, database, name, createSQL, opts); err != nil {
-			if !opts.AllowRaw {
+		if err := introspectOneObject(db, database, name, createSQL); err != nil {
+			if !allowRaw {
 				return fmt.Errorf("%w (re-run with -allow-raw to capture this object as a raw SQL block instead of failing)", err)
 			}
 			kind := rawKindForEngine(engine)
@@ -223,12 +127,12 @@ func processIntrospectRowsOpt(db *DatabaseSpec, database string, rows rowScanner
 // typed spec to db. It returns an error when the DDL cannot be parsed or the
 // object uses an engine/form the schema language does not express; callers
 // decide whether that is fatal (strict) or captured as raw.
-func introspectOneObject(db *DatabaseSpec, database, name, createSQL string, opts IntrospectOptions) error {
+func introspectOneObject(db *DatabaseSpec, database, name, createSQL string) error {
 	stmt, err := parseCreateStatement(createSQL)
 	if err != nil {
 		return fmt.Errorf("parse create_table_query for %s.%s: %w", database, name, err)
 	}
-	if err := upsertObjectFromStmt(db, name, stmt, opts); err != nil {
+	if err := upsertObjectFromStmt(db, name, stmt); err != nil {
 		return fmt.Errorf("introspect %s.%s: %w", database, name, err)
 	}
 	return nil
@@ -239,10 +143,10 @@ func introspectOneObject(db *DatabaseSpec, database, name, createSQL string, opt
 // already exists with that name it is replaced in place (otherwise appended),
 // so the helper is safe both for introspection — where names are unique — and
 // for the sql2hcl edit path, where a CREATE redefines an existing object.
-func upsertObjectFromStmt(db *DatabaseSpec, name string, stmt chparser.Expr, opts IntrospectOptions) error {
+func upsertObjectFromStmt(db *DatabaseSpec, name string, stmt chparser.Expr) error {
 	switch s := stmt.(type) {
 	case *chparser.CreateTable:
-		ts, err := buildTableFromCreateTable(s, opts)
+		ts, err := buildTableFromCreateTable(s)
 		if err != nil {
 			return fmt.Errorf("table %s: %w", name, err)
 		}
@@ -342,11 +246,11 @@ func buildTableFromCreateSQL(createSQL string) (TableSpec, error) {
 	if !ok {
 		return TableSpec{}, errors.New("no CREATE TABLE statement found in create_table_query")
 	}
-	return buildTableFromCreateTable(ct, IntrospectOptions{})
+	return buildTableFromCreateTable(ct)
 }
 
 // buildTableFromCreateTable walks an already-parsed CREATE TABLE AST.
-func buildTableFromCreateTable(ct *chparser.CreateTable, opts IntrospectOptions) (TableSpec, error) {
+func buildTableFromCreateTable(ct *chparser.CreateTable) (TableSpec, error) {
 	t := TableSpec{}
 
 	if ct.TableSchema != nil {
@@ -376,7 +280,7 @@ func buildTableFromCreateTable(ct *chparser.CreateTable, opts IntrospectOptions)
 	}
 
 	if ct.Engine != nil {
-		eng, settings, err := engineFromAST(ct.Engine, opts)
+		eng, settings, err := engineFromAST(ct.Engine)
 		if err != nil {
 			return TableSpec{}, err
 		}
@@ -384,7 +288,7 @@ func buildTableFromCreateTable(ct *chparser.CreateTable, opts IntrospectOptions)
 		// fold them in here before stamping the engine onto the table.
 		if ts, ok := eng.(EngineTimeSeries); ok && len(ct.TimeSeriesTargets) > 0 {
 			for _, tc := range ct.TimeSeriesTargets {
-				target, err := buildTimeSeriesTarget(tc, opts)
+				target, err := buildTimeSeriesTarget(tc)
 				if err != nil {
 					return TableSpec{}, fmt.Errorf("%s target: %w", tc.Kind, err)
 				}
@@ -759,54 +663,30 @@ func constraintFromAST(c *chparser.ConstraintClause) *ConstraintSpec {
 	return out
 }
 
-// cloudSharedZooPath and cloudSharedReplicaName are the replication arguments
-// ClickHouse Cloud generates for every Shared* table. They are identical on
-// every table of a service — the server writes them, so there is no per-table
-// replication path for a schema to record.
-const (
-	cloudSharedZooPath     = "/clickhouse/tables/{uuid}/{shard}"
-	cloudSharedReplicaName = "{replica}"
-)
-
-// collapseSharedEngine maps a ClickHouse Cloud Shared<X>MergeTree engine back
-// to the <X>MergeTree the DDL was written as. Shared<X>MergeTree takes the
-// Replicated<X>MergeTree argument list: the generated (zoo_path,
-// replica_name) pair, then the same trailing arguments as plain
-// <X>MergeTree. Dropping the pair leaves an engine the schema language
-// already expresses, and one that Cloud rewrites straight back on apply.
-//
-// A name that is not a Shared MergeTree engine passes through untouched. An
-// unexpected argument pair is an error rather than a silent drop: only the
-// generated pair is known to carry no information, and a dropped argument
-// round-trips as a false "no drift" (#108, #109).
-func collapseSharedEngine(name string, params []string) (string, []string, error) {
-	if !strings.HasPrefix(name, "Shared") || !strings.HasSuffix(name, "MergeTree") {
-		return name, params, nil
-	}
-	if len(params) < 2 || params[0] != cloudSharedZooPath || params[1] != cloudSharedReplicaName {
-		return "", nil, fmt.Errorf("engine %s: expected the ClickHouse Cloud replication arguments ('%s', '%s'), got %v; hclexp will not drop arguments it did not expect",
-			name, cloudSharedZooPath, cloudSharedReplicaName, params)
-	}
-	return strings.TrimPrefix(name, "Shared"), params[2:], nil
-}
-
 // engineFromAST returns (engine, table-level settings) from an EngineExpr.
 // The settings map excludes kafka_* keys (those are folded into the typed
 // Kafka engine), matching the legacy extractTableSettings behavior.
-func engineFromAST(e *chparser.EngineExpr, opts IntrospectOptions) (Engine, map[string]string, error) {
+func summingColumns(params []string) []string {
+	if len(params) != 1 {
+		return params
+	}
+	tuple := strings.TrimSpace(params[0])
+	if !strings.HasPrefix(tuple, "(") || !strings.HasSuffix(tuple, ")") {
+		return params
+	}
+	parts := splitTopLevelCSV(tuple[1 : len(tuple)-1])
+	columns := make([]string, 0, len(parts))
+	for _, part := range parts {
+		columns = append(columns, strings.TrimSpace(part))
+	}
+	return columns
+}
+
+func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 	params := engineParamStrings(e.Params)
 	allSettings := engineSettingsMap(e.Settings)
 
-	name := e.Name
-	if opts.CollapseSharedMergeTree {
-		collapsed, rest, err := collapseSharedEngine(name, params)
-		if err != nil {
-			return nil, nil, err
-		}
-		name, params = collapsed, rest
-	}
-
-	switch name {
+	switch e.Name {
 	case "MergeTree":
 		return EngineMergeTree{}, allSettings, nil
 	case "ReplicatedMergeTree":
@@ -814,6 +694,11 @@ func engineFromAST(e *chparser.EngineExpr, opts IntrospectOptions) (Engine, map[
 			return nil, nil, fmt.Errorf("ReplicatedMergeTree needs (zoo_path, replica_name)")
 		}
 		return EngineReplicatedMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
+	case "SharedMergeTree":
+		if len(params) != 2 {
+			return nil, nil, fmt.Errorf("SharedMergeTree needs exactly (zoo_path, replica_name); got %v", params)
+		}
+		return EngineSharedMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
 	case "ReplacingMergeTree":
 		// Unknown extra parameters must abort, not silently drop (#108): a
 		// dropped parameter round-trips as a false "no drift".
@@ -843,15 +728,36 @@ func engineFromAST(e *chparser.EngineExpr, opts IntrospectOptions) (Engine, map[
 			ee.IsDeletedColumn = &params[3]
 		}
 		return ee, allSettings, nil
+	case "SharedReplacingMergeTree":
+		if len(params) < 2 || len(params) > 4 {
+			return nil, nil, fmt.Errorf("SharedReplacingMergeTree needs (zoo_path, replica_name[, version_column[, is_deleted_column]]); got %v", params)
+		}
+		ee := EngineSharedReplacingMergeTree{ZooPath: params[0], ReplicaName: params[1]}
+		if len(params) > 2 {
+			ee.VersionColumn = &params[2]
+		}
+		if len(params) > 3 {
+			ee.IsDeletedColumn = &params[3]
+		}
+		return ee, allSettings, nil
 	case "SummingMergeTree":
-		return EngineSummingMergeTree{SumColumns: params}, allSettings, nil
+		return EngineSummingMergeTree{SumColumns: summingColumns(params)}, allSettings, nil
 	case "ReplicatedSummingMergeTree":
 		if len(params) < 2 {
 			return nil, nil, fmt.Errorf("ReplicatedSummingMergeTree needs at least (zoo_path, replica_name[, sum_columns...])")
 		}
 		ee := EngineReplicatedSummingMergeTree{ZooPath: params[0], ReplicaName: params[1]}
 		if len(params) > 2 {
-			ee.SumColumns = params[2:]
+			ee.SumColumns = summingColumns(params[2:])
+		}
+		return ee, allSettings, nil
+	case "SharedSummingMergeTree":
+		if len(params) < 2 {
+			return nil, nil, fmt.Errorf("SharedSummingMergeTree needs at least (zoo_path, replica_name[, sum_columns...])")
+		}
+		ee := EngineSharedSummingMergeTree{ZooPath: params[0], ReplicaName: params[1]}
+		if len(params) > 2 {
+			ee.SumColumns = summingColumns(params[2:])
 		}
 		return ee, allSettings, nil
 	case "CollapsingMergeTree":
@@ -864,6 +770,11 @@ func engineFromAST(e *chparser.EngineExpr, opts IntrospectOptions) (Engine, map[
 			return nil, nil, fmt.Errorf("ReplicatedCollapsingMergeTree needs (zoo_path, replica_name, sign_column)")
 		}
 		return EngineReplicatedCollapsingMergeTree{ZooPath: params[0], ReplicaName: params[1], SignColumn: params[2]}, allSettings, nil
+	case "SharedCollapsingMergeTree":
+		if len(params) != 3 {
+			return nil, nil, fmt.Errorf("SharedCollapsingMergeTree needs (zoo_path, replica_name, sign_column)")
+		}
+		return EngineSharedCollapsingMergeTree{ZooPath: params[0], ReplicaName: params[1], SignColumn: params[2]}, allSettings, nil
 	case "AggregatingMergeTree":
 		return EngineAggregatingMergeTree{}, allSettings, nil
 	case "ReplicatedAggregatingMergeTree":
@@ -871,6 +782,11 @@ func engineFromAST(e *chparser.EngineExpr, opts IntrospectOptions) (Engine, map[
 			return nil, nil, fmt.Errorf("ReplicatedAggregatingMergeTree needs (zoo_path, replica_name)")
 		}
 		return EngineReplicatedAggregatingMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
+	case "SharedAggregatingMergeTree":
+		if len(params) != 2 {
+			return nil, nil, fmt.Errorf("SharedAggregatingMergeTree needs exactly (zoo_path, replica_name); got %v", params)
+		}
+		return EngineSharedAggregatingMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
 	case "Distributed":
 		if len(params) < 3 {
 			return nil, nil, fmt.Errorf("engine Distributed needs (cluster, db, table[, sharding_key[, policy_name]])")
@@ -987,14 +903,7 @@ func engineFromAST(e *chparser.EngineExpr, opts IntrospectOptions) (Engine, map[
 		}
 		return ts, nil, nil
 	}
-	if strings.HasPrefix(name, "Shared") && strings.HasSuffix(name, "MergeTree") {
-		// Reached only with the collapse off — either the server never told
-		// us it rewrites DDL, or the DDL came from a file with no server to
-		// ask (sql2hcl).
-		return nil, nil, fmt.Errorf("unsupported engine: %s (ClickHouse Cloud rewrites MergeTree-family DDL to the Shared* engines; hclexp reads them as their plain equivalents only when the server reports a cloud_mode_engine that rewrites the same way — 2, 3 or 4)",
-			name)
-	}
-	return nil, nil, fmt.Errorf("unsupported engine: %s", name)
+	return nil, nil, fmt.Errorf("unsupported engine: %s", e.Name)
 }
 
 func engineParamStrings(p *chparser.ParamExprList) []string {
@@ -1208,6 +1117,62 @@ func ParseEngineString(engineFull string) (Engine, error) {
 			e.SumColumns = p[2:]
 		}
 		return e, nil
+	case strings.HasPrefix(decl, "SharedMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if len(p) != 2 {
+			return nil, fmt.Errorf("SharedMergeTree needs exactly (zoo_path, replica_name); got %v", p)
+		}
+		return EngineSharedMergeTree{ZooPath: p[0], ReplicaName: p[1]}, nil
+	case strings.HasPrefix(decl, "SharedReplacingMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if len(p) < 2 || len(p) > 4 {
+			return nil, fmt.Errorf("SharedReplacingMergeTree needs (zoo_path, replica_name[, version_column[, is_deleted_column]]); got %v", p)
+		}
+		e := EngineSharedReplacingMergeTree{ZooPath: p[0], ReplicaName: p[1]}
+		if len(p) > 2 {
+			e.VersionColumn = &p[2]
+		}
+		if len(p) > 3 {
+			e.IsDeletedColumn = &p[3]
+		}
+		return e, nil
+	case strings.HasPrefix(decl, "SharedSummingMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if len(p) < 2 {
+			return nil, fmt.Errorf("SharedSummingMergeTree needs at least (zoo_path, replica_name[, sum_columns...]); got %v", p)
+		}
+		e := EngineSharedSummingMergeTree{ZooPath: p[0], ReplicaName: p[1]}
+		if len(p) > 2 {
+			e.SumColumns = p[2:]
+		}
+		return e, nil
+	case strings.HasPrefix(decl, "SharedCollapsingMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if len(p) != 3 {
+			return nil, fmt.Errorf("SharedCollapsingMergeTree needs (zoo_path, replica_name, sign_column); got %v", p)
+		}
+		return EngineSharedCollapsingMergeTree{ZooPath: p[0], ReplicaName: p[1], SignColumn: p[2]}, nil
+	case strings.HasPrefix(decl, "SharedAggregatingMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if len(p) != 2 {
+			return nil, fmt.Errorf("SharedAggregatingMergeTree needs exactly (zoo_path, replica_name); got %v", p)
+		}
+		return EngineSharedAggregatingMergeTree{ZooPath: p[0], ReplicaName: p[1]}, nil
 	case strings.HasPrefix(decl, "ReplacingMergeTree"):
 		p, err := extractEngineParams(decl)
 		if err != nil {
@@ -1565,7 +1530,7 @@ func stringSliceEqual(a, b []string) bool {
 // buildTimeSeriesTarget turns a chparser.TimeSeriesTargetClause into a typed
 // TimeSeriesTarget. Either External or Inner must be set on the clause;
 // the resolver enforces that both-or-neither is rejected.
-func buildTimeSeriesTarget(tc *chparser.TimeSeriesTargetClause, opts IntrospectOptions) (*TimeSeriesTarget, error) {
+func buildTimeSeriesTarget(tc *chparser.TimeSeriesTargetClause) (*TimeSeriesTarget, error) {
 	if tc.External != nil {
 		ref := stripBackticks(tc.External.String())
 		return &TimeSeriesTarget{Target: &ref}, nil
@@ -1581,7 +1546,7 @@ func buildTimeSeriesTarget(tc *chparser.TimeSeriesTargetClause, opts IntrospectO
 		inner.Columns[i] = ColumnSpec{Name: c.Name, Type: c.Type}
 	}
 	if tc.InnerEngine != nil {
-		eng, _, err := engineFromAST(tc.InnerEngine, opts)
+		eng, _, err := engineFromAST(tc.InnerEngine)
 		if err != nil {
 			return nil, fmt.Errorf("inner engine: %w", err)
 		}

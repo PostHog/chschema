@@ -25,6 +25,13 @@ type EngineReplicatedMergeTree struct {
 
 func (EngineReplicatedMergeTree) Kind() string { return "replicated_merge_tree" }
 
+type EngineSharedMergeTree struct {
+	ZooPath     string `hcl:"zoo_path"`
+	ReplicaName string `hcl:"replica_name"`
+}
+
+func (EngineSharedMergeTree) Kind() string { return "shared_merge_tree" }
+
 type EngineReplacingMergeTree struct {
 	VersionColumn *string `hcl:"version_column,optional"`
 	// IsDeletedColumn is ClickHouse's optional is_deleted parameter (1 = the
@@ -44,6 +51,15 @@ type EngineReplicatedReplacingMergeTree struct {
 
 func (EngineReplicatedReplacingMergeTree) Kind() string { return "replicated_replacing_merge_tree" }
 
+type EngineSharedReplacingMergeTree struct {
+	ZooPath         string  `hcl:"zoo_path"`
+	ReplicaName     string  `hcl:"replica_name"`
+	VersionColumn   *string `hcl:"version_column,optional"`
+	IsDeletedColumn *string `hcl:"is_deleted_column,optional"`
+}
+
+func (EngineSharedReplacingMergeTree) Kind() string { return "shared_replacing_merge_tree" }
+
 type EngineSummingMergeTree struct {
 	SumColumns []string `hcl:"sum_columns,optional"`
 }
@@ -60,6 +76,14 @@ func (EngineReplicatedSummingMergeTree) Kind() string {
 	return "replicated_summing_merge_tree"
 }
 
+type EngineSharedSummingMergeTree struct {
+	ZooPath     string   `hcl:"zoo_path"`
+	ReplicaName string   `hcl:"replica_name"`
+	SumColumns  []string `hcl:"sum_columns,optional"`
+}
+
+func (EngineSharedSummingMergeTree) Kind() string { return "shared_summing_merge_tree" }
+
 type EngineCollapsingMergeTree struct {
 	SignColumn string `hcl:"sign_column"`
 }
@@ -74,6 +98,14 @@ type EngineReplicatedCollapsingMergeTree struct {
 
 func (EngineReplicatedCollapsingMergeTree) Kind() string { return "replicated_collapsing_merge_tree" }
 
+type EngineSharedCollapsingMergeTree struct {
+	ZooPath     string `hcl:"zoo_path"`
+	ReplicaName string `hcl:"replica_name"`
+	SignColumn  string `hcl:"sign_column"`
+}
+
+func (EngineSharedCollapsingMergeTree) Kind() string { return "shared_collapsing_merge_tree" }
+
 type EngineAggregatingMergeTree struct{}
 
 func (EngineAggregatingMergeTree) Kind() string { return "aggregating_merge_tree" }
@@ -84,6 +116,13 @@ type EngineReplicatedAggregatingMergeTree struct {
 }
 
 func (EngineReplicatedAggregatingMergeTree) Kind() string { return "replicated_aggregating_merge_tree" }
+
+type EngineSharedAggregatingMergeTree struct {
+	ZooPath     string `hcl:"zoo_path"`
+	ReplicaName string `hcl:"replica_name"`
+}
+
+func (EngineSharedAggregatingMergeTree) Kind() string { return "shared_aggregating_merge_tree" }
 
 type EngineDistributed struct {
 	ClusterName    string  `hcl:"cluster_name"`
@@ -228,12 +267,19 @@ func (EngineMergeTree) Virtuals() []DeclaredColumn { return mergeTreeFamilyVirtu
 func (EngineReplicatedMergeTree) Virtuals() []DeclaredColumn {
 	return mergeTreeFamilyVirtuals
 }
+func (EngineSharedMergeTree) Virtuals() []DeclaredColumn    { return mergeTreeFamilyVirtuals }
 func (EngineReplacingMergeTree) Virtuals() []DeclaredColumn { return mergeTreeFamilyVirtuals }
 func (EngineReplicatedReplacingMergeTree) Virtuals() []DeclaredColumn {
 	return mergeTreeFamilyVirtuals
 }
+func (EngineSharedReplacingMergeTree) Virtuals() []DeclaredColumn {
+	return mergeTreeFamilyVirtuals
+}
 func (EngineSummingMergeTree) Virtuals() []DeclaredColumn { return mergeTreeFamilyVirtuals }
 func (EngineReplicatedSummingMergeTree) Virtuals() []DeclaredColumn {
+	return mergeTreeFamilyVirtuals
+}
+func (EngineSharedSummingMergeTree) Virtuals() []DeclaredColumn {
 	return mergeTreeFamilyVirtuals
 }
 func (EngineCollapsingMergeTree) Virtuals() []DeclaredColumn {
@@ -242,10 +288,16 @@ func (EngineCollapsingMergeTree) Virtuals() []DeclaredColumn {
 func (EngineReplicatedCollapsingMergeTree) Virtuals() []DeclaredColumn {
 	return mergeTreeFamilyVirtuals
 }
+func (EngineSharedCollapsingMergeTree) Virtuals() []DeclaredColumn {
+	return mergeTreeFamilyVirtuals
+}
 func (EngineAggregatingMergeTree) Virtuals() []DeclaredColumn {
 	return mergeTreeFamilyVirtuals
 }
 func (EngineReplicatedAggregatingMergeTree) Virtuals() []DeclaredColumn {
+	return mergeTreeFamilyVirtuals
+}
+func (EngineSharedAggregatingMergeTree) Virtuals() []DeclaredColumn {
 	return mergeTreeFamilyVirtuals
 }
 
@@ -414,12 +466,20 @@ func DecodeEngine(spec *EngineSpec) (Engine, error) {
 		var e EngineReplicatedMergeTree
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
+	case "shared_merge_tree":
+		var e EngineSharedMergeTree
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
 	case "replacing_merge_tree":
 		var e EngineReplacingMergeTree
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
 	case "replicated_replacing_merge_tree":
 		var e EngineReplicatedReplacingMergeTree
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
+	case "shared_replacing_merge_tree":
+		var e EngineSharedReplacingMergeTree
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
 	case "summing_merge_tree":
@@ -430,6 +490,10 @@ func DecodeEngine(spec *EngineSpec) (Engine, error) {
 		var e EngineReplicatedSummingMergeTree
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
+	case "shared_summing_merge_tree":
+		var e EngineSharedSummingMergeTree
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
 	case "collapsing_merge_tree":
 		var e EngineCollapsingMergeTree
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
@@ -438,12 +502,20 @@ func DecodeEngine(spec *EngineSpec) (Engine, error) {
 		var e EngineReplicatedCollapsingMergeTree
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
+	case "shared_collapsing_merge_tree":
+		var e EngineSharedCollapsingMergeTree
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
 	case "aggregating_merge_tree":
 		var e EngineAggregatingMergeTree
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
 	case "replicated_aggregating_merge_tree":
 		var e EngineReplicatedAggregatingMergeTree
+		diags = gohcl.DecodeBody(spec.Body, nil, &e)
+		target = e
+	case "shared_aggregating_merge_tree":
+		var e EngineSharedAggregatingMergeTree
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
 	case "distributed":

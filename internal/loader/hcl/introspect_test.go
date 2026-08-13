@@ -94,6 +94,33 @@ func TestParseEngineString(t *testing.T) {
 			EngineReplicatedAggregatingMergeTree{ZooPath: "/p", ReplicaName: "{replica}"},
 		},
 		{
+			"shared_merge_tree",
+			"SharedMergeTree('/p', '{replica}') ORDER BY id",
+			EngineSharedMergeTree{ZooPath: "/p", ReplicaName: "{replica}"},
+		},
+		{
+			"shared_replacing_merge_tree",
+			"SharedReplacingMergeTree('/p', '{replica}', ver, is_deleted) ORDER BY id",
+			EngineSharedReplacingMergeTree{
+				ZooPath: "/p", ReplicaName: "{replica}", VersionColumn: ptr("ver"), IsDeletedColumn: ptr("is_deleted"),
+			},
+		},
+		{
+			"shared_summing_merge_tree",
+			"SharedSummingMergeTree('/p', '{replica}', total) ORDER BY id",
+			EngineSharedSummingMergeTree{ZooPath: "/p", ReplicaName: "{replica}", SumColumns: []string{"total"}},
+		},
+		{
+			"shared_collapsing_merge_tree",
+			"SharedCollapsingMergeTree('/p', '{replica}', sign) ORDER BY id",
+			EngineSharedCollapsingMergeTree{ZooPath: "/p", ReplicaName: "{replica}", SignColumn: "sign"},
+		},
+		{
+			"shared_aggregating_merge_tree",
+			"SharedAggregatingMergeTree('/p', '{replica}') ORDER BY id",
+			EngineSharedAggregatingMergeTree{ZooPath: "/p", ReplicaName: "{replica}"},
+		},
+		{
 			"distributed",
 			"Distributed('clstr', 'db', 't')",
 			EngineDistributed{ClusterName: "clstr", RemoteDatabase: "db", RemoteTable: "t"},
@@ -653,7 +680,7 @@ func TestProcessIntrospectRows_RawFallback_AllowRaw(t *testing.T) {
 		{name: "weird", sql: "this is definitely not valid clickhouse sql", engine: "Dictionary"},
 	}}
 	db := &DatabaseSpec{Name: "db"}
-	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, IntrospectOptions{AllowRaw: true}))
+	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, true, nil))
 
 	require.Len(t, db.Tables, 1, "the parseable table is still introspected normally")
 	require.Len(t, db.Raws, 1)
@@ -668,7 +695,7 @@ func TestProcessIntrospectRows_RawFallback_StrictErrorsWithFlagHint(t *testing.T
 		{name: "weird", sql: "this is definitely not valid clickhouse sql", engine: "Dictionary"},
 	}}
 	db := &DatabaseSpec{Name: "db"}
-	err := processIntrospectRowsOpt(db, "db", rows, IntrospectOptions{})
+	err := processIntrospectRowsOpt(db, "db", rows, false, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "-allow-raw")
 	assert.Empty(t, db.Raws, "strict mode captures nothing")
@@ -687,7 +714,7 @@ func TestProcessIntrospectRows_ExcludeSkipsBeforeParse(t *testing.T) {
 	exclude := NewExcludeMatcher("_tmp_replace_*", "tmp_*")
 
 	// strict mode (allowRaw=false): would normally abort on the unparseable rows.
-	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, IntrospectOptions{Exclude: exclude}))
+	require.NoError(t, processIntrospectRowsOpt(db, "db", rows, false, exclude))
 	require.Len(t, db.Tables, 1)
 	assert.Equal(t, "events", db.Tables[0].Name)
 	assert.Empty(t, db.Raws, "excluded objects are not captured as raw either")

@@ -85,6 +85,7 @@ func TestValidateReplacingEngines_IsDeletedRequiresVersion(t *testing.T) {
 	for _, engine := range []Engine{
 		EngineReplacingMergeTree{IsDeletedColumn: strPtr("is_deleted")},
 		EngineReplicatedReplacingMergeTree{ZooPath: "/p", ReplicaName: "{replica}", IsDeletedColumn: strPtr("is_deleted")},
+		EngineSharedReplacingMergeTree{ZooPath: "/p", ReplicaName: "{replica}", IsDeletedColumn: strPtr("is_deleted")},
 	} {
 		s := &Schema{Databases: []DatabaseSpec{{
 			Name: "db",

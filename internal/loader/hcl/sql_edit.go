@@ -77,10 +77,7 @@ func applyCreate(schema *Schema, stmt chparser.Expr, defaultDatabase string, all
 		return err
 	}
 	db := findOrCreateDatabase(schema, resolved)
-	// sql2hcl reads DDL from a file, so there is no server to ask whether it
-	// rewrites engines — the Cloud collapse stays off and a Shared* engine
-	// reports unsupported.
-	if err := upsertObjectFromStmt(db, name, stmt, IntrospectOptions{}); err != nil {
+	if err := upsertObjectFromStmt(db, name, stmt); err != nil {
 		if !allowRaw {
 			return fmt.Errorf("%w (re-run with -allow-raw to capture this object as a raw SQL block instead of failing)", err)
 		}

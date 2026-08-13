@@ -67,7 +67,7 @@ func TestProcessIntrospectRows_ParsesNullSafeEquality(t *testing.T) {
 	}
 
 	db := &DatabaseSpec{Name: "db"}
-	require.NoError(t, processIntrospectRowsOpt(db, "db", newRows(), IntrospectOptions{}))
+	require.NoError(t, processIntrospectRowsOpt(db, "db", newRows(), false, nil))
 	require.Len(t, db.Tables, 2)
 	assert.Empty(t, db.Raws)
 }
