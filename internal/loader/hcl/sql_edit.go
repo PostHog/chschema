@@ -35,8 +35,7 @@ import (
 //
 // It returns the number of statements applied.
 func ApplySQL(schema *Schema, sql, defaultDatabase string, allowRaw bool) (int, error) {
-	p := chparser.NewParser(sql)
-	stmts, err := p.ParseStmts()
+	stmts, err := safeParseStmts(sql)
 	if err != nil {
 		return 0, fmt.Errorf("parse SQL: %w", err)
 	}
