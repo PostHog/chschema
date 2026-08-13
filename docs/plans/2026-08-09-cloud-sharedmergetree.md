@@ -1,6 +1,6 @@
 # ClickHouse Cloud — reading the `Shared*MergeTree` engines
 
-Status: design approved 2026-08-09; implementation in progress.
+Status: implemented as the mergeable successor to #176.
 First step of running `hclexp` against ClickHouse Cloud.
 
 ## Problem
@@ -153,7 +153,10 @@ a false "no drift".
     the value: `0` and `1` are the server deliberately not rewriting, but a
     value we have never seen means ClickHouse has added a behaviour this
     build does not model, and the unsupported-engine error that follows on a
-    Cloud service does not report what the server said.
+    Cloud service does not report what the server said. CLI callers treat a
+    probe error as a warning and keep the collapse off, so a restricted
+    self-hosted user is not newly required to read `system.settings`; safety
+    remains fail-closed for any `Shared*` table.
   - `collapseSharedEngine(name, params)` rewrites the name and drops the
     generated pair, or errors on an unexpected pair.
   - `engineFromAST` switches on the possibly-rewritten name. Its
@@ -170,14 +173,12 @@ a false "no drift".
 
 ## Verification against a live Cloud service
 
-All 341 Shared* tables replayed through `processIntrospectRowsOpt`: 340
-introspect cleanly, and 1 aborts the run.
-
-That table has a column `DEFAULT` using ClickHouse's `<=>` operator, which
-panics the third-party SQL parser. Nothing to do with Cloud — a self-hosted
-server carrying the same column would hit it too — and the panic bypasses
-`-allow-raw`, so the object cannot be captured as a raw block either. Tracked
-separately.
+All 341 Shared* tables replayed through `processIntrospectRowsOpt`. The one
+table that originally aborted has a column `DEFAULT` using ClickHouse's `<=>`
+operator. Parser panic containment was split into chschema #184, and native
+`<=>` support plus the upstream nil-dereference fix is tracked in
+clickhouse-sql-parser #21 / #23. With that parser revision, all 341 tables
+introspect cleanly.
 
 Collapsed engine kinds match the server's own counts exactly: 291
 `merge_tree`, 49 `replacing_merge_tree`, 1 `aggregating_merge_tree`. Every

@@ -667,13 +667,7 @@ func loadExclude(path string) *hclload.ExcludeMatcher {
 func introspectSchema(ctx context.Context, conn driver.Conn, databases []string, nodeName string, allowRaw bool, exclude *hclload.ExcludeMatcher) (*hclload.Schema, error) {
 	// Probe once per connection: whether the server rewrites MergeTree-family
 	// DDL to the Shared* engines is a property of the server, not a database.
-	collapseShared, err := hclload.DetectCloudEngineRewrite(ctx, conn)
-	if err != nil {
-		return nil, err
-	}
-	if collapseShared {
-		slog.Info("server rewrites engines to SharedMergeTree; reading them as their plain equivalents")
-	}
+	collapseShared := detectCloudEngineRewrite(ctx, conn)
 	opts := hclload.IntrospectOptions{
 		AllowRaw:                allowRaw,
 		Exclude:                 exclude,
@@ -715,6 +709,23 @@ func introspectSchema(ctx context.Context, conn driver.Conn, databases []string,
 	}
 
 	return schema, nil
+}
+
+// detectCloudEngineRewrite is best effort so the additional Cloud capability
+// probe cannot break existing self-hosted introspection for a restricted user
+// that can read system.tables but not system.settings. Failure leaves Shared*
+// engines strict; a Cloud table then fails explicitly instead of being
+// normalised without proof that the write direction is safe.
+func detectCloudEngineRewrite(ctx context.Context, conn driver.Conn) bool {
+	collapseShared, err := hclload.DetectCloudEngineRewrite(ctx, conn)
+	if err != nil {
+		slog.Warn("could not detect ClickHouse Cloud engine rewriting; Shared* engines remain strict", "err", err)
+		return false
+	}
+	if collapseShared {
+		slog.Info("server rewrites engines to SharedMergeTree; reading them as their plain equivalents")
+	}
+	return collapseShared
 }
 
 // runDumpCluster connects to one entry host, enumerates every node of a named
@@ -1000,10 +1011,7 @@ func loadFromClickHouse(uri string) (*hclload.Schema, error) {
 	defer conn.Close()
 
 	ctx := context.Background()
-	collapseShared, err := hclload.DetectCloudEngineRewrite(ctx, conn)
-	if err != nil {
-		return nil, err
-	}
+	collapseShared := detectCloudEngineRewrite(ctx, conn)
 
 	schema := &hclload.Schema{}
 	for _, name := range databases {

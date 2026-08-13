@@ -2,15 +2,30 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/posthog/chschema/config"
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 	"github.com/stretchr/testify/require"
 )
+
+type failingCloudProbeConn struct {
+	driver.Conn
+}
+
+func (*failingCloudProbeConn) Query(context.Context, string, ...any) (driver.Rows, error) {
+	return nil, errors.New("system.settings denied")
+}
+
+func TestDetectCloudEngineRewrite_QueryFailureStaysStrict(t *testing.T) {
+	require.False(t, detectCloudEngineRewrite(context.Background(), &failingCloudProbeConn{}))
+}
 
 func TestUsage(t *testing.T) {
 	var buf bytes.Buffer
