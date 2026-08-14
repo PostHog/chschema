@@ -388,6 +388,10 @@ func TestWeb_FlowSharedPrefixRenderedOnce(t *testing.T) {
 	assert.Equal(t, 1, strings.Count(body, `>events_archive_mv</a>`))
 	assert.Equal(t, 1, strings.Count(body, `>events_realtime_mv</a>`))
 	assert.Contains(t, body, `class="flow-children branched"`)
+	assert.Equal(t, 2, strings.Count(body, `<details class="flow-branch" open>`))
+	assert.Equal(t, 2, strings.Count(body, `class="flow-branch-summary`))
+	assert.Contains(t, body, `aria-label="Toggle downstream flow events_archive_mv"`)
+	assert.Contains(t, body, `aria-label="Toggle downstream flow events_realtime_mv"`)
 }
 
 func TestWeb_FlowDeduplicatesEquivalentSourceReferences(t *testing.T) {
