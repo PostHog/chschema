@@ -666,6 +666,22 @@ func constraintFromAST(c *chparser.ConstraintClause) *ConstraintSpec {
 // engineFromAST returns (engine, table-level settings) from an EngineExpr.
 // The settings map excludes kafka_* keys (those are folded into the typed
 // Kafka engine), matching the legacy extractTableSettings behavior.
+func summingColumns(params []string) []string {
+	if len(params) != 1 {
+		return params
+	}
+	tuple := strings.TrimSpace(params[0])
+	if !strings.HasPrefix(tuple, "(") || !strings.HasSuffix(tuple, ")") {
+		return params
+	}
+	parts := splitTopLevelCSV(tuple[1 : len(tuple)-1])
+	columns := make([]string, 0, len(parts))
+	for _, part := range parts {
+		columns = append(columns, strings.TrimSpace(part))
+	}
+	return columns
+}
+
 func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 	params := engineParamStrings(e.Params)
 	allSettings := engineSettingsMap(e.Settings)
@@ -678,6 +694,11 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 			return nil, nil, fmt.Errorf("ReplicatedMergeTree needs (zoo_path, replica_name)")
 		}
 		return EngineReplicatedMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
+	case "SharedMergeTree":
+		if len(params) != 2 {
+			return nil, nil, fmt.Errorf("SharedMergeTree needs exactly (zoo_path, replica_name); got %v", params)
+		}
+		return EngineSharedMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
 	case "ReplacingMergeTree":
 		// Unknown extra parameters must abort, not silently drop (#108): a
 		// dropped parameter round-trips as a false "no drift".
@@ -707,15 +728,36 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 			ee.IsDeletedColumn = &params[3]
 		}
 		return ee, allSettings, nil
+	case "SharedReplacingMergeTree":
+		if len(params) < 2 || len(params) > 4 {
+			return nil, nil, fmt.Errorf("SharedReplacingMergeTree needs (zoo_path, replica_name[, version_column[, is_deleted_column]]); got %v", params)
+		}
+		ee := EngineSharedReplacingMergeTree{ZooPath: params[0], ReplicaName: params[1]}
+		if len(params) > 2 {
+			ee.VersionColumn = &params[2]
+		}
+		if len(params) > 3 {
+			ee.IsDeletedColumn = &params[3]
+		}
+		return ee, allSettings, nil
 	case "SummingMergeTree":
-		return EngineSummingMergeTree{SumColumns: params}, allSettings, nil
+		return EngineSummingMergeTree{SumColumns: summingColumns(params)}, allSettings, nil
 	case "ReplicatedSummingMergeTree":
 		if len(params) < 2 {
 			return nil, nil, fmt.Errorf("ReplicatedSummingMergeTree needs at least (zoo_path, replica_name[, sum_columns...])")
 		}
 		ee := EngineReplicatedSummingMergeTree{ZooPath: params[0], ReplicaName: params[1]}
 		if len(params) > 2 {
-			ee.SumColumns = params[2:]
+			ee.SumColumns = summingColumns(params[2:])
+		}
+		return ee, allSettings, nil
+	case "SharedSummingMergeTree":
+		if len(params) < 2 {
+			return nil, nil, fmt.Errorf("SharedSummingMergeTree needs at least (zoo_path, replica_name[, sum_columns...])")
+		}
+		ee := EngineSharedSummingMergeTree{ZooPath: params[0], ReplicaName: params[1]}
+		if len(params) > 2 {
+			ee.SumColumns = summingColumns(params[2:])
 		}
 		return ee, allSettings, nil
 	case "CollapsingMergeTree":
@@ -728,6 +770,11 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 			return nil, nil, fmt.Errorf("ReplicatedCollapsingMergeTree needs (zoo_path, replica_name, sign_column)")
 		}
 		return EngineReplicatedCollapsingMergeTree{ZooPath: params[0], ReplicaName: params[1], SignColumn: params[2]}, allSettings, nil
+	case "SharedCollapsingMergeTree":
+		if len(params) != 3 {
+			return nil, nil, fmt.Errorf("SharedCollapsingMergeTree needs (zoo_path, replica_name, sign_column)")
+		}
+		return EngineSharedCollapsingMergeTree{ZooPath: params[0], ReplicaName: params[1], SignColumn: params[2]}, allSettings, nil
 	case "AggregatingMergeTree":
 		return EngineAggregatingMergeTree{}, allSettings, nil
 	case "ReplicatedAggregatingMergeTree":
@@ -735,6 +782,11 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 			return nil, nil, fmt.Errorf("ReplicatedAggregatingMergeTree needs (zoo_path, replica_name)")
 		}
 		return EngineReplicatedAggregatingMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
+	case "SharedAggregatingMergeTree":
+		if len(params) != 2 {
+			return nil, nil, fmt.Errorf("SharedAggregatingMergeTree needs exactly (zoo_path, replica_name); got %v", params)
+		}
+		return EngineSharedAggregatingMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
 	case "Distributed":
 		if len(params) < 3 {
 			return nil, nil, fmt.Errorf("engine Distributed needs (cluster, db, table[, sharding_key[, policy_name]])")
@@ -1065,6 +1117,62 @@ func ParseEngineString(engineFull string) (Engine, error) {
 			e.SumColumns = p[2:]
 		}
 		return e, nil
+	case strings.HasPrefix(decl, "SharedMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if len(p) != 2 {
+			return nil, fmt.Errorf("SharedMergeTree needs exactly (zoo_path, replica_name); got %v", p)
+		}
+		return EngineSharedMergeTree{ZooPath: p[0], ReplicaName: p[1]}, nil
+	case strings.HasPrefix(decl, "SharedReplacingMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if len(p) < 2 || len(p) > 4 {
+			return nil, fmt.Errorf("SharedReplacingMergeTree needs (zoo_path, replica_name[, version_column[, is_deleted_column]]); got %v", p)
+		}
+		e := EngineSharedReplacingMergeTree{ZooPath: p[0], ReplicaName: p[1]}
+		if len(p) > 2 {
+			e.VersionColumn = &p[2]
+		}
+		if len(p) > 3 {
+			e.IsDeletedColumn = &p[3]
+		}
+		return e, nil
+	case strings.HasPrefix(decl, "SharedSummingMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if len(p) < 2 {
+			return nil, fmt.Errorf("SharedSummingMergeTree needs at least (zoo_path, replica_name[, sum_columns...]); got %v", p)
+		}
+		e := EngineSharedSummingMergeTree{ZooPath: p[0], ReplicaName: p[1]}
+		if len(p) > 2 {
+			e.SumColumns = p[2:]
+		}
+		return e, nil
+	case strings.HasPrefix(decl, "SharedCollapsingMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if len(p) != 3 {
+			return nil, fmt.Errorf("SharedCollapsingMergeTree needs (zoo_path, replica_name, sign_column); got %v", p)
+		}
+		return EngineSharedCollapsingMergeTree{ZooPath: p[0], ReplicaName: p[1], SignColumn: p[2]}, nil
+	case strings.HasPrefix(decl, "SharedAggregatingMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if len(p) != 2 {
+			return nil, fmt.Errorf("SharedAggregatingMergeTree needs exactly (zoo_path, replica_name); got %v", p)
+		}
+		return EngineSharedAggregatingMergeTree{ZooPath: p[0], ReplicaName: p[1]}, nil
 	case strings.HasPrefix(decl, "ReplacingMergeTree"):
 		p, err := extractEngineParams(decl)
 		if err != nil {

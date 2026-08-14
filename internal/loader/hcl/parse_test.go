@@ -6,55 +6,59 @@ import (
 	"strings"
 	"testing"
 
+	chparser "github.com/orian/clickhouse-sql-parser/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// spaceshipDDL uses ClickHouse's null-safe equality operator in a column
-// DEFAULT. Parser revision 0a672f5bb552 panics in parseTableColumnExpr instead
-// of returning its unsupported-syntax error (upstream issue #21).
+// spaceshipDDL is the regression from upstream issue #21. Parser revision
+// 0a672f5bb552 panicked on the null-safe equality operator in a column DEFAULT;
+// revision 768a69c3d95a parses it natively.
 const spaceshipDDL = "CREATE TABLE db.things (`name` String, " +
 	"`matches` Bool DEFAULT other_name <=> name, " +
 	"`other_name` Nullable(String)) ENGINE = MergeTree ORDER BY name"
 
 func TestSafeParseStmts_RecoversPanic(t *testing.T) {
-	stmts, err := safeParseStmts(spaceshipDDL)
+	stmts, err := recoverParserPanic(func() ([]chparser.Expr, error) {
+		panic("synthetic parser failure")
+	})
 	require.Error(t, err)
 	assert.Nil(t, stmts)
 	assert.Contains(t, err.Error(), "SQL parser panicked")
+	assert.Contains(t, err.Error(), "synthetic parser failure")
 }
 
-func TestSafeParseStmts_ParsesNormalSQL(t *testing.T) {
-	stmts, err := safeParseStmts("CREATE TABLE db.t (`id` UUID) ENGINE = MergeTree ORDER BY id")
+func TestSafeParseStmts_ParsesNullSafeEquality(t *testing.T) {
+	stmts, err := safeParseStmts(spaceshipDDL)
 	require.NoError(t, err)
 	require.Len(t, stmts, 1)
 }
 
-// Every entry point accepting CREATE DDL must return an error rather than let
-// the third-party parser unwind the process.
-func TestSafeParseStmts_DDLCallersSurvivePanic(t *testing.T) {
+// Every entry point accepting CREATE DDL must use the upgraded parser and
+// accept the issue #21 regression syntax.
+func TestDDLCallersParseNullSafeEquality(t *testing.T) {
 	t.Run("ExtractReferencedTables", func(t *testing.T) {
 		_, err := ExtractReferencedTables(spaceshipDDL)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 	})
 
 	t.Run("ExtractDeclaredColumns", func(t *testing.T) {
 		_, err := ExtractDeclaredColumns(spaceshipDDL)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 	})
 
 	t.Run("ApplySQL", func(t *testing.T) {
 		_, err := ApplySQL(&Schema{}, spaceshipDDL, "db", false)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 	})
 
 	t.Run("parseCreateStatement", func(t *testing.T) {
 		_, err := parseCreateStatement(spaceshipDDL)
-		assert.Error(t, err)
+		assert.NoError(t, err)
 	})
 }
 
-func TestProcessIntrospectRows_ParserPanicIsRawCapturable(t *testing.T) {
+func TestProcessIntrospectRows_ParsesNullSafeEquality(t *testing.T) {
 	newRows := func() *fakeRows {
 		return &fakeRows{rows: []fakeRow{
 			{name: "events", sql: "CREATE TABLE db.events (`id` UUID) ENGINE = MergeTree ORDER BY id", engine: "MergeTree"},
@@ -62,22 +66,16 @@ func TestProcessIntrospectRows_ParserPanicIsRawCapturable(t *testing.T) {
 		}}
 	}
 
-	strictErr := processIntrospectRowsOpt(&DatabaseSpec{Name: "db"}, "db", newRows(), false, nil)
-	require.Error(t, strictErr)
-	assert.Contains(t, strictErr.Error(), "-allow-raw")
-
 	db := &DatabaseSpec{Name: "db"}
-	require.NoError(t, processIntrospectRowsOpt(db, "db", newRows(), true, nil))
-	require.Len(t, db.Tables, 1, "the parseable table is still introspected")
-	require.Len(t, db.Raws, 1)
-	assert.Equal(t, "things", db.Raws[0].Name)
-	assert.Equal(t, normalizeRawSQL(spaceshipDDL), db.Raws[0].SQL)
+	require.NoError(t, processIntrospectRowsOpt(db, "db", newRows(), false, nil))
+	require.Len(t, db.Tables, 2)
+	assert.Empty(t, db.Raws)
 }
 
 // Query readers have best-effort and error-returning contracts, but neither
 // may panic on syntax the parser does not support.
 func TestQueryCallersDegradeOnUnparseableInput(t *testing.T) {
-	const unparseable = "SELECT a <=> b AS matches FROM db.t"
+	const unparseable = "SELECT ("
 
 	_, err := extractSourceTables(unparseable)
 	assert.Error(t, err)

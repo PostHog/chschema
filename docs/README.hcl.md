@@ -235,14 +235,19 @@ attributes depend on the kind.
 | ------------------------------------- | -------------------------------------------------- | ---------------------- |
 | `merge_tree`                          | —                                                  | —                      |
 | `replicated_merge_tree`               | `zoo_path`, `replica_name`                         | —                      |
+| `shared_merge_tree`                   | `zoo_path`, `replica_name`                         | —                      |
 | `replacing_merge_tree`                | —                                                  | `version_column`, `is_deleted_column` |
 | `replicated_replacing_merge_tree`     | `zoo_path`, `replica_name`                         | `version_column`, `is_deleted_column` |
+| `shared_replacing_merge_tree`         | `zoo_path`, `replica_name`                         | `version_column`, `is_deleted_column` |
 | `summing_merge_tree`                  | —                                                  | `sum_columns = [...]`  |
 | `replicated_summing_merge_tree`       | `zoo_path`, `replica_name`                         | `sum_columns = [...]`  |
+| `shared_summing_merge_tree`           | `zoo_path`, `replica_name`                         | `sum_columns = [...]`  |
 | `collapsing_merge_tree`               | `sign_column`                                      | —                      |
 | `replicated_collapsing_merge_tree`    | `zoo_path`, `replica_name`, `sign_column`          | —                      |
+| `shared_collapsing_merge_tree`        | `zoo_path`, `replica_name`, `sign_column`          | —                      |
 | `aggregating_merge_tree`              | —                                                  | —                      |
 | `replicated_aggregating_merge_tree`   | `zoo_path`, `replica_name`                         | —                      |
+| `shared_aggregating_merge_tree`       | `zoo_path`, `replica_name`                         | —                      |
 | `distributed`                         | `cluster_name`, `remote_database`, `remote_table`  | `sharding_key`, `policy_name` (requires `sharding_key`) |
 | `log`                                 | —                                                  | —                      |
 | `kafka`                               | `broker_list = [...]`, `topic`, `consumer_group`, `format` | —              |
@@ -1451,6 +1456,42 @@ Out of scope in v1: MergeTree's version-gated virtuals (`_block_number`,
 `_block_offset`, `_row_exists`) — these depend on ClickHouse version /
 table settings (lightweight deletes) and would risk false positives on
 older deployments. Declare them explicitly in HCL when you need them.
+
+## ClickHouse Cloud — the `Shared*MergeTree` engines
+
+ClickHouse Cloud commonly rewrites MergeTree-family DDL as it is created and
+reports the resulting `Shared<X>MergeTree` engine in `system.tables`:
+
+```
+SharedMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}')
+SharedReplacingMergeTree('/clickhouse/tables/{uuid}/{shard}', '{replica}', version)
+```
+
+`hclexp` represents that engine exactly. The engine name and every constructor
+argument survive introspection, HCL dump/load, `sql2hcl`, diff, and SQL
+generation; no additional Cloud setting or permission is required.
+
+```hcl
+table "events" {
+  engine "shared_replacing_merge_tree" {
+    zoo_path          = "/clickhouse/tables/{uuid}/{shard}"
+    replica_name      = "{replica}"
+    version_column    = "version"
+    is_deleted_column = "is_deleted"
+  }
+  order_by = ["stage"]
+}
+```
+
+That emits the same `SharedReplacingMergeTree` constructor. Unknown extra
+arguments fail rather than being silently discarded.
+
+This exact representation means a reference containing `merge_tree` and a
+Cloud table reported as `shared_merge_tree` differ. Reflect the live engine in
+the Cloud reference, or put the engine in an environment layer and use
+`patch_table` when one logical schema targets both Cloud and self-hosted
+ClickHouse. The difference is visible instead of being hidden behind
+environment-dependent equivalence.
 
 ## TLS / secure connections
 

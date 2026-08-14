@@ -94,6 +94,8 @@ func validateReplacingEngines(s *Schema) error {
 				version, isDeleted = e.VersionColumn, e.IsDeletedColumn
 			case EngineReplicatedReplacingMergeTree:
 				version, isDeleted = e.VersionColumn, e.IsDeletedColumn
+			case EngineSharedReplacingMergeTree:
+				version, isDeleted = e.VersionColumn, e.IsDeletedColumn
 			default:
 				continue
 			}
@@ -718,14 +720,19 @@ func isMergeTreeFamily(e Engine) bool {
 	switch e.(type) {
 	case EngineMergeTree,
 		EngineReplicatedMergeTree,
+		EngineSharedMergeTree,
 		EngineReplacingMergeTree,
 		EngineReplicatedReplacingMergeTree,
+		EngineSharedReplacingMergeTree,
 		EngineSummingMergeTree,
 		EngineReplicatedSummingMergeTree,
+		EngineSharedSummingMergeTree,
 		EngineCollapsingMergeTree,
 		EngineReplicatedCollapsingMergeTree,
+		EngineSharedCollapsingMergeTree,
 		EngineAggregatingMergeTree,
-		EngineReplicatedAggregatingMergeTree:
+		EngineReplicatedAggregatingMergeTree,
+		EngineSharedAggregatingMergeTree:
 		return true
 	}
 	return false

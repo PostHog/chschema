@@ -94,6 +94,33 @@ func TestParseEngineString(t *testing.T) {
 			EngineReplicatedAggregatingMergeTree{ZooPath: "/p", ReplicaName: "{replica}"},
 		},
 		{
+			"shared_merge_tree",
+			"SharedMergeTree('/p', '{replica}') ORDER BY id",
+			EngineSharedMergeTree{ZooPath: "/p", ReplicaName: "{replica}"},
+		},
+		{
+			"shared_replacing_merge_tree",
+			"SharedReplacingMergeTree('/p', '{replica}', ver, is_deleted) ORDER BY id",
+			EngineSharedReplacingMergeTree{
+				ZooPath: "/p", ReplicaName: "{replica}", VersionColumn: ptr("ver"), IsDeletedColumn: ptr("is_deleted"),
+			},
+		},
+		{
+			"shared_summing_merge_tree",
+			"SharedSummingMergeTree('/p', '{replica}', total) ORDER BY id",
+			EngineSharedSummingMergeTree{ZooPath: "/p", ReplicaName: "{replica}", SumColumns: []string{"total"}},
+		},
+		{
+			"shared_collapsing_merge_tree",
+			"SharedCollapsingMergeTree('/p', '{replica}', sign) ORDER BY id",
+			EngineSharedCollapsingMergeTree{ZooPath: "/p", ReplicaName: "{replica}", SignColumn: "sign"},
+		},
+		{
+			"shared_aggregating_merge_tree",
+			"SharedAggregatingMergeTree('/p', '{replica}') ORDER BY id",
+			EngineSharedAggregatingMergeTree{ZooPath: "/p", ReplicaName: "{replica}"},
+		},
+		{
 			"distributed",
 			"Distributed('clstr', 'db', 't')",
 			EngineDistributed{ClusterName: "clstr", RemoteDatabase: "db", RemoteTable: "t"},

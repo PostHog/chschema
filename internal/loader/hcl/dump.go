@@ -328,6 +328,9 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 	case EngineReplicatedMergeTree:
 		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
 		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
+	case EngineSharedMergeTree:
+		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
+		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
 	case EngineReplacingMergeTree:
 		if v.VersionColumn != nil {
 			b.SetAttributeValue("version_column", cty.StringVal(*v.VersionColumn))
@@ -336,6 +339,15 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 			b.SetAttributeValue("is_deleted_column", cty.StringVal(*v.IsDeletedColumn))
 		}
 	case EngineReplicatedReplacingMergeTree:
+		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
+		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
+		if v.VersionColumn != nil {
+			b.SetAttributeValue("version_column", cty.StringVal(*v.VersionColumn))
+		}
+		if v.IsDeletedColumn != nil {
+			b.SetAttributeValue("is_deleted_column", cty.StringVal(*v.IsDeletedColumn))
+		}
+	case EngineSharedReplacingMergeTree:
 		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
 		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
 		if v.VersionColumn != nil {
@@ -354,13 +366,26 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 		if len(v.SumColumns) > 0 {
 			b.SetAttributeValue("sum_columns", stringList(v.SumColumns))
 		}
+	case EngineSharedSummingMergeTree:
+		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
+		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
+		if len(v.SumColumns) > 0 {
+			b.SetAttributeValue("sum_columns", stringList(v.SumColumns))
+		}
 	case EngineCollapsingMergeTree:
 		b.SetAttributeValue("sign_column", cty.StringVal(v.SignColumn))
 	case EngineReplicatedCollapsingMergeTree:
 		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
 		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
 		b.SetAttributeValue("sign_column", cty.StringVal(v.SignColumn))
+	case EngineSharedCollapsingMergeTree:
+		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
+		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
+		b.SetAttributeValue("sign_column", cty.StringVal(v.SignColumn))
 	case EngineReplicatedAggregatingMergeTree:
+		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
+		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
+	case EngineSharedAggregatingMergeTree:
 		b.SetAttributeValue("zoo_path", cty.StringVal(v.ZooPath))
 		b.SetAttributeValue("replica_name", cty.StringVal(v.ReplicaName))
 	case EngineDistributed:

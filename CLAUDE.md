@@ -342,10 +342,16 @@ and `is_deleted_column`; the latter requires the former, matching
 ClickHouse), ReplicatedReplacingMergeTree, SummingMergeTree (with
 `sum_columns`),
 CollapsingMergeTree, ReplicatedCollapsingMergeTree, AggregatingMergeTree,
-ReplicatedAggregatingMergeTree, Distributed (with optional
+ReplicatedAggregatingMergeTree, the corresponding SharedMergeTree variants,
+Distributed (with optional
 `sharding_key` and `policy_name`; the latter requires the former),
 Log, Kafka. See `docs/README.hcl.md` for the
 attribute table.
+
+**ClickHouse Cloud** may rewrite MergeTree-family DDL to `Shared*MergeTree`.
+These are first-class engine kinds: introspection and `sql2hcl` preserve the
+reported engine name and all constructor arguments, and SQL generation emits
+the same constructor. See `docs/plans/2026-08-09-cloud-sharedmergetree.md`.
 
 ### Not Yet Supported
 - ❌ Inner-engine MVs, `REFRESH` MVs, window views

@@ -981,6 +981,8 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 		return "MergeTree()", nil
 	case EngineReplicatedMergeTree:
 		return fmt.Sprintf("ReplicatedMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+	case EngineSharedMergeTree:
+		return fmt.Sprintf("SharedMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
 	case EngineReplacingMergeTree:
 		if v.VersionColumn != nil && v.IsDeletedColumn != nil {
 			return fmt.Sprintf("ReplacingMergeTree(%s, %s)", *v.VersionColumn, *v.IsDeletedColumn), nil
@@ -997,6 +999,14 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 			return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s', %s)", v.ZooPath, v.ReplicaName, *v.VersionColumn), nil
 		}
 		return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+	case EngineSharedReplacingMergeTree:
+		if v.VersionColumn != nil && v.IsDeletedColumn != nil {
+			return fmt.Sprintf("SharedReplacingMergeTree('%s', '%s', %s, %s)", v.ZooPath, v.ReplicaName, *v.VersionColumn, *v.IsDeletedColumn), nil
+		}
+		if v.VersionColumn != nil {
+			return fmt.Sprintf("SharedReplacingMergeTree('%s', '%s', %s)", v.ZooPath, v.ReplicaName, *v.VersionColumn), nil
+		}
+		return fmt.Sprintf("SharedReplacingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
 	case EngineSummingMergeTree:
 		if len(v.SumColumns) > 0 {
 			return fmt.Sprintf("SummingMergeTree((%s))", strings.Join(v.SumColumns, ", ")), nil
@@ -1007,14 +1017,23 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 			return fmt.Sprintf("ReplicatedSummingMergeTree('%s', '%s', (%s))", v.ZooPath, v.ReplicaName, strings.Join(v.SumColumns, ", ")), nil
 		}
 		return fmt.Sprintf("ReplicatedSummingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+	case EngineSharedSummingMergeTree:
+		if len(v.SumColumns) > 0 {
+			return fmt.Sprintf("SharedSummingMergeTree('%s', '%s', (%s))", v.ZooPath, v.ReplicaName, strings.Join(v.SumColumns, ", ")), nil
+		}
+		return fmt.Sprintf("SharedSummingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
 	case EngineCollapsingMergeTree:
 		return fmt.Sprintf("CollapsingMergeTree(%s)", v.SignColumn), nil
 	case EngineReplicatedCollapsingMergeTree:
 		return fmt.Sprintf("ReplicatedCollapsingMergeTree('%s', '%s', %s)", v.ZooPath, v.ReplicaName, v.SignColumn), nil
+	case EngineSharedCollapsingMergeTree:
+		return fmt.Sprintf("SharedCollapsingMergeTree('%s', '%s', %s)", v.ZooPath, v.ReplicaName, v.SignColumn), nil
 	case EngineAggregatingMergeTree:
 		return "AggregatingMergeTree()", nil
 	case EngineReplicatedAggregatingMergeTree:
 		return fmt.Sprintf("ReplicatedAggregatingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+	case EngineSharedAggregatingMergeTree:
+		return fmt.Sprintf("SharedAggregatingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
 	case EngineDistributed:
 		if v.ShardingKey != nil {
 			if v.PolicyName != nil {
