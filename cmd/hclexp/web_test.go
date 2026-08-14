@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -335,6 +336,89 @@ func TestWeb_FlowFanOut(t *testing.T) {
 	srv, err := newWebServer(schema)
 	require.NoError(t, err)
 	assert.Len(t, srv.flows, 2)
+}
+
+func TestWeb_FlowSharedPrefixRenderedOnce(t *testing.T) {
+	// Two downstream MVs share the complete ingestion prefix through the local
+	// physical table. The backend keeps two root-to-leaf paths, while the page
+	// renders their shared prefix once and branches only at the differing MVs.
+	schema := kafkaFlowSchema()
+	db := &schema.Databases[0]
+	for _, suffix := range []string{"archive", "realtime"} {
+		db.Tables = append(db.Tables, hclload.TableSpec{
+			Name:    "events_" + suffix,
+			OrderBy: []string{"team_id"},
+			Columns: []hclload.ColumnSpec{{Name: "team_id", Type: "UInt64"}},
+			Engine:  &hclload.EngineSpec{Kind: "merge_tree", Decoded: hclload.EngineMergeTree{}},
+		})
+		db.MaterializedViews = append(db.MaterializedViews, hclload.MaterializedViewSpec{
+			Name:    "events_" + suffix + "_mv",
+			ToTable: "posthog.events_" + suffix,
+			Query:   "SELECT team_id FROM posthog.events_local",
+		})
+	}
+
+	srv, err := newWebServer(schema)
+	require.NoError(t, err)
+	require.Len(t, srv.flows, 2, "one root-to-leaf path per downstream target")
+	assert.Equal(t, srv.flows[0].Anchor, srv.flows[1].Anchor, "paths from one root share a rendered group")
+
+	groups := groupFlows(srv.flows)
+	require.Len(t, groups, 1)
+	node := groups[0].Root
+	for _, name := range []string{"kafka_events", "events_mv", "sharded_events", "events_local"} {
+		require.Equal(t, name, node.Stage.Name)
+		if name != "events_local" {
+			require.Len(t, node.Children, 1)
+			node = node.Children[0]
+		}
+	}
+	require.Len(t, node.Children, 2)
+	assert.ElementsMatch(t,
+		[]string{"events_archive_mv", "events_realtime_mv"},
+		[]string{node.Children[0].Stage.Name, node.Children[1].Stage.Name},
+	)
+
+	code, body := getBody(t, srv, "/flows")
+	require.Equal(t, http.StatusOK, code)
+	assert.Equal(t, 1, strings.Count(body, `>kafka_events</a>`))
+	assert.Equal(t, 1, strings.Count(body, `>events_mv</a>`))
+	assert.Equal(t, 1, strings.Count(body, `>sharded_events</a>`))
+	assert.Equal(t, 1, strings.Count(body, `>events_local</a>`))
+	assert.Equal(t, 1, strings.Count(body, `>events_archive_mv</a>`))
+	assert.Equal(t, 1, strings.Count(body, `>events_realtime_mv</a>`))
+	assert.Contains(t, body, `class="flow-children branched"`)
+}
+
+func TestWeb_FlowDeduplicatesEquivalentSourceReferences(t *testing.T) {
+	// The same source can appear both qualified and unqualified in an MV query.
+	// Once the unqualified reference defaults to the MV's database, these are a
+	// single dependency edge and must not duplicate the complete flow.
+	schema := kafkaFlowSchema()
+	schema.Databases[0].MaterializedViews[0].Query = `
+		SELECT qualified.team_id
+		FROM posthog.kafka_events AS qualified
+		JOIN kafka_events AS unqualified USING team_id
+	`
+
+	srv, err := newWebServer(schema)
+	require.NoError(t, err)
+	require.Len(t, srv.flows, 1)
+}
+
+func TestBuildFlows_DeduplicatesRepeatedSourceEdges(t *testing.T) {
+	schema := kafkaFlowSchema()
+	deps, err := hclload.CollectDependencies(schema.Databases)
+	require.NoError(t, err)
+	for _, dep := range deps {
+		if dep.Kind == hclload.DepMVSource {
+			deps = append(deps, dep)
+			break
+		}
+	}
+
+	flows, _ := buildFlows(schema, deps, map[string]string{})
+	require.Len(t, flows, 1)
 }
 
 func TestWeb_ObjectFlowBacklink(t *testing.T) {

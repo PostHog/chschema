@@ -205,6 +205,40 @@ pre.code {
   gap: 0;
 }
 
+.flow-node,
+.flow-child {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.flow-children.linear {
+  margin-left: 0;
+}
+
+.flow-children.branched {
+  margin-left: 16px;
+  padding-left: 20px;
+  border-left: 2px solid var(--border);
+}
+
+.flow-children.branched > .flow-child {
+  position: relative;
+}
+
+.flow-children.branched > .flow-child::before {
+  content: "";
+  position: absolute;
+  left: -20px;
+  top: 15px;
+  width: 20px;
+  border-top: 2px solid var(--border);
+}
+
+.flow-children.branched > .flow-child + .flow-child {
+  margin-top: 12px;
+}
+
 .stage {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);

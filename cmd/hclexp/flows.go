@@ -29,11 +29,26 @@ type flow struct {
 	HasProblems bool
 }
 
+// A flowTreeNode is the display representation of one or more linear flows.
+// Common prefixes share a node; divergent suffixes become children.
+type flowTreeNode struct {
+	Stage    flowStage
+	Children []*flowTreeNode
+}
+
+// A flowGroup is every root-to-leaf flow beginning at the same source table,
+// rendered as one branching tree.
+type flowGroup struct {
+	Anchor      string
+	Root        *flowTreeNode
+	HasProblems bool
+}
+
 type flowsData struct {
 	Title          string
 	Base           string // URL prefix for links (manifest mode); "" in single mode
 	Label          string // schema label shown in the nav (manifest mode); "" otherwise
-	Flows          []flow
+	Groups         []flowGroup
 	GlobalProblems []problemView
 }
 
@@ -61,6 +76,7 @@ func buildFlows(schema *hclload.Schema, deps []hclload.Dependency, kindIndex map
 		distRemote: map[string]hclload.ObjectRef{},
 		produced:   map[string]bool{},
 	}
+	readEdgeSeen := map[string]map[string]bool{}
 
 	for i := range schema.Databases {
 		db := &schema.Databases[i]
@@ -78,6 +94,14 @@ func buildFlows(schema *hclload.Schema, deps []hclload.Dependency, kindIndex map
 		switch d.Kind {
 		case hclload.DepMVSource:
 			to := indexKey(d.To.Database, d.To.Name)
+			from := indexKey(d.From.Database, d.From.Name)
+			if readEdgeSeen[to] == nil {
+				readEdgeSeen[to] = map[string]bool{}
+			}
+			if readEdgeSeen[to][from] {
+				continue
+			}
+			readEdgeSeen[to][from] = true
 			b.readBy[to] = append(b.readBy[to], d.From)
 		case hclload.DepMVDest:
 			b.mvDest[indexKey(d.From.Database, d.From.Name)] = d.To
@@ -105,16 +129,77 @@ func buildFlows(schema *hclload.Schema, deps []hclload.Dependency, kindIndex map
 	}
 
 	anchorByRef := map[string]string{}
+	anchorByRoot := map[string]string{}
 	for i := range flows {
-		flows[i].Anchor = fmt.Sprintf("flow-%d", i+1)
+		if len(flows[i].Stages) == 0 {
+			continue
+		}
+		root := flows[i].Stages[0]
+		rootRef := indexKey(root.Database, root.Name)
+		anchor, ok := anchorByRoot[rootRef]
+		if !ok {
+			anchor = fmt.Sprintf("flow-%d", len(anchorByRoot)+1)
+			anchorByRoot[rootRef] = anchor
+		}
+		flows[i].Anchor = anchor
 		for _, st := range flows[i].Stages {
 			ref := indexKey(st.Database, st.Name)
 			if _, seen := anchorByRef[ref]; !seen {
-				anchorByRef[ref] = flows[i].Anchor
+				anchorByRef[ref] = anchor
 			}
 		}
 	}
 	return flows, anchorByRef
+}
+
+// groupFlows folds linear root-to-leaf paths into a prefix tree for display.
+// buildFlows deliberately retains the paths because they are convenient for
+// validation and problem attribution; only the browser presentation is folded.
+func groupFlows(flows []flow) []flowGroup {
+	var groups []flowGroup
+	byAnchor := map[string]int{}
+	for _, f := range flows {
+		if len(f.Stages) == 0 {
+			continue
+		}
+		idx, ok := byAnchor[f.Anchor]
+		if !ok {
+			idx = len(groups)
+			byAnchor[f.Anchor] = idx
+			groups = append(groups, flowGroup{
+				Anchor: f.Anchor,
+				Root:   &flowTreeNode{Stage: f.Stages[0]},
+			})
+		}
+		groups[idx].HasProblems = groups[idx].HasProblems || f.HasProblems
+		insertFlowSuffix(groups[idx].Root, f.Stages[1:])
+	}
+	return groups
+}
+
+func insertFlowSuffix(root *flowTreeNode, stages []flowStage) {
+	node := root
+	for _, stage := range stages {
+		var next *flowTreeNode
+		for _, child := range node.Children {
+			if sameFlowStage(child.Stage, stage) {
+				next = child
+				break
+			}
+		}
+		if next == nil {
+			next = &flowTreeNode{Stage: stage}
+			node.Children = append(node.Children, next)
+		}
+		node = next
+	}
+}
+
+func sameFlowStage(a, b flowStage) bool {
+	return a.Kind == b.Kind &&
+		a.Database == b.Database &&
+		a.Name == b.Name &&
+		a.EdgeLabel == b.EdgeLabel
 }
 
 // walk extends the current chain (whose last stage is the table tableRef) through
@@ -242,7 +327,7 @@ func (s *webServer) handleFlows(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w)
 		return
 	}
-	s.render(w, s.tmplFlows, flowsData{Title: "Data flows", Base: s.basePath, Label: s.label, Flows: s.flows, GlobalProblems: s.globalProblems})
+	s.render(w, s.tmplFlows, flowsData{Title: "Data flows", Base: s.basePath, Label: s.label, Groups: groupFlows(s.flows), GlobalProblems: s.globalProblems})
 }
 
 // refOfKey reverses indexKey for the root lookup.
