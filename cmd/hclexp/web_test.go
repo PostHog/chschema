@@ -346,6 +346,15 @@ func TestWeb_FlowsFullChain(t *testing.T) {
 	assert.Contains(t, body, "forwards to")
 }
 
+func TestWeb_DistributedRemotePropertyLinksToLocalTable(t *testing.T) {
+	srv, err := newWebServer(kafkaFlowSchema())
+	require.NoError(t, err)
+
+	code, body := getBody(t, srv, "/db/posthog/table/sharded_events?view=html")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `<th>remote_table</th><td><a href="/db/posthog/table/events_local">events_local</a>`)
+}
+
 func TestWeb_FlowFanOut(t *testing.T) {
 	// One Kafka source feeding two MVs → two distinct chains.
 	schema := kafkaFlowSchema()

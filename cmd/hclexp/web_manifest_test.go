@@ -242,6 +242,76 @@ func TestWeb_TablePresenceIsDumpOnly(t *testing.T) {
 	assert.NotContains(t, body, "Across dumped nodes")
 }
 
+func TestWebDump_ResolvesAndLinksCrossClusterReferences(t *testing.T) {
+	root := t.TempDir()
+	writeFileT(t, filepath.Join(root, "proxy-node.hcl"), `node "proxy-node" {
+  macros = { cluster = "query" }
+}
+database "posthog" {
+  table "distributed_events" {
+    engine "distributed" {
+      cluster_name    = "storage_writable"
+      remote_database = "posthog"
+      remote_table    = "sharded_events"
+    }
+    column "id" { type = "UInt64" }
+  }
+  materialized_view "events_mv" {
+    to_table = "posthog.distributed_events"
+    query    = "SELECT id FROM posthog.source_events"
+    column "id" { type = "UInt64" }
+  }
+}
+`)
+	writeFileT(t, filepath.Join(root, "storage-node.hcl"), `node "storage-node" {
+  macros = { cluster = "storage" }
+}
+database "posthog" {
+  table "sharded_events" {
+    engine "merge_tree" {}
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+  }
+  table "source_events" {
+    engine "merge_tree" {}
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+  }
+}
+`)
+
+	ms, err := buildDumpMultiServer(root, "*", 0)
+	require.NoError(t, err)
+
+	// The _writable alias resolves through the loaded storage cluster for both
+	// validation and navigation.
+	code, body := getMulti(t, ms, "/n/proxy-node/db/posthog/table/distributed_events?view=html")
+	require.Equal(t, http.StatusOK, code)
+	assert.NotContains(t, body, "missing remote table")
+	assert.Contains(t, body,
+		`<th>remote_table</th><td><a href="/n/storage-node/db/posthog/table/sharded_events">sharded_events</a>`)
+	assert.Contains(t, body,
+		`href="/n/storage-node/db/posthog/table/sharded_events">posthog.sharded_events (distributed_remote)</a>`)
+
+	// MV writes stay local, while a read source may resolve from any mapped
+	// sibling cluster, matching topology validation.
+	code, body = getMulti(t, ms, "/n/proxy-node/db/posthog/materialized_view/events_mv?view=html")
+	require.Equal(t, http.StatusOK, code)
+	assert.NotContains(t, body, "missing source")
+	assert.Contains(t, body,
+		`<th>to_table</th><td><a href="/n/proxy-node/db/posthog/table/distributed_events">posthog.distributed_events</a>`)
+	assert.Contains(t, body,
+		`href="/n/storage-node/db/posthog/table/source_events">posthog.source_events (mv_source)</a>`)
+
+	// The same loaded-cluster resolution carries through the complete flow:
+	// remote source -> MV -> local Distributed -> remote storage table.
+	code, body = getMulti(t, ms, "/n/proxy-node/flows")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `href="/n/storage-node/db/posthog/table/source_events">source_events</a>`)
+	assert.Contains(t, body, `href="/n/storage-node/db/posthog/table/sharded_events">sharded_events</a>`)
+	assert.NotContains(t, body, "not declared")
+}
+
 func TestWebDump_RejectsDuplicateNodeNames(t *testing.T) {
 	root := t.TempDir()
 	for _, file := range []string{"a.hcl", "b.hcl"} {

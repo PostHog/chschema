@@ -763,6 +763,14 @@ ReplicatedMergeTree ZooKeeper paths are masked, while real column, engine,
 key, TTL, setting, index, projection, constraint, and comment differences remain
 visible as schema drift.
 
+Materialized-view `to_table` values and Distributed `remote_table` values are
+links when their targets resolve. In dump mode the browser derives the same
+cluster unions and well-known aliases (`_writable`, `_single_shard`, and
+`_primary_replica`) as `validate -dump`, so cross-cluster destinations and MV
+read sources link to the matching node and resolve consistently in validation,
+dependency lists, and data flows. MV write destinations remain local, matching
+ClickHouse execution semantics.
+
 The server auto-reloads on source edits: each request re-stats the source
 files at most once per `-reload-interval` (default `2s`; `0` disables) and
 reloads when a mod time changes — a broken edit keeps serving the last good
