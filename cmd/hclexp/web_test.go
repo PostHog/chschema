@@ -41,14 +41,36 @@ func getBody(t *testing.T, srv *webServer, target string) (int, string) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)
 	rec := httptest.NewRecorder()
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", srv.handleIndex)
-	mux.HandleFunc("/flows", srv.handleFlows)
-	mux.HandleFunc("/db/", srv.handleObject)
+	mux := srv.mux()
 	staticSub, _ := fs.Sub(webFS, "web/static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 	mux.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String()
+}
+
+func TestWeb_Lookup(t *testing.T) {
+	srv, err := newWebServer(webTestSchema())
+	require.NoError(t, err)
+
+	code, body := getBody(t, srv, "/")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `action="/lookup"`)
+
+	code, body = getBody(t, srv, "/lookup?q=EVENTS")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `href="/db/posthog/table/events"`)
+	assert.Contains(t, body, "posthog.events")
+	assert.Contains(t, body, "posthog.events_mv")
+	assert.Contains(t, body, "2 matching objects")
+
+	code, body = getBody(t, srv, "/lookup?q=materialized+view")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "posthog.events_mv", "kind names are searchable")
+	assert.NotContains(t, body, `href="/db/posthog/table/events"`)
+
+	code, body = getBody(t, srv, "/lookup?q=missing")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "No objects match")
 }
 
 // wideTable builds a table with n columns, for exercising the collapse toggle.

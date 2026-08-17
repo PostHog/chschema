@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>Lookup objects</h1>
+<form class="lookup" action="{{.Base}}/lookup" method="get" role="search">
+  <label for="lookup-q">Name, qualified name, database, or kind</label>
+  <div class="lookup-controls">
+    <input id="lookup-q" name="q" type="search" value="{{.Query}}" autofocus required>
+    <button type="submit">Lookup</button>
+  </div>
+</form>
+
+{{if not .Query}}
+<p class="muted">Enter part of an object name, such as <code>events</code> or <code>posthog.events</code>.</p>
+{{else if not .Results}}
+<p class="muted">No objects match <code>{{.Query}}</code>.</p>
+{{else}}
+<p class="muted">{{len .Results}} matching object{{if ne (len .Results) 1}}s{{end}}</p>
+<div class="lookup-results">
+  <table class="grid">
+    <thead><tr><th>Object</th><th>Kind</th>{{if .ShowSchema}}<th>Schema / node</th>{{end}}</tr></thead>
+    <tbody>
+      {{range .Results}}
+      <tr>
+        <td><a href="{{.Href}}">{{.QualifiedName}}</a></td>
+        <td>{{.KindLabel}}</td>
+        {{if $.ShowSchema}}<td>{{.Schema}}</td>{{end}}
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}
