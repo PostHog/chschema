@@ -11,6 +11,10 @@
   <header>
     <a class="brand" href="/">hclexp</a>
     {{if .Label}}<a class="crumb" href="/">all schemas</a><span class="crumb">{{.Label}}</span>{{else}}<span class="crumb">schema browser</span>{{end}}
+    <form class="header-lookup" action="{{.Base}}/lookup" method="get" role="search">
+      <label class="visually-hidden" for="header-lookup-q">Lookup objects</label>
+      <input id="header-lookup-q" name="q" type="search" placeholder="Lookup objects…" required>
+    </form>
     <a class="navlink" href="{{.Base}}/flows">data flows</a>
   </header>
   <main>

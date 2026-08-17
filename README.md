@@ -729,9 +729,10 @@ errors.
 
 ## Browse the schema in a web UI
 
-`hclexp web` serves a read-only UI for a resolved schema — databases,
-objects, their columns/engine/settings, and dependency cross-links — with
-no cluster connection.
+`hclexp web` serves a read-only UI for resolved schemas — databases,
+objects, their columns/engine/settings, dependency cross-links, and data
+flows — with no cluster connection. The header lookup finds objects by a
+case-insensitive partial name, qualified name, database, or kind.
 
 ```bash
 # One schema, from a config file or a layer stack
@@ -740,13 +741,26 @@ hclexp web -layer ./schema/base,./schema/envs/us -addr :8080
 # Every (env, role) a manifest composes: a schema list at /, each
 # composition under /s/<env>/<role>/
 hclexp web -manifest manifest.hcl -layer-root ./schema
+
+# Every per-node schema in a dump directory: a node list at /, each dump
+# kept independent under /n/<node>/
+hclexp web -dump ../clickhouse-schema -glob '*.hcl'
 ```
+
+On the manifest or dump list page, lookup searches every schema and includes
+the owning composition/node in each result. After opening one schema, the same
+lookup box searches only that schema. Dump nodes are grouped by their `cluster`
+macro, falling back to `hostClusterRole`; two files declaring the same node name
+are rejected rather than silently combined. `-dump` is mutually exclusive with
+the single-schema and manifest inputs, and `-glob` accepts the same
+comma-separated filename patterns as `drift`.
 
 The server auto-reloads on source edits: each request re-stats the source
 files at most once per `-reload-interval` (default `2s`; `0` disables) and
 reloads when a mod time changes — a broken edit keeps serving the last good
-schema. In manifest mode `-env` filters to one environment. Try it against
-[`examples/manifest/`](examples/manifest/).
+schema. Existing dump files are reloaded the same way; restart the server to
+discover added or removed dump files. In manifest mode `-env` filters to one
+environment. Try it against [`examples/manifest/`](examples/manifest/).
 
 ## Verify round-trip fidelity
 

@@ -19,7 +19,7 @@ import (
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
 
-//go:embed web/layout.html web/index.html web/object.html web/flows.html web/schemas.html web/static/*
+//go:embed web/layout.html web/index.html web/object.html web/flows.html web/schemas.html web/lookup.html web/static/*
 var webFS embed.FS
 
 // runWeb loads an HCL config (single file or layers), resolves it, and serves a
@@ -32,10 +32,30 @@ func runWeb(args []string) {
 	manifestFlag := flags.String("manifest", "", "HCL manifest (role/env/layers, like `plan`): browse every composed schema")
 	envFlag := flags.String("env", "", "with -manifest: only browse this env (default: all envs)")
 	layerRootFlag := flags.String("layer-root", ".", "with -manifest: root directory the manifest's layer paths resolve under")
+	dumpFlag := flags.String("dump", "", "directory of per-node .hcl dumps: browse every node schema independently")
+	globFlag := flags.String("glob", "*", "with -dump: comma-separated filename globs selecting node dumps")
 	addrFlag := flags.String("addr", ":8080", "address to listen on (host:port)")
 	reloadFlag := flags.Duration("reload-interval", 2*time.Second, "re-stat the source files at most this often and reload on change; 0 disables")
 	_ = flags.Parse(args)
+	explicit := map[string]bool{}
+	flags.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
 
+	if *manifestFlag != "" && *dumpFlag != "" {
+		fmt.Fprintln(os.Stderr, "web: -manifest and -dump are mutually exclusive")
+		os.Exit(2)
+	}
+	if *dumpFlag != "" {
+		if *layersFlag != "" || *envFlag != "" || explicit["config"] || explicit["layer-root"] {
+			fmt.Fprintln(os.Stderr, "web: -dump is mutually exclusive with -config, -layer, -manifest, -env, and -layer-root")
+			os.Exit(2)
+		}
+		runWebDump(*dumpFlag, *globFlag, *addrFlag, *reloadFlag)
+		return
+	}
+	if explicit["glob"] {
+		fmt.Fprintln(os.Stderr, "web: -glob requires -dump")
+		os.Exit(2)
+	}
 	if *manifestFlag != "" {
 		runWebManifest(*manifestFlag, *envFlag, *layerRootFlag, *addrFlag, *reloadFlag)
 		return
@@ -61,10 +81,7 @@ func runWeb(args []string) {
 		slog.Info("auto-reload enabled", "interval", reloadFlag.String())
 	}
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", srv.handleIndex)
-	mux.HandleFunc("/flows", srv.handleFlows)
-	mux.HandleFunc("/db/", srv.handleObject)
+	mux := srv.mux()
 	staticSub, _ := fs.Sub(webFS, "web/static")
 	mux.Handle("/static/", http.StripPrefix("/static/", http.FileServer(http.FS(staticSub))))
 
@@ -87,6 +104,7 @@ type webServer struct {
 	tmplIndex  *template.Template
 	tmplObject *template.Template
 	tmplFlows  *template.Template
+	tmplLookup *template.Template
 
 	// basePath is the URL prefix this server is mounted under in manifest mode
 	// (e.g. "/s/prod-us/ops"); empty in single-schema mode. Templates prepend it
@@ -139,11 +157,16 @@ func newWebServer(schema *hclload.Schema) (*webServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse flows template: %w", err)
 	}
+	tmplLookup, err := template.New("layout").Funcs(funcs).ParseFS(webFS, "web/layout.html", "web/lookup.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse lookup template: %w", err)
+	}
 
 	s := &webServer{
 		tmplIndex:  tmplIndex,
 		tmplObject: tmplObject,
 		tmplFlows:  tmplFlows,
+		tmplLookup: tmplLookup,
 		now:        time.Now,
 	}
 	s.rebuildState(schema)
@@ -427,6 +450,26 @@ type objectData struct {
 	DependedBy  []objLink
 }
 
+type lookupResult struct {
+	Schema        string
+	Database      string
+	Kind          string
+	KindLabel     string
+	Name          string
+	QualifiedName string
+	Href          string
+	rank          int
+}
+
+type lookupData struct {
+	Title      string
+	Base       string
+	Label      string
+	Query      string
+	Results    []lookupResult
+	ShowSchema bool
+}
+
 // columnCollapseLimit is the row count above which a collapsible column list is
 // folded by default; it must match the LIMIT constant in web/static/app.js.
 const columnCollapseLimit = 10
@@ -540,6 +583,107 @@ func (s *webServer) handleObject(w http.ResponseWriter, r *http.Request) {
 	data.Problems = s.problems[indexKey(database, name)]
 	s.buildDeps(&data, database, name)
 	s.render(w, s.tmplObject, data)
+}
+
+func (s *webServer) handleLookup(w http.ResponseWriter, r *http.Request) {
+	s.maybeReload()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if r.URL.Path != "/lookup" {
+		s.notFound(w)
+		return
+	}
+	query := strings.TrimSpace(r.URL.Query().Get("q"))
+	data := lookupData{
+		Title:   "Lookup",
+		Base:    s.basePath,
+		Label:   s.label,
+		Query:   query,
+		Results: s.lookupResults(query, s.label),
+	}
+	s.render(w, s.tmplLookup, data)
+}
+
+// lookupResults searches the browsable object kinds in this schema. Callers
+// must hold s.mu for reading. Results carry absolute links so the same view
+// model also works for aggregate lookup across a manifest or dump directory.
+func (s *webServer) lookupResults(query, schemaLabel string) []lookupResult {
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil
+	}
+
+	var results []lookupResult
+	add := func(database, kind, name string) {
+		rank := lookupMatchRank(query, database, kind, name)
+		if rank < 0 {
+			return
+		}
+		results = append(results, lookupResult{
+			Schema:        schemaLabel,
+			Database:      database,
+			Kind:          kind,
+			KindLabel:     kindLabel(kind),
+			Name:          name,
+			QualifiedName: database + "." + name,
+			Href:          s.basePath + objectHref(database, kind, name),
+			rank:          rank,
+		})
+	}
+	for i := range s.schema.Databases {
+		db := &s.schema.Databases[i]
+		for _, table := range db.Tables {
+			add(db.Name, hclload.KindTable, table.Name)
+		}
+		for _, mv := range db.MaterializedViews {
+			add(db.Name, hclload.KindMaterializedView, mv.Name)
+		}
+		for _, view := range db.Views {
+			add(db.Name, hclload.KindView, view.Name)
+		}
+		for _, dictionary := range db.Dictionaries {
+			add(db.Name, hclload.KindDictionary, dictionary.Name)
+		}
+		for _, raw := range db.Raws {
+			add(db.Name, hclload.KindRaw, raw.Name)
+		}
+	}
+	sortLookupResults(results)
+	return results
+}
+
+func lookupMatchRank(query, database, kind, name string) int {
+	name = strings.ToLower(name)
+	database = strings.ToLower(database)
+	qualified := database + "." + name
+	kind = strings.ToLower(kindLabel(kind) + " " + kind)
+	switch {
+	case query == name || query == qualified:
+		return 0
+	case strings.HasPrefix(name, query) || strings.HasPrefix(qualified, query):
+		return 1
+	case strings.Contains(name, query) || strings.Contains(qualified, query) ||
+		strings.Contains(database, query) || strings.Contains(kind, query):
+		return 2
+	default:
+		return -1
+	}
+}
+
+func sortLookupResults(results []lookupResult) {
+	sort.SliceStable(results, func(i, j int) bool {
+		a, b := results[i], results[j]
+		if a.rank != b.rank {
+			return a.rank < b.rank
+		}
+		if a.QualifiedName != b.QualifiedName {
+			return a.QualifiedName < b.QualifiedName
+		}
+		if a.Kind != b.Kind {
+			return a.Kind < b.Kind
+		}
+		return a.Schema < b.Schema
+	})
 }
 
 // buildHTMLView fills the structured (simplified) view for an object. It returns

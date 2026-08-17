@@ -105,7 +105,7 @@ Commands:
   sql2hcl      apply SQL DDL edits (CREATE/ALTER/DROP/RENAME) to an HCL schema
   load         parse and resolve an HCL config, layer stack, or manifest role
                (default when flags are given)
-  web          serve a read-only web UI to browse the resolved schema
+  web          browse a resolved schema, manifest, or dump directory in a web UI
   github-token mint a short-lived GitHub App installation token (prints to stdout)
   version      print the hclexp build version, commit and build time
   help         print this help

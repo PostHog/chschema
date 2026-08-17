@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -104,6 +105,78 @@ func TestWebManifest_BrowseSchemas(t *testing.T) {
 	// Unknown schema -> 404.
 	code, _ = getMulti(t, ms, "/s/prod-us/nope/")
 	assert.Equal(t, http.StatusNotFound, code)
+}
+
+func TestWebManifest_LookupAcrossAndWithinSchemas(t *testing.T) {
+	root := manifestFixture(t)
+	comps, err := manifestCompositions(filepath.Join(root, "manifest.hcl"), "")
+	require.NoError(t, err)
+	ms, err := buildMultiServer(comps, root, 0)
+	require.NoError(t, err)
+
+	code, body := getMulti(t, ms, "/lookup?q=ops_table")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `href="/s/prod-us/ops/db/posthog/table/ops_table"`)
+	assert.Contains(t, body, `href="/s/prod-eu/ops/db/posthog/table/ops_table"`)
+	assert.Contains(t, body, "prod-us / ops")
+	assert.Contains(t, body, "prod-eu / ops")
+	assert.NotContains(t, body, "prod-us / data")
+
+	code, body = getMulti(t, ms, "/s/prod-us/ops/lookup?q=ops")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `href="/s/prod-us/ops/db/posthog/table/ops_table"`)
+	assert.NotContains(t, body, "prod-eu / ops")
+}
+
+func TestWebDump_BrowseAndLookupNodes(t *testing.T) {
+	root := t.TempDir()
+	writeFileT(t, filepath.Join(root, "node-a.hcl"), `node "node-a" {
+  macros = { cluster = "cluster-a", hostClusterRole = "data" }
+}
+`+tableLayer("events_a"))
+	writeFileT(t, filepath.Join(root, "node-b.hcl"), `node "node-b" {
+  macros = { cluster = "cluster-b", hostClusterRole = "data" }
+}
+`+tableLayer("events_b"))
+
+	ms, err := buildDumpMultiServer(root, "*", 0)
+	require.NoError(t, err)
+	require.Len(t, ms.servers, 2)
+
+	code, body := getMulti(t, ms, "/")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "Dump nodes")
+	assert.Contains(t, body, "cluster-a")
+	assert.Contains(t, body, `href="/n/node-a/"`)
+	assert.Contains(t, body, `href="/n/node-b/"`)
+
+	code, body = getMulti(t, ms, "/n/node-a/")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "events_a")
+	assert.NotContains(t, body, "events_b")
+	assert.Contains(t, body, "cluster-a / node-a")
+
+	code, body = getMulti(t, ms, "/lookup?q=events")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `href="/n/node-a/db/posthog/table/events_a"`)
+	assert.Contains(t, body, `href="/n/node-b/db/posthog/table/events_b"`)
+	assert.Contains(t, body, "cluster-a / node-a")
+	assert.Contains(t, body, "cluster-b / node-b")
+
+	filtered, err := buildDumpMultiServer(root, "node-a.hcl", 0)
+	require.NoError(t, err)
+	require.Len(t, filtered.servers, 1, "-glob filters dump files before mounting")
+}
+
+func TestWebDump_RejectsDuplicateNodeNames(t *testing.T) {
+	root := t.TempDir()
+	for _, file := range []string{"a.hcl", "b.hcl"} {
+		writeFileT(t, filepath.Join(root, file), `node "same-node" {}
+`+tableLayer(strings.TrimSuffix(file, ".hcl")))
+	}
+	_, err := buildDumpMultiServer(root, "*", 0)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `duplicate node name "same-node"`)
 }
 
 // TestWebManifest_Example builds the committed examples/manifest fleet through
