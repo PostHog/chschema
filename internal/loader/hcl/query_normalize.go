@@ -493,8 +493,8 @@ func normalizeExprPtr(p **string) {
 	}
 }
 
-// BeautifySQL parses a single CREATE statement and returns it re-rendered in
-// the parser's beautified (indented, multi-line) form — the same visitor that
+// BeautifySQL parses a single SQL statement and returns it re-rendered in the
+// parser's beautified (indented, multi-line) form — the same visitor that
 // produces readable view/MV queries elsewhere. It returns ok=false with the
 // input unchanged when the statement can't be parsed, so callers can fall back
 // to the verbatim SQL (e.g. for DDL the parser doesn't yet handle).

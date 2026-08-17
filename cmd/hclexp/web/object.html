@@ -19,25 +19,25 @@
 </div>
 {{end}}
 
-{{if .TablePresence}}
-<section class="table-presence">
+{{if .ObjectPresence}}
+<section class="object-presence">
   <h2>Across dumped nodes</h2>
   <p class="muted">
-    Present on {{len .TablePresence}} dumped node{{if ne (len .TablePresence) 1}}s{{end}}.
-    Schemas are compared with this node after masking per-node ReplicatedMergeTree UUIDs.
-    {{if .TableDifferent}}<span class="presence-warning">{{.TableDifferent}} differ{{if eq .TableDifferent 1}}s{{end}}.</span>{{end}}
+    Present on {{len .ObjectPresence}} dumped node{{if ne (len .ObjectPresence) 1}}s{{end}}.
+    Definitions are compared as canonical HCL; per-node ReplicatedMergeTree UUIDs are masked for tables.
+    {{if .ObjectDifferent}}<span class="presence-warning">{{.ObjectDifferent}} differ{{if eq .ObjectDifferent 1}}s{{end}}.</span>{{end}}
   </p>
-  <div class="table-presence-grid">
+  <div class="object-presence-grid">
     <table class="grid">
-      <thead><tr><th>Cluster / group</th><th>Node</th><th>Database</th><th>Table</th><th>Schema</th></tr></thead>
+      <thead><tr><th>Cluster / group</th><th>Node</th><th>Database</th><th>Object</th><th>Schema</th></tr></thead>
       <tbody>
-        {{range .TablePresence}}
+        {{range .ObjectPresence}}
         <tr{{if .Different}} class="schema-different-row"{{end}}>
           <td>{{.Cluster}}</td>
           <td><a href="{{.NodeHref}}">{{.Node}}</a></td>
           <td><a href="{{.DatabaseHref}}">{{.Database}}</a></td>
-          <td><a href="{{.TableHref}}">{{.Table}}</a></td>
-          <td><span class="schema-marker schema-{{.MarkerClass}}">{{.Status}}</span></td>
+          <td><a href="{{.ObjectHref}}">{{.Object}}</a></td>
+          <td>{{if .CompareHref}}<a class="schema-marker schema-{{.MarkerClass}}" href="{{.CompareHref}}" aria-label="Compare schema with {{.Cluster}} / {{.Node}}">{{.Status}}</a>{{else}}<span class="schema-marker schema-{{.MarkerClass}}">{{.Status}}</span>{{end}}</td>
         </tr>
         {{end}}
       </tbody>

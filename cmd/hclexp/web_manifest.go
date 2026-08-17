@@ -114,6 +114,7 @@ func (s *webServer) mux() *http.ServeMux {
 	m.HandleFunc("/", s.handleIndex)
 	m.HandleFunc("/flows", s.handleFlows)
 	m.HandleFunc("/lookup", s.handleLookup)
+	m.HandleFunc("/compare", s.handleCompare)
 	m.HandleFunc("/db/", s.handleObject)
 	return m
 }

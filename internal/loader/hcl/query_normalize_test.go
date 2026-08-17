@@ -91,6 +91,10 @@ func TestBeautifySQL(t *testing.T) {
 	again, ok := BeautifySQL(got)
 	require.True(t, ok)
 	assert.Equal(t, got, again)
+
+	alter, ok := BeautifySQL("ALTER TABLE posthog.events MODIFY COLUMN id UInt64")
+	require.True(t, ok)
+	assert.Equal(t, "ALTER TABLE posthog.events\n  MODIFY COLUMN id UInt64", alter)
 }
 
 func TestBeautifySQL_UnparseableKeepsRaw(t *testing.T) {

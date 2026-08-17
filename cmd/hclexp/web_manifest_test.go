@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	hclload "github.com/posthog/chschema/internal/loader/hcl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -191,7 +192,7 @@ database "posthog" {
 `
 }
 
-func TestWebDump_TablePresenceAndSchemaMarkers(t *testing.T) {
+func TestWebDump_ObjectPresenceSchemaMarkersAndDiff(t *testing.T) {
 	root := t.TempDir()
 	writeFileT(t, filepath.Join(root, "node-a.hcl"), replicatedTableDump(
 		"node-a", "cluster-a", "11111111-1111-1111-1111-111111111111", "UInt64"))
@@ -216,9 +217,89 @@ func TestWebDump_TablePresenceAndSchemaMarkers(t *testing.T) {
 	assert.Contains(t, body, `schema-marker schema-current">current`)
 	assert.Contains(t, body, `schema-marker schema-same">same`,
 		"different replicated table UUIDs are masked like drift")
-	assert.Contains(t, body, `schema-marker schema-different">different`,
+	assert.Contains(t, body, "11111111-1111-1111-1111-111111111111",
+		"comparison normalization must not mutate the schema shown on the object page")
+	assert.Contains(t, body, `<a class="schema-marker schema-different"`,
 		"a real column type change is marked different")
 	assert.Contains(t, body, "1 differs")
+
+	compareHref := objectCompareHref(nodeBasePath("node-a"), "node-c", "posthog", "table", "events")
+	assert.Contains(t, body, strings.ReplaceAll(compareHref, "&", "&amp;"),
+		"the different marker links to its canonical schema diff")
+	code, diffBody := getMulti(t, ms, compareHref)
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, diffBody, "Schema comparison: events")
+	assert.Contains(t, diffBody, "Baseline")
+	assert.Contains(t, diffBody, "cluster-a / node-a")
+	assert.Contains(t, diffBody, "Compared node")
+	assert.Contains(t, diffBody, "cluster-b / node-c")
+	assert.Contains(t, diffBody, `class="diff-line diff-delete"`)
+	assert.Contains(t, diffBody, `class="diff-line diff-add"`)
+	assert.Contains(t, diffBody, "UInt64")
+	assert.Contains(t, diffBody, "String")
+	assert.NotContains(t, diffBody, "11111111-1111-1111-1111-111111111111",
+		"the displayed diff uses the same UUID-masked HCL as the marker")
+
+	swapHref := objectCompareHref(nodeBasePath("node-c"), "node-a", "posthog", "table", "events")
+	assert.Contains(t, diffBody, strings.ReplaceAll(swapHref, "&", "&amp;"))
+	assert.Contains(t, diffBody, "⇄ Swap sides")
+	assert.Contains(t, diffBody, `data-schema-side="left"`)
+	assert.Contains(t, diffBody, `Same schema as left side <span class="count">2</span>`)
+	assert.Contains(t, diffBody, `Same schema as right side <span class="count">1</span>`)
+	assert.Contains(t, diffBody, `href="/n/node-b/">node-b</a>`,
+		"every node sharing the left schema is listed")
+	leftNodeA := strings.Index(diffBody, `href="/n/node-a/">node-a</a>`)
+	leftNodeB := strings.Index(diffBody, `href="/n/node-b/">node-b</a>`)
+	require.NotEqual(t, -1, leftNodeA)
+	require.NotEqual(t, -1, leftNodeB)
+	assert.Less(t, leftNodeA, leftNodeB, "schema match nodes are sorted by cluster and node")
+
+	code, swappedBody := getMulti(t, ms, swapHref)
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, swappedBody, `<section class="compare-side baseline">
+    <span class="compare-role">Baseline</span>
+    <strong>cluster-b / node-c</strong>`)
+	assert.Contains(t, swappedBody, `<section class="compare-side peer">
+    <span class="compare-role">Compared node</span>
+    <strong>cluster-a / node-a</strong>`)
+
+	patchHref := objectPatchHref(nodeBasePath("node-a"), "node-c", "posthog", "table", "events")
+	assert.Contains(t, diffBody, strings.ReplaceAll(patchHref, "&", "&amp;"))
+	code, patchBody := getMulti(t, ms, strings.Split(patchHref, "#")[0])
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, patchBody, "MUST BE REVIEWED.")
+	assert.Contains(t, patchBody, "Target: <strong>cluster-b / node-c</strong>")
+	assert.Contains(t, patchBody, "Desired schema: <strong>cluster-a / node-a</strong>")
+	assert.Contains(t, patchBody, "ALTER TABLE posthog.events\n  MODIFY COLUMN id UInt64;",
+		"uniformization SQL is parser-beautified")
+	assert.NotContains(t, patchBody, "33333333-3333-3333-3333-333333333333",
+		"patch generation uses UUID-normalized schemas")
+
+	swappedPatchHref := objectPatchHref(nodeBasePath("node-c"), "node-a", "posthog", "table", "events")
+	code, swappedPatchBody := getMulti(t, ms, strings.Split(swappedPatchHref, "#")[0])
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, swappedPatchBody, "ALTER TABLE posthog.events\n  MODIFY COLUMN id String;",
+		"swapping sides reverses the patch direction")
+
+	code, sameBody := getMulti(t, ms, objectCompareHref(
+		nodeBasePath("node-a"), "node-b", "posthog", "table", "events"))
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, sameBody, "The canonical HCL definitions are identical.")
+	assert.Contains(t, sameBody, `Same schema as both sides <span class="count">2</span>`)
+	assert.NotContains(t, sameBody, "Patch to uniform")
+
+	// Rows are always ordered by cluster and then node, even when the current
+	// node sorts last.
+	code, body = getMulti(t, ms, "/n/node-c/db/posthog/table/events?view=html")
+	require.Equal(t, http.StatusOK, code)
+	nodeAPos := strings.Index(body, `href="/n/node-a/">node-a</a>`)
+	nodeBPos := strings.Index(body, `href="/n/node-b/">node-b</a>`)
+	nodeCPos := strings.Index(body, `href="/n/node-c/">node-c</a>`)
+	require.NotEqual(t, -1, nodeAPos)
+	require.NotEqual(t, -1, nodeBPos)
+	require.NotEqual(t, -1, nodeCPos)
+	assert.Less(t, nodeAPos, nodeBPos)
+	assert.Less(t, nodeBPos, nodeCPos)
 
 	// Context remains visible on the source views, not only the overview.
 	code, body = getMulti(t, ms, "/n/node-a/db/posthog/table/events?view=hcl")
@@ -241,7 +322,85 @@ func TestWebDump_TablePresenceAndSchemaMarkers(t *testing.T) {
 	assert.NotContains(t, body, `schema-marker schema-same">same`)
 }
 
-func TestWeb_TablePresenceIsDumpOnly(t *testing.T) {
+func TestWebDump_ObjectPatchSQLReportsUnsafeChanges(t *testing.T) {
+	desired := webTestSchema()
+	drifted := webTestSchema()
+	drifted.Databases[0].Tables[0].OrderBy = []string{"tuple()"}
+
+	sql, unsafe := objectPatchSQL(
+		dumpObjectSnapshot{Schema: normalizedDumpSchema(drifted)},
+		dumpObjectSnapshot{Schema: normalizedDumpSchema(desired)},
+		"posthog", "table", "events",
+	)
+	assert.Contains(t, sql, "no automatic SQL was generated")
+	assert.Contains(t, strings.Join(unsafe, "\n"), "ORDER BY change")
+}
+
+func TestWebDump_ObjectPatchSQLCommentsEveryManualLine(t *testing.T) {
+	current := webTestSchema()
+	desired := webTestSchema()
+	desired.Databases[0].Tables[0].Indexes = []hclload.IndexSpec{{
+		Name: "idx_id", Expr: "id", Type: "minmax", Granularity: 1,
+	}}
+
+	sql, unsafe := objectPatchSQL(
+		dumpObjectSnapshot{Schema: normalizedDumpSchema(current)},
+		dumpObjectSnapshot{Schema: normalizedDumpSchema(desired)},
+		"posthog", "table", "events",
+	)
+	require.Empty(t, unsafe)
+	manualAt := strings.Index(sql, "-- MANUAL:")
+	require.NotEqual(t, -1, manualAt)
+	for _, line := range strings.Split(sql[manualAt:], "\n") {
+		assert.True(t, strings.HasPrefix(line, "--"), "manual SQL line must remain commented: %q", line)
+	}
+}
+
+func TestWebDump_ObjectPresenceCoversEveryBrowsableKind(t *testing.T) {
+	baseline, err := newWebServer(sectionsSchema())
+	require.NoError(t, err)
+	baseline.basePath = nodeBasePath("node-a")
+	baseline.label = "cluster-a / node-a"
+
+	peerSchema := sectionsSchema()
+	peerSchema.Databases[0].MaterializedViews[0].Query = "SELECT id + 1 AS id FROM analytics.events"
+	peer, err := newWebServer(peerSchema)
+	require.NoError(t, err)
+	peer.basePath = nodeBasePath("node-b")
+	peer.label = "cluster-b / node-b"
+
+	ctx := newDumpWebContext(nil)
+	require.NoError(t, baseline.attachDumpContext(ctx, dumpNodeIdentity{Cluster: "cluster-a", Node: "node-a"}))
+	require.NoError(t, peer.attachDumpContext(ctx, dumpNodeIdentity{Cluster: "cluster-b", Node: "node-b"}))
+
+	objects := []struct {
+		kind string
+		name string
+	}{
+		{"table", "events"},
+		{"materialized_view", "events_rollup"},
+		{"view", "events_view"},
+		{"dictionary", "user_dict"},
+		{"raw", "legacy_raw"},
+	}
+	for _, object := range objects {
+		t.Run(object.kind, func(t *testing.T) {
+			code, body := getBody(t, baseline, "/db/analytics/"+object.kind+"/"+object.name)
+			require.Equal(t, http.StatusOK, code)
+			assert.Contains(t, body, "Across dumped nodes")
+			assert.Contains(t, body, "Present on 2 dumped nodes")
+			assert.Contains(t, body, peer.basePath+"/db/analytics/"+object.kind+"/"+object.name)
+		})
+	}
+
+	code, body := getBody(t, baseline, "/db/analytics/materialized_view/events_rollup")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `schema-marker schema-different`)
+	assert.Contains(t, body, strings.ReplaceAll(objectCompareHref(
+		baseline.basePath, "node-b", "analytics", "materialized_view", "events_rollup"), "&", "&amp;"))
+}
+
+func TestWeb_ObjectPresenceIsDumpOnly(t *testing.T) {
 	srv, err := newWebServer(webTestSchema())
 	require.NoError(t, err)
 	code, body := getBody(t, srv, "/db/posthog/table/events")
