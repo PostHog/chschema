@@ -6,6 +6,10 @@
   --muted: #8a93a3;
   --accent: #6ea8fe;
   --accent-dim: #2b3a55;
+  --ok: #68c98b;
+  --ok-bg: #173525;
+  --different: #f08a8a;
+  --different-bg: #401f24;
 }
 
 * { box-sizing: border-box; }
@@ -86,6 +90,27 @@ header .crumb { color: var(--muted); }
   cursor: pointer;
 }
 .lookup-results { overflow-x: auto; }
+
+.table-presence { margin: 20px 0; }
+.table-presence h2 { margin-bottom: 6px; }
+.table-presence-grid { overflow-x: auto; }
+.presence-warning { color: var(--different); }
+.schema-marker {
+  display: inline-block;
+  min-width: 68px;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.schema-current { color: var(--accent); background: var(--accent-dim); border-color: var(--accent); }
+.schema-same { color: var(--ok); background: var(--ok-bg); border-color: var(--ok); }
+.schema-different { color: var(--different); background: var(--different-bg); border-color: var(--different); }
+.schema-different-row { background: var(--different-bg); }
 
 main { padding: 24px; max-width: 1100px; margin: 0 auto; }
 
