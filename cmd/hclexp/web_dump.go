@@ -413,9 +413,13 @@ func objectPatchSQL(from, to dumpObjectSnapshot, database, kind, name string) (s
 
 		var statements []string
 		for _, operation := range comparison.Operations {
-			statement := operation.SQL + ";"
+			statement := operation.SQL
+			if pretty, ok := hclload.BeautifySQL(statement); ok {
+				statement = pretty
+			}
+			statement = strings.TrimSuffix(strings.TrimSpace(statement), ";") + ";"
 			if operation.Manual {
-				statement = "-- MANUAL: " + statement
+				statement = "-- MANUAL: " + strings.ReplaceAll(statement, "\n", "\n-- ")
 			}
 			statements = append(statements, statement)
 		}
@@ -432,7 +436,7 @@ func objectPatchSQL(from, to dumpObjectSnapshot, database, kind, name string) (s
 				unsafe = append(unsafe, "the migration planner could not express this object change")
 			}
 		}
-		return strings.Join(statements, "\n"), unsafe
+		return strings.Join(statements, "\n\n"), unsafe
 	}
 	return "-- no automatic SQL was generated for this change", []string{
 		"the migration planner could not isolate this object change",

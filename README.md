@@ -767,9 +767,10 @@ ReplicatedMergeTree ZooKeeper paths are masked, while real column, engine, key,
 TTL, setting, index, projection, constraint, and comment differences remain
 visible as schema drift.
 
-**Patch to uniform** previews the SQL needed to change the right-hand node's
-object to match the left-hand baseline, using the same migration planner as
-`hclexp diff -sql`. It never executes SQL. The preview **must be reviewed**
+**Patch to uniform** previews the pretty-printed SQL needed to change the
+right-hand node's object to match the left-hand baseline, using the same
+migration planner as `hclexp diff -sql`. It never executes SQL. The preview
+**must be reviewed**
 against the live cluster before use; unsafe or unexpressible changes are called
 out explicitly and require manual reconciliation.
 

@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	hclload "github.com/posthog/chschema/internal/loader/hcl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -269,14 +270,15 @@ func TestWebDump_ObjectPresenceSchemaMarkersAndDiff(t *testing.T) {
 	assert.Contains(t, patchBody, "MUST BE REVIEWED.")
 	assert.Contains(t, patchBody, "Target: <strong>cluster-b / node-c</strong>")
 	assert.Contains(t, patchBody, "Desired schema: <strong>cluster-a / node-a</strong>")
-	assert.Contains(t, patchBody, "ALTER TABLE posthog.events MODIFY COLUMN id UInt64;")
+	assert.Contains(t, patchBody, "ALTER TABLE posthog.events\n  MODIFY COLUMN id UInt64;",
+		"uniformization SQL is parser-beautified")
 	assert.NotContains(t, patchBody, "33333333-3333-3333-3333-333333333333",
 		"patch generation uses UUID-normalized schemas")
 
 	swappedPatchHref := objectPatchHref(nodeBasePath("node-c"), "node-a", "posthog", "table", "events")
 	code, swappedPatchBody := getMulti(t, ms, strings.Split(swappedPatchHref, "#")[0])
 	require.Equal(t, http.StatusOK, code)
-	assert.Contains(t, swappedPatchBody, "ALTER TABLE posthog.events MODIFY COLUMN id String;",
+	assert.Contains(t, swappedPatchBody, "ALTER TABLE posthog.events\n  MODIFY COLUMN id String;",
 		"swapping sides reverses the patch direction")
 
 	code, sameBody := getMulti(t, ms, objectCompareHref(
@@ -332,6 +334,26 @@ func TestWebDump_ObjectPatchSQLReportsUnsafeChanges(t *testing.T) {
 	)
 	assert.Contains(t, sql, "no automatic SQL was generated")
 	assert.Contains(t, strings.Join(unsafe, "\n"), "ORDER BY change")
+}
+
+func TestWebDump_ObjectPatchSQLCommentsEveryManualLine(t *testing.T) {
+	current := webTestSchema()
+	desired := webTestSchema()
+	desired.Databases[0].Tables[0].Indexes = []hclload.IndexSpec{{
+		Name: "idx_id", Expr: "id", Type: "minmax", Granularity: 1,
+	}}
+
+	sql, unsafe := objectPatchSQL(
+		dumpObjectSnapshot{Schema: normalizedDumpSchema(current)},
+		dumpObjectSnapshot{Schema: normalizedDumpSchema(desired)},
+		"posthog", "table", "events",
+	)
+	require.Empty(t, unsafe)
+	manualAt := strings.Index(sql, "-- MANUAL:")
+	require.NotEqual(t, -1, manualAt)
+	for _, line := range strings.Split(sql[manualAt:], "\n") {
+		assert.True(t, strings.HasPrefix(line, "--"), "manual SQL line must remain commented: %q", line)
+	}
 }
 
 func TestWebDump_ObjectPresenceCoversEveryBrowsableKind(t *testing.T) {
