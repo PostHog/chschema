@@ -400,8 +400,9 @@ func objectPatchHref(currentBase, peer, database, kind, name string) string {
 
 // objectPatchSQL uses the same Diff -> GenerateSQL -> object comparison path as
 // the CLI, in right-to-left order. Only the selected object's operations are
-// rendered. Manual operations stay commented, and unsafe/unexpressible changes
-// are returned separately so the UI cannot imply that a partial patch is enough.
+// rendered and each statement is parser-beautified for the preview. Manual
+// operations stay commented, and unsafe/unexpressible changes are returned
+// separately so the UI cannot imply that a partial patch is enough.
 func objectPatchSQL(from, to dumpObjectSnapshot, database, kind, name string) (string, []string) {
 	cs := hclload.Diff(from.Schema, to.Schema)
 	gen := hclload.GenerateSQL(cs)
