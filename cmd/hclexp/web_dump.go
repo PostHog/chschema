@@ -2,9 +2,13 @@ package main
 
 import (
 	"fmt"
+	"net/http"
+	"net/url"
 	"sort"
+	"strings"
 	"sync"
 
+	"github.com/pmezard/go-difflib/difflib"
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
 
@@ -17,34 +21,38 @@ type dumpNodeIdentity struct {
 	Node           string
 }
 
-type dumpTableSnapshot struct {
+type dumpObjectSnapshot struct {
 	Node         dumpNodeIdentity
 	NodeHref     string
 	Database     string
 	DatabaseHref string
-	Table        string
-	TableHref    string
+	Kind         string
+	Object       string
+	ObjectHref   string
 	Signature    string
 }
 
-// dumpWebContext is a live, concurrency-safe index of every table in every
-// mounted node dump. Each webServer replaces its own snapshot after a reload,
-// so table pages can show current cross-node presence without locking peers.
+// dumpWebContext is a live, concurrency-safe index of every browsable object
+// in every mounted node dump. Each webServer replaces its own snapshot after a
+// reload, so object pages can show current cross-node presence without locking
+// peers.
 type dumpWebContext struct {
 	mu       sync.RWMutex
-	byServer map[string]map[string]dumpTableSnapshot // base path -> db\x00table -> snapshot
+	byServer map[string]map[string]dumpObjectSnapshot // base path -> db\x00kind\x00name -> snapshot
 	servers  []*webServer
 	aliases  map[string]string // remote_servers alias -> physical dump cluster
 }
 
-type tablePresenceView struct {
+type objectPresenceView struct {
 	Cluster      string
 	Node         string
 	NodeHref     string
 	Database     string
 	DatabaseHref string
-	Table        string
-	TableHref    string
+	Kind         string
+	Object       string
+	ObjectHref   string
+	CompareHref  string
 	Status       string
 	MarkerClass  string
 	Current      bool
@@ -53,7 +61,7 @@ type tablePresenceView struct {
 
 func newDumpWebContext(aliases map[string]string) *dumpWebContext {
 	return &dumpWebContext{
-		byServer: map[string]map[string]dumpTableSnapshot{},
+		byServer: map[string]map[string]dumpObjectSnapshot{},
 		aliases:  aliases,
 	}
 }
@@ -92,34 +100,76 @@ func (ctx *dumpWebContext) maybeReloadAll() {
 	}
 }
 
-// update atomically replaces one node's table snapshot. ReplicatedMergeTree
-// UUIDs embedded in zoo_path are masked exactly as they are for `drift`, so
-// per-node UUID expansion does not produce a false schema difference.
+// update atomically replaces one node's browsable-object snapshot. Tables mask
+// ReplicatedMergeTree UUIDs embedded in zoo_path exactly as `drift` does; every
+// other kind compares its resolved canonical HCL directly.
 func (ctx *dumpWebContext) update(base string, node dumpNodeIdentity, schema *hclload.Schema) error {
-	tables := map[string]dumpTableSnapshot{}
+	objects := map[string]dumpObjectSnapshot{}
 	for di := range schema.Databases {
 		db := &schema.Databases[di]
-		for _, table := range db.Tables {
-			signature, err := normalizedTableSignature(db.Name, table)
+		add := func(kind, name string) error {
+			signature, err := normalizedObjectSignature(db.Name, kind, name, db)
 			if err != nil {
-				return fmt.Errorf("render %s.%s: %w", db.Name, table.Name, err)
+				return fmt.Errorf("render %s %s.%s: %w", kind, db.Name, name, err)
 			}
-			tables[indexKey(db.Name, table.Name)] = dumpTableSnapshot{
+			objects[dumpObjectKey(db.Name, kind, name)] = dumpObjectSnapshot{
 				Node:         node,
 				NodeHref:     base + "/",
 				Database:     db.Name,
 				DatabaseHref: base + "/#" + databaseAnchor(db.Name),
-				Table:        table.Name,
-				TableHref:    base + objectHref(db.Name, hclload.KindTable, table.Name),
+				Kind:         kind,
+				Object:       name,
+				ObjectHref:   base + objectHref(db.Name, kind, name),
 				Signature:    signature,
+			}
+			return nil
+		}
+		for _, table := range db.Tables {
+			if err := add(hclload.KindTable, table.Name); err != nil {
+				return err
+			}
+		}
+		for _, mv := range db.MaterializedViews {
+			if err := add(hclload.KindMaterializedView, mv.Name); err != nil {
+				return err
+			}
+		}
+		for _, view := range db.Views {
+			if err := add(hclload.KindView, view.Name); err != nil {
+				return err
+			}
+		}
+		for _, dictionary := range db.Dictionaries {
+			if err := add(hclload.KindDictionary, dictionary.Name); err != nil {
+				return err
+			}
+		}
+		for _, raw := range db.Raws {
+			if err := add(hclload.KindRaw, raw.Name); err != nil {
+				return err
 			}
 		}
 	}
 
 	ctx.mu.Lock()
-	ctx.byServer[base] = tables
+	ctx.byServer[base] = objects
 	ctx.mu.Unlock()
 	return nil
+}
+
+func dumpObjectKey(database, kind, name string) string {
+	return database + "\x00" + kind + "\x00" + name
+}
+
+func normalizedObjectSignature(database, kind, name string, db *hclload.DatabaseSpec) (string, error) {
+	if kind != hclload.KindTable {
+		return hclload.RenderObjectHCL(database, kind, name, db)
+	}
+	table := findTable(db, name)
+	if table == nil {
+		return "", fmt.Errorf("table not found")
+	}
+	return normalizedTableSignature(database, *table)
 }
 
 func normalizedTableSignature(database string, table hclload.TableSpec) (string, error) {
@@ -135,12 +185,12 @@ func normalizedTableSignature(database string, table hclload.TableSpec) (string,
 	return hclload.RenderObjectHCL(database, hclload.KindTable, table.Name, db)
 }
 
-// tablePresence returns every dumped node containing database.table. The
+// objectPresence returns every dumped node containing the same object. The
 // current node is the baseline; every other signature is marked same/different
-// against it. Missing tables are intentionally omitted: this answers where the
-// object exists without flooding role-specific tables with every unrelated node.
-func (ctx *dumpWebContext) tablePresence(currentBase, database, name string) []tablePresenceView {
-	key := indexKey(database, name)
+// against it. Missing objects are intentionally omitted: this answers where the
+// object exists without flooding role-specific pages with every unrelated node.
+func (ctx *dumpWebContext) objectPresence(currentBase, database, kind, name string) []objectPresenceView {
+	key := dumpObjectKey(database, kind, name)
 	ctx.mu.RLock()
 	defer ctx.mu.RUnlock()
 
@@ -148,20 +198,21 @@ func (ctx *dumpWebContext) tablePresence(currentBase, database, name string) []t
 	if !ok {
 		return nil
 	}
-	var out []tablePresenceView
-	for base, tables := range ctx.byServer {
-		peer, exists := tables[key]
+	var out []objectPresenceView
+	for base, objects := range ctx.byServer {
+		peer, exists := objects[key]
 		if !exists {
 			continue
 		}
-		view := tablePresenceView{
+		view := objectPresenceView{
 			Cluster:      peer.Node.Cluster,
 			Node:         peer.Node.Node,
 			NodeHref:     peer.NodeHref,
 			Database:     peer.Database,
 			DatabaseHref: peer.DatabaseHref,
-			Table:        peer.Table,
-			TableHref:    peer.TableHref,
+			Kind:         peer.Kind,
+			Object:       peer.Object,
+			ObjectHref:   peer.ObjectHref,
 		}
 		switch {
 		case base == currentBase:
@@ -175,19 +226,159 @@ func (ctx *dumpWebContext) tablePresence(currentBase, database, name string) []t
 			view.Status = "different"
 			view.MarkerClass = "different"
 			view.Different = true
+			view.CompareHref = objectCompareHref(currentBase, peer.Node.Node, database, kind, name)
 		}
 		out = append(out, view)
 	}
 	sort.Slice(out, func(i, j int) bool {
-		if out[i].Current != out[j].Current {
-			return out[i].Current
-		}
 		if out[i].Cluster != out[j].Cluster {
 			return out[i].Cluster < out[j].Cluster
 		}
-		return out[i].Node < out[j].Node
+		if out[i].Node != out[j].Node {
+			return out[i].Node < out[j].Node
+		}
+		return out[i].ObjectHref < out[j].ObjectHref
 	})
 	return out
+}
+
+func objectCompareHref(currentBase, peer, database, kind, name string) string {
+	query := url.Values{
+		"peer":     []string{peer},
+		"database": []string{database},
+		"kind":     []string{kind},
+		"name":     []string{name},
+	}
+	return currentBase + "/compare?" + query.Encode()
+}
+
+type objectCompareSideView struct {
+	Cluster string
+	Node    string
+	Href    string
+}
+
+type schemaDiffLineView struct {
+	Class string
+	Text  string
+}
+
+type objectCompareData struct {
+	Title        string
+	Base         string
+	Label        string
+	Database     string
+	DatabaseHref string
+	KindLabel    string
+	Name         string
+	Current      objectCompareSideView
+	Peer         objectCompareSideView
+	Same         bool
+	Lines        []schemaDiffLineView
+}
+
+// objectComparison returns the current node's canonical HCL and the requested
+// peer's canonical HCL. Dump node names are globally unique, as enforced while
+// building the dump server, so the peer query parameter identifies one mount.
+func (ctx *dumpWebContext) objectComparison(currentBase, peerNode, database, kind, name string) (dumpObjectSnapshot, dumpObjectSnapshot, bool) {
+	key := dumpObjectKey(database, kind, name)
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+
+	current, ok := ctx.byServer[currentBase][key]
+	if !ok {
+		return dumpObjectSnapshot{}, dumpObjectSnapshot{}, false
+	}
+	for _, objects := range ctx.byServer {
+		if peer, exists := objects[key]; exists && peer.Node.Node == peerNode {
+			return current, peer, true
+		}
+	}
+	return dumpObjectSnapshot{}, dumpObjectSnapshot{}, false
+}
+
+func schemaDiffLines(current, peer dumpObjectSnapshot) ([]schemaDiffLineView, error) {
+	diff, err := difflib.GetUnifiedDiffString(difflib.UnifiedDiff{
+		A:        difflib.SplitLines(current.Signature),
+		B:        difflib.SplitLines(peer.Signature),
+		FromFile: current.Node.Cluster + " / " + current.Node.Node + " (baseline)",
+		ToFile:   peer.Node.Cluster + " / " + peer.Node.Node,
+		Context:  3,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if diff == "" {
+		return nil, nil
+	}
+
+	lines := strings.Split(strings.TrimSuffix(diff, "\n"), "\n")
+	out := make([]schemaDiffLineView, 0, len(lines))
+	for _, line := range lines {
+		class := "diff-context"
+		switch {
+		case strings.HasPrefix(line, "--- "), strings.HasPrefix(line, "+++ "):
+			class = "diff-header"
+		case strings.HasPrefix(line, "@@"):
+			class = "diff-hunk"
+		case strings.HasPrefix(line, "-"):
+			class = "diff-delete"
+		case strings.HasPrefix(line, "+"):
+			class = "diff-add"
+		}
+		out = append(out, schemaDiffLineView{Class: class, Text: line})
+	}
+	return out, nil
+}
+
+func (s *webServer) handleCompare(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/compare" || s.dumpContext == nil {
+		s.notFound(w)
+		return
+	}
+	s.dumpContext.maybeReloadAll()
+
+	peerNode := r.URL.Query().Get("peer")
+	database := r.URL.Query().Get("database")
+	kind := r.URL.Query().Get("kind")
+	name := r.URL.Query().Get("name")
+	if peerNode == "" || database == "" || kind == "" || name == "" {
+		s.notFound(w)
+		return
+	}
+	current, peer, ok := s.dumpContext.objectComparison(s.basePath, peerNode, database, kind, name)
+	if !ok {
+		s.notFound(w)
+		return
+	}
+	lines, err := schemaDiffLines(current, peer)
+	if err != nil {
+		http.Error(w, "render schema diff: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	data := objectCompareData{
+		Title:        "Schema comparison: " + name,
+		Base:         s.basePath,
+		Label:        s.label,
+		Database:     database,
+		DatabaseHref: current.DatabaseHref,
+		KindLabel:    kindLabel(kind),
+		Name:         name,
+		Current: objectCompareSideView{
+			Cluster: current.Node.Cluster,
+			Node:    current.Node.Node,
+			Href:    current.ObjectHref,
+		},
+		Peer: objectCompareSideView{
+			Cluster: peer.Node.Cluster,
+			Node:    peer.Node.Node,
+			Href:    peer.ObjectHref,
+		},
+		Same:  current.Signature == peer.Signature,
+		Lines: lines,
+	}
+	s.render(w, s.tmplCompare, data)
 }
 
 // referenceHref resolves a dependency using the same topology order as schema
@@ -195,21 +386,21 @@ func (ctx *dumpWebContext) tablePresence(currentBase, database, name string) []t
 // their named cluster (including inferred aliases); MV read sources may resolve
 // from any mapped sibling cluster. Write targets remain local.
 func (ctx *dumpWebContext) referenceHref(currentBase string, dep hclload.Dependency) string {
-	key := indexKey(dep.To.Database, dep.To.Name)
+	key := dumpObjectKey(dep.To.Database, hclload.KindTable, dep.To.Name)
 	ctx.mu.RLock()
 	defer ctx.mu.RUnlock()
 
 	if local, ok := ctx.byServer[currentBase][key]; ok {
-		return local.TableHref
+		return local.ObjectHref
 	}
 	switch dep.Kind {
 	case hclload.DepDistributedRemote:
 		cluster := ctx.resolveCluster(dep.Cluster)
-		return firstSnapshotHref(ctx.byServer, key, func(snapshot dumpTableSnapshot) bool {
+		return firstSnapshotHref(ctx.byServer, key, func(snapshot dumpObjectSnapshot) bool {
 			return snapshot.Node.RoutingCluster == cluster
 		})
 	case hclload.DepMVSource, hclload.DepViewSource:
-		return firstSnapshotHref(ctx.byServer, key, func(snapshot dumpTableSnapshot) bool {
+		return firstSnapshotHref(ctx.byServer, key, func(snapshot dumpObjectSnapshot) bool {
 			return snapshot.Node.RoutingCluster != ""
 		})
 	default:
@@ -230,10 +421,10 @@ func (ctx *dumpWebContext) resolveCluster(name string) string {
 	return name
 }
 
-func firstSnapshotHref(byServer map[string]map[string]dumpTableSnapshot, key string, match func(dumpTableSnapshot) bool) string {
-	var matches []dumpTableSnapshot
-	for _, tables := range byServer {
-		if snapshot, ok := tables[key]; ok && match(snapshot) {
+func firstSnapshotHref(byServer map[string]map[string]dumpObjectSnapshot, key string, match func(dumpObjectSnapshot) bool) string {
+	var matches []dumpObjectSnapshot
+	for _, objects := range byServer {
+		if snapshot, ok := objects[key]; ok && match(snapshot) {
 			matches = append(matches, snapshot)
 		}
 	}
@@ -246,7 +437,7 @@ func firstSnapshotHref(byServer map[string]map[string]dumpTableSnapshot, key str
 		}
 		return matches[i].Node.Node < matches[j].Node.Node
 	})
-	return matches[0].TableHref
+	return matches[0].ObjectHref
 }
 
 // resolveFlowReferences copies the precomputed flows and fills undeclared

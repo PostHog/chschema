@@ -755,13 +755,15 @@ are rejected rather than silently combined. `-dump` is mutually exclusive with
 the single-schema and manifest inputs, and `-glob` accepts the same
 comma-separated filename patterns as `drift`.
 
-In dump mode, every table page also shows all cluster/node dumps containing the
-same qualified table. The current node is the comparison baseline; peer tables
-are marked **same** or **different** and link directly to that node's table page.
-Comparison uses the same default as `drift`: literal UUIDs expanded into
-ReplicatedMergeTree ZooKeeper paths are masked, while real column, engine,
-key, TTL, setting, index, projection, constraint, and comment differences remain
-visible as schema drift.
+In dump mode, every object page (table, materialized view, view, dictionary, or
+raw object) also shows all cluster/node dumps containing the same qualified
+object, ordered by cluster and then node. The current node is the comparison
+baseline; peers are marked **same** or **different** from their resolved
+canonical HCL. Click **different** to open a unified HCL diff with the baseline
+and peer node identified explicitly. For tables, comparison uses the same
+default as `drift`: literal UUIDs expanded into ReplicatedMergeTree ZooKeeper
+paths are masked, while real column, engine, key, TTL, setting, index,
+projection, constraint, and comment differences remain visible as schema drift.
 
 Materialized-view `to_table` values and Distributed `remote_table` values are
 links when their targets resolve. In dump mode the browser derives the same
@@ -772,9 +774,9 @@ dependency lists, and data flows. MV write destinations remain local, matching
 ClickHouse execution semantics.
 
 Navigation links preserve object context throughout the UI: node names open the
-node schema, database names jump to stable database anchors, and table names
-open the exact table view. The cross-node comparison matrix exposes all three
-targets separately instead of making the node label stand in for the table.
+node schema, database names jump to stable database anchors, and object names
+open the exact object view. The cross-node comparison matrix exposes all three
+targets separately instead of making the node label stand in for the object.
 
 The server auto-reloads on source edits: each request re-stats the source
 files at most once per `-reload-interval` (default `2s`; `0` disables) and

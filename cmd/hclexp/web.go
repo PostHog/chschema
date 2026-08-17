@@ -20,7 +20,7 @@ import (
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
 
-//go:embed web/layout.html web/index.html web/object.html web/flows.html web/schemas.html web/lookup.html web/static/*
+//go:embed web/layout.html web/index.html web/object.html web/flows.html web/schemas.html web/lookup.html web/compare.html web/static/*
 var webFS embed.FS
 
 // runWeb loads an HCL config (single file or layers), resolves it, and serves a
@@ -102,10 +102,11 @@ func runWeb(args []string) {
 // their duration, a reload takes Lock only for the brief atomic swap.
 type webServer struct {
 	// Static (set once at construction).
-	tmplIndex  *template.Template
-	tmplObject *template.Template
-	tmplFlows  *template.Template
-	tmplLookup *template.Template
+	tmplIndex   *template.Template
+	tmplObject  *template.Template
+	tmplFlows   *template.Template
+	tmplLookup  *template.Template
+	tmplCompare *template.Template
 
 	// basePath is the URL prefix this server is mounted under in manifest mode
 	// (e.g. "/s/prod-us/ops"); empty in single-schema mode. Templates prepend it
@@ -114,7 +115,7 @@ type webServer struct {
 	label    string // human label for the nav in manifest mode (e.g. "prod-us / ops")
 
 	// dumpContext is set only when this schema came from a per-node dump. It
-	// supplies cross-node table presence and schema comparison information.
+	// supplies cross-node object presence and schema comparison information.
 	dumpContext *dumpWebContext
 	dumpNode    dumpNodeIdentity
 	clusters    hclload.ClusterSet
@@ -172,14 +173,19 @@ func newWebServerWithClusters(schema *hclload.Schema, clusters hclload.ClusterSe
 	if err != nil {
 		return nil, fmt.Errorf("parse lookup template: %w", err)
 	}
+	tmplCompare, err := template.New("layout").Funcs(funcs).ParseFS(webFS, "web/layout.html", "web/compare.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse compare template: %w", err)
+	}
 
 	s := &webServer{
-		tmplIndex:  tmplIndex,
-		tmplObject: tmplObject,
-		tmplFlows:  tmplFlows,
-		tmplLookup: tmplLookup,
-		now:        time.Now,
-		clusters:   clusters,
+		tmplIndex:   tmplIndex,
+		tmplObject:  tmplObject,
+		tmplFlows:   tmplFlows,
+		tmplLookup:  tmplLookup,
+		tmplCompare: tmplCompare,
+		now:         time.Now,
+		clusters:    clusters,
 	}
 	s.rebuildState(schema)
 	return s, nil
@@ -227,7 +233,7 @@ func (s *webServer) rebuildState(schema *hclload.Schema) {
 	s.buildProblems()
 	if s.dumpContext != nil {
 		if err := s.dumpContext.update(s.basePath, s.dumpNode, schema); err != nil {
-			slog.Warn("reload: cannot refresh cross-node table context", "schema", s.label, "err", err)
+			slog.Warn("reload: cannot refresh cross-node object context", "schema", s.label, "err", err)
 		}
 	}
 }
@@ -450,31 +456,31 @@ type indexData struct {
 }
 
 type objectData struct {
-	Title          string
-	Base           string // URL prefix for links (manifest mode); "" in single mode
-	Label          string // schema label shown in the nav (manifest mode); "" otherwise
-	Database       string
-	DatabaseHref   string
-	Kind           string
-	KindLabel      string
-	Name           string
-	View           string // "html" | "ddl" | "hcl"
-	HTMLHref       string
-	DDLHref        string
-	HCLHref        string
-	Props          []kv
-	Tables         []tableSection
-	Projections    []projectionView
-	Query          string
-	RawSQL         string
-	Code           string // rendered DDL or HCL for those views
-	FlowAnchor     string // anchor on /flows when this object participates in a flow
-	Problems       []problemView
-	DependsOn      []objLink
-	DependedBy     []objLink
-	PropHrefs      map[string]string
-	TablePresence  []tablePresenceView
-	TableDifferent int
+	Title           string
+	Base            string // URL prefix for links (manifest mode); "" in single mode
+	Label           string // schema label shown in the nav (manifest mode); "" otherwise
+	Database        string
+	DatabaseHref    string
+	Kind            string
+	KindLabel       string
+	Name            string
+	View            string // "html" | "ddl" | "hcl"
+	HTMLHref        string
+	DDLHref         string
+	HCLHref         string
+	Props           []kv
+	Tables          []tableSection
+	Projections     []projectionView
+	Query           string
+	RawSQL          string
+	Code            string // rendered DDL or HCL for those views
+	FlowAnchor      string // anchor on /flows when this object participates in a flow
+	Problems        []problemView
+	DependsOn       []objLink
+	DependedBy      []objLink
+	PropHrefs       map[string]string
+	ObjectPresence  []objectPresenceView
+	ObjectDifferent int
 }
 
 type lookupResult struct {
@@ -615,11 +621,11 @@ func (s *webServer) handleObject(w http.ResponseWriter, r *http.Request) {
 	data.Problems = s.problems[indexKey(database, name)]
 	s.buildReferenceLinks(&data, database, kind, name)
 	s.buildDeps(&data, database, name)
-	if kind == hclload.KindTable && s.dumpContext != nil {
-		data.TablePresence = s.dumpContext.tablePresence(s.basePath, database, name)
-		for _, peer := range data.TablePresence {
+	if s.dumpContext != nil {
+		data.ObjectPresence = s.dumpContext.objectPresence(s.basePath, database, kind, name)
+		for _, peer := range data.ObjectPresence {
 			if peer.Different {
-				data.TableDifferent++
+				data.ObjectDifferent++
 			}
 		}
 	}

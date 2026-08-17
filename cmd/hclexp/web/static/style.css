@@ -91,9 +91,9 @@ header .crumb { color: var(--muted); }
 }
 .lookup-results { overflow-x: auto; }
 
-.table-presence { margin: 20px 0; }
-.table-presence h2 { margin-bottom: 6px; }
-.table-presence-grid { overflow-x: auto; }
+.object-presence { margin: 20px 0; }
+.object-presence h2 { margin-bottom: 6px; }
+.object-presence-grid { overflow-x: auto; }
 .presence-warning { color: var(--different); }
 .schema-marker {
   display: inline-block;
@@ -110,7 +110,45 @@ header .crumb { color: var(--muted); }
 .schema-current { color: var(--accent); background: var(--accent-dim); border-color: var(--accent); }
 .schema-same { color: var(--ok); background: var(--ok-bg); border-color: var(--ok); }
 .schema-different { color: var(--different); background: var(--different-bg); border-color: var(--different); }
+a.schema-different:hover { color: var(--different); }
 .schema-different-row { background: var(--different-bg); }
+
+.compare-sides {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  margin: 18px 0;
+}
+.compare-side {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+}
+.compare-side.peer { border-color: var(--different); }
+.compare-role { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; }
+.compare-arrow { color: var(--muted); font-size: 20px; }
+.comparison-same { color: var(--ok); }
+.diff-legend { display: flex; gap: 18px; }
+.legend-delete { color: var(--different); }
+.legend-add { color: var(--ok); }
+.schema-diff {
+  overflow-x: auto;
+  padding: 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  line-height: 1.45;
+}
+.diff-line { display: block; min-height: 1.45em; padding: 0 14px; }
+.diff-header { color: var(--muted); font-weight: 600; }
+.diff-hunk { color: var(--accent); background: var(--accent-dim); }
+.diff-delete { color: var(--different); background: var(--different-bg); }
+.diff-add { color: var(--ok); background: var(--ok-bg); }
 
 main { padding: 24px; max-width: 1100px; margin: 0 auto; }
 
@@ -122,6 +160,8 @@ a:hover { text-decoration: underline; }
   .header-lookup { margin-left: 0; order: 2; width: 100%; }
   .header-lookup input { width: 100%; }
   main { padding: 18px 14px; }
+  .compare-sides { grid-template-columns: 1fr; }
+  .compare-arrow { transform: rotate(90deg); justify-self: center; }
 }
 
 h1 { font-size: 22px; margin: 0 0 16px; }

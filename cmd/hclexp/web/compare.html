@@ -1,0 +1,25 @@
+{{define "content"}}
+<nav class="path"><a href="{{.Base}}/">databases</a> / <a href="{{.DatabaseHref}}">{{.Database}}</a> / <span class="muted">{{.KindLabel}}</span></nav>
+<h1>Schema comparison: {{.Name}}</h1>
+
+<div class="compare-sides" aria-label="Compared schemas">
+  <section class="compare-side baseline">
+    <span class="compare-role">Baseline</span>
+    <strong>{{.Current.Cluster}} / {{.Current.Node}}</strong>
+    <a href="{{.Current.Href}}">Open {{.Name}}</a>
+  </section>
+  <span class="compare-arrow" aria-hidden="true">→</span>
+  <section class="compare-side peer">
+    <span class="compare-role">Compared node</span>
+    <strong>{{.Peer.Cluster}} / {{.Peer.Node}}</strong>
+    <a href="{{.Peer.Href}}">Open {{.Name}}</a>
+  </section>
+</div>
+
+{{if .Same}}
+<p class="comparison-same">The canonical HCL definitions are identical.</p>
+{{else}}
+<p class="muted diff-legend"><span class="legend-delete">− baseline only</span><span class="legend-add">+ compared node only</span></p>
+<pre class="schema-diff" aria-label="Unified HCL schema diff">{{range .Lines}}<span class="diff-line {{.Class}}">{{.Text}}</span>{{end}}</pre>
+{{end}}
+{{end}}
