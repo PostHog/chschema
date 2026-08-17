@@ -18,9 +18,13 @@ type dumpNodeIdentity struct {
 }
 
 type dumpTableSnapshot struct {
-	Node      dumpNodeIdentity
-	Href      string
-	Signature string
+	Node         dumpNodeIdentity
+	NodeHref     string
+	Database     string
+	DatabaseHref string
+	Table        string
+	TableHref    string
+	Signature    string
 }
 
 // dumpWebContext is a live, concurrency-safe index of every table in every
@@ -34,13 +38,17 @@ type dumpWebContext struct {
 }
 
 type tablePresenceView struct {
-	Cluster     string
-	Node        string
-	Href        string
-	Status      string
-	MarkerClass string
-	Current     bool
-	Different   bool
+	Cluster      string
+	Node         string
+	NodeHref     string
+	Database     string
+	DatabaseHref string
+	Table        string
+	TableHref    string
+	Status       string
+	MarkerClass  string
+	Current      bool
+	Different    bool
 }
 
 func newDumpWebContext(aliases map[string]string) *dumpWebContext {
@@ -97,9 +105,13 @@ func (ctx *dumpWebContext) update(base string, node dumpNodeIdentity, schema *hc
 				return fmt.Errorf("render %s.%s: %w", db.Name, table.Name, err)
 			}
 			tables[indexKey(db.Name, table.Name)] = dumpTableSnapshot{
-				Node:      node,
-				Href:      base + objectHref(db.Name, hclload.KindTable, table.Name),
-				Signature: signature,
+				Node:         node,
+				NodeHref:     base + "/",
+				Database:     db.Name,
+				DatabaseHref: base + "/#" + databaseAnchor(db.Name),
+				Table:        table.Name,
+				TableHref:    base + objectHref(db.Name, hclload.KindTable, table.Name),
+				Signature:    signature,
 			}
 		}
 	}
@@ -143,9 +155,13 @@ func (ctx *dumpWebContext) tablePresence(currentBase, database, name string) []t
 			continue
 		}
 		view := tablePresenceView{
-			Cluster: peer.Node.Cluster,
-			Node:    peer.Node.Node,
-			Href:    peer.Href,
+			Cluster:      peer.Node.Cluster,
+			Node:         peer.Node.Node,
+			NodeHref:     peer.NodeHref,
+			Database:     peer.Database,
+			DatabaseHref: peer.DatabaseHref,
+			Table:        peer.Table,
+			TableHref:    peer.TableHref,
 		}
 		switch {
 		case base == currentBase:
@@ -184,7 +200,7 @@ func (ctx *dumpWebContext) referenceHref(currentBase string, dep hclload.Depende
 	defer ctx.mu.RUnlock()
 
 	if local, ok := ctx.byServer[currentBase][key]; ok {
-		return local.Href
+		return local.TableHref
 	}
 	switch dep.Kind {
 	case hclload.DepDistributedRemote:
@@ -230,7 +246,7 @@ func firstSnapshotHref(byServer map[string]map[string]dumpTableSnapshot, key str
 		}
 		return matches[i].Node.Node < matches[j].Node.Node
 	})
-	return matches[0].Href
+	return matches[0].TableHref
 }
 
 // resolveFlowReferences copies the precomputed flows and fills undeclared

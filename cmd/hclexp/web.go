@@ -2,6 +2,7 @@ package main
 
 import (
 	"embed"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"html/template"
@@ -423,8 +424,14 @@ type objLink struct {
 	Href  string
 }
 
+type navLink struct {
+	Name string
+	Href string
+}
+
 type dbView struct {
 	Name              string
+	Anchor            string
 	Cluster           string
 	Tables            []objLink
 	MaterializedViews []objLink
@@ -439,7 +446,7 @@ type indexData struct {
 	Label            string // schema label shown in the nav (manifest mode); "" otherwise
 	Databases        []dbView
 	NamedCollections []string
-	Nodes            []string
+	Nodes            []navLink
 }
 
 type objectData struct {
@@ -447,6 +454,7 @@ type objectData struct {
 	Base           string // URL prefix for links (manifest mode); "" in single mode
 	Label          string // schema label shown in the nav (manifest mode); "" otherwise
 	Database       string
+	DatabaseHref   string
 	Kind           string
 	KindLabel      string
 	Name           string
@@ -506,7 +514,7 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 	data := indexData{Title: "Schema", Base: s.basePath, Label: s.label}
 	for i := range s.schema.Databases {
 		db := &s.schema.Databases[i]
-		dv := dbView{Name: db.Name}
+		dv := dbView{Name: db.Name, Anchor: databaseAnchor(db.Name)}
 		if db.Cluster != nil {
 			dv.Cluster = *db.Cluster
 		}
@@ -531,7 +539,7 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 		data.NamedCollections = append(data.NamedCollections, nc.Name)
 	}
 	for _, n := range s.schema.Nodes {
-		data.Nodes = append(data.Nodes, n.Name)
+		data.Nodes = append(data.Nodes, navLink{Name: n.Name, Href: s.basePath + "/"})
 	}
 	s.render(w, s.tmplIndex, data)
 }
@@ -567,17 +575,18 @@ func (s *webServer) handleObject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := objectData{
-		Title:     name,
-		Base:      s.basePath,
-		Label:     s.label,
-		Database:  database,
-		Kind:      kind,
-		KindLabel: kindLabel(kind),
-		Name:      name,
-		View:      view,
-		HTMLHref:  objectHref(database, kind, name) + "?view=html",
-		DDLHref:   objectHref(database, kind, name) + "?view=ddl",
-		HCLHref:   objectHref(database, kind, name) + "?view=hcl",
+		Title:        name,
+		Base:         s.basePath,
+		Label:        s.label,
+		Database:     database,
+		DatabaseHref: s.basePath + "/#" + databaseAnchor(database),
+		Kind:         kind,
+		KindLabel:    kindLabel(kind),
+		Name:         name,
+		View:         view,
+		HTMLHref:     objectHref(database, kind, name) + "?view=html",
+		DDLHref:      objectHref(database, kind, name) + "?view=ddl",
+		HCLHref:      objectHref(database, kind, name) + "?view=hcl",
 	}
 
 	switch view {
@@ -1161,6 +1170,13 @@ func deref(p *string) string {
 
 func objectHref(database, kind, name string) string {
 	return "/db/" + url.PathEscape(database) + "/" + url.PathEscape(kind) + "/" + url.PathEscape(name)
+}
+
+// databaseAnchor is stable and safe for arbitrary quoted ClickHouse database
+// names. The readable prefix makes copied fragment URLs recognizable while
+// URL-safe base64 avoids escaping ambiguities between href fragments and IDs.
+func databaseAnchor(name string) string {
+	return "database-" + base64.RawURLEncoding.EncodeToString([]byte(name))
 }
 
 func unescape(s string) string {

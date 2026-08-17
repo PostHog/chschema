@@ -249,6 +249,7 @@ func TestWebSections_TablePage(t *testing.T) {
 
 	code, body := getBody(t, srv, "/db/analytics/table/events?view=html")
 	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `href="/#`+databaseAnchor("analytics")+`">analytics</a>`)
 	assert.Contains(t, body, "primary_key")
 	assert.Contains(t, body, "Indexes")
 	assert.Contains(t, body, "idx_props")

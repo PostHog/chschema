@@ -2,8 +2,8 @@
 <h1>Databases</h1>
 {{if not .Databases}}<p class="muted">No databases in this schema.</p>{{end}}
 {{range .Databases}}
-<section class="db">
-  <h2>{{.Name}}{{if .Cluster}} <span class="muted">ON CLUSTER {{.Cluster}}</span>{{end}}</h2>
+<section class="db" id="{{.Anchor}}">
+  <h2><a href="{{$.Base}}/#{{.Anchor}}">{{.Name}}</a>{{if .Cluster}} <span class="muted">ON CLUSTER {{.Cluster}}</span>{{end}}</h2>
   {{template "objgroup" dict "Title" "Tables" "Items" .Tables "Base" $.Base}}
   {{template "objgroup" dict "Title" "Materialized Views" "Items" .MaterializedViews "Base" $.Base}}
   {{template "objgroup" dict "Title" "Views" "Items" .Views "Base" $.Base}}
@@ -25,7 +25,7 @@
 <section class="db">
   <h2>Nodes</h2>
   <ul class="objlist">
-    {{range .Nodes}}<li>{{.}}</li>{{end}}
+    {{range .Nodes}}<li><a href="{{.Href}}">{{.Name}}</a></li>{{end}}
   </ul>
 </section>
 {{end}}
