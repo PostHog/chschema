@@ -771,6 +771,11 @@ read sources link to the matching node and resolve consistently in validation,
 dependency lists, and data flows. MV write destinations remain local, matching
 ClickHouse execution semantics.
 
+Navigation links preserve object context throughout the UI: node names open the
+node schema, database names jump to stable database anchors, and table names
+open the exact table view. The cross-node comparison matrix exposes all three
+targets separately instead of making the node label stand in for the table.
+
 The server auto-reloads on source edits: each request re-stats the source
 files at most once per `-reload-interval` (default `2s`; `0` disables) and
 reloads when a mod time changes — a broken edit keeps serving the last good

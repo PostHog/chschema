@@ -1,5 +1,5 @@
 {{define "content"}}
-<nav class="path"><a href="{{.Base}}/">databases</a> / {{.Database}} / <span class="muted">{{.KindLabel}}</span></nav>
+<nav class="path"><a href="{{.Base}}/">databases</a> / <a href="{{.DatabaseHref}}">{{.Database}}</a> / <span class="muted">{{.KindLabel}}</span></nav>
 <h1>{{.Name}}</h1>
 
 <div class="viewtabs">
@@ -29,12 +29,14 @@
   </p>
   <div class="table-presence-grid">
     <table class="grid">
-      <thead><tr><th>Cluster / group</th><th>Node</th><th>Schema</th></tr></thead>
+      <thead><tr><th>Cluster / group</th><th>Node</th><th>Database</th><th>Table</th><th>Schema</th></tr></thead>
       <tbody>
         {{range .TablePresence}}
         <tr{{if .Different}} class="schema-different-row"{{end}}>
           <td>{{.Cluster}}</td>
-          <td><a href="{{.Href}}">{{.Node}}</a></td>
+          <td><a href="{{.NodeHref}}">{{.Node}}</a></td>
+          <td><a href="{{.DatabaseHref}}">{{.Database}}</a></td>
+          <td><a href="{{.TableHref}}">{{.Table}}</a></td>
           <td><span class="schema-marker schema-{{.MarkerClass}}">{{.Status}}</span></td>
         </tr>
         {{end}}

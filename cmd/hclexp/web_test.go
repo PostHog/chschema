@@ -73,6 +73,14 @@ func TestWeb_Lookup(t *testing.T) {
 	assert.Contains(t, body, "No objects match")
 }
 
+func TestWeb_DatabaseAnchorIsStableAndURLSafe(t *testing.T) {
+	anchor := databaseAnchor("odd database/名")
+	assert.Equal(t, anchor, databaseAnchor("odd database/名"))
+	assert.NotContains(t, anchor, "/")
+	assert.NotContains(t, anchor, " ")
+	assert.NotEqual(t, anchor, databaseAnchor("other"))
+}
+
 // wideTable builds a table with n columns, for exercising the collapse toggle.
 func wideTable(n int) hclload.TableSpec {
 	cols := make([]hclload.ColumnSpec, n)

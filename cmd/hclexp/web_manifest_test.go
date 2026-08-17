@@ -157,6 +157,10 @@ func TestWebDump_BrowseAndLookupNodes(t *testing.T) {
 	assert.Contains(t, body, "events_a")
 	assert.NotContains(t, body, "events_b")
 	assert.Contains(t, body, "cluster-a / node-a")
+	dbAnchor := databaseAnchor("posthog")
+	assert.Contains(t, body, `id="`+dbAnchor+`"`)
+	assert.Contains(t, body, `href="/n/node-a/#`+dbAnchor+`">posthog</a>`)
+	assert.Contains(t, body, `href="/n/node-a/">node-a</a>`)
 
 	code, body = getMulti(t, ms, "/lookup?q=events")
 	require.Equal(t, http.StatusOK, code)
@@ -206,6 +210,9 @@ func TestWebDump_TablePresenceAndSchemaMarkers(t *testing.T) {
 	assert.Contains(t, body, `href="/n/node-a/db/posthog/table/events"`)
 	assert.Contains(t, body, `href="/n/node-b/db/posthog/table/events"`)
 	assert.Contains(t, body, `href="/n/node-c/db/posthog/table/events"`)
+	assert.Contains(t, body, `href="/n/node-b/">node-b</a>`)
+	assert.Contains(t, body, `href="/n/node-b/#`+databaseAnchor("posthog")+`">posthog</a>`)
+	assert.Contains(t, body, `href="/n/node-b/db/posthog/table/events">events</a>`)
 	assert.Contains(t, body, `schema-marker schema-current">current`)
 	assert.Contains(t, body, `schema-marker schema-same">same`,
 		"different replicated table UUIDs are masked like drift")
