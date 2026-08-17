@@ -709,6 +709,24 @@ hclexp validate -config schema.hcl -skip-validation=events_mv,events_dist
 hclexp validate -config schema.hcl -skip-validation='*'
 ```
 
+For a directory produced by `dump-cluster`, use topology mode instead of
+loading the peers as a layer stack:
+
+```sh
+hclexp validate -dump prod-eu
+hclexp validate -dump prod-eu -glob '*[fg].hcl,*-offline.hcl' -format json
+```
+
+Every dump is resolved independently. Nodes are grouped by `macros.cluster`,
+and each cluster mapping is the union of object names across its members, so
+peer redeclarations do not collide and heterogeneous members can contribute
+different objects. The `_writable`, `_single_shard`, and `_primary_replica`
+remote-server suffixes are inferred as aliases of a mapped base cluster.
+Explicit `-cluster` flags override the derived map. Unknown cluster names are
+reported once with all referencing nodes. `-skip-validation`,
+`-strict-proxy-columns`, `-strict-clusters`, `-exclude`, and `-glob` apply;
+`-format json` emits the derived map, per-node findings, and summary for CI.
+
 `hclexp diff -sql` applies the same dependency knowledge to ordering: within
 the generated DDL, a table is created before any Distributed table that
 forwards to it, and dropped after it.

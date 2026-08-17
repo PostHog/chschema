@@ -96,7 +96,8 @@ Commands:
   diff         compare two schemas (HCL or live), optionally emit migration DDL
   plan         diff every role in a manifest against a topology dump, emitting a
                single globally-ordered, cross-role operation list
-  validate     check that MV and Distributed dependency references resolve
+  validate     check MV and Distributed references in one schema, a manifest,
+               or a directory of per-node topology dumps (-format json)
   drift        detect cross-node schema drift across per-node HCL dumps
                (-format json for structured output)
   locate       find every declaration site of an object across manifest
@@ -385,10 +386,19 @@ func validateManifest(path, env, layerRoot, role string, skip hclload.SkipSet, o
 // manifest-driven mode: it validates every role in the manifest, each against
 // the cluster set derived from the whole manifest — one command to check a
 // whole environment.
+//
+// With -dump, validate instead loads a directory of independent per-node HCL
+// dumps. It derives cluster mappings from macros.cluster, unions peer members'
+// declared objects, infers known remote_servers aliases, and validates every
+// selected node. Peer dumps are never composed as a layer stack.
 func runValidate(args []string) {
 	fs := flag.NewFlagSet("hclexp validate", flag.ExitOnError)
 	configFlag := fs.String("config", "./cmd/hclexp/node.conf", "path to a single HCL config file (mutually exclusive with -layer)")
 	layersFlag := fs.String("layer", "", "comma-separated layer stack: each entry a directory or a single .hcl file (loaded in order)")
+	dumpFlag := fs.String("dump", "", "directory of independent per-node .hcl dumps to validate as one topology (mutually exclusive with -layer/-config/-manifest)")
+	globFlag := fs.String("glob", "*", "with -dump: comma-separated filename globs selecting node dumps")
+	formatFlag := fs.String("format", "text", "with -dump: output format: text (default) or json")
+	excludeFlag := fs.String("exclude", "", "with -dump: HCL exclude config applied to every node before deriving clusters and validating")
 	skipFlag := fs.String("skip-validation", "", "comma-separated dependent object names to skip, or \"*\" for all")
 	strictProxyCols := fs.Bool("strict-proxy-columns", false, "require Distributed proxy and remote to have exactly the same columns (default: proxy columns need only be a subset)")
 	strictClusters := fs.Bool("strict-clusters", false, "require every Distributed remote to resolve against a real composition; a remote on an @absent cluster is an error")
@@ -399,6 +409,37 @@ func runValidate(args []string) {
 	var clusters clusterFlag
 	fs.Var(&clusters, "cluster", "repeatable NAME=STACK external cluster mapping for Distributed remotes; STACK is an OS-list-separated (':') layer stack of directories or .hcl files, @absent, or @alias=BASE")
 	_ = fs.Parse(args)
+
+	if *formatFlag != "text" && *formatFlag != "json" {
+		slog.Error("invalid -format (want text or json)", "format", *formatFlag)
+		os.Exit(2)
+	}
+	if *dumpFlag != "" {
+		if *layersFlag != "" || flagWasSet(fs, "config") || *manifestFlag != "" || *envFlag != "" || *roleFlag != "" {
+			slog.Error("-dump is mutually exclusive with -layer/-config/-manifest/-env/-role")
+			os.Exit(2)
+		}
+		runValidateDump(*dumpFlag, *formatFlag, validateDumpOptions{
+			Glob:           *globFlag,
+			Skip:           hclload.ParseSkipSet(*skipFlag),
+			Validate:       hclload.ValidateOptions{StrictProxyColumns: *strictProxyCols, StrictClusters: *strictClusters},
+			ClusterEntries: clusters.entries,
+			Exclude:        loadExcludeFlag(*excludeFlag),
+		})
+		return
+	}
+	if flagWasSet(fs, "glob") {
+		slog.Error("-glob requires -dump")
+		os.Exit(2)
+	}
+	if *formatFlag != "text" {
+		slog.Error("-format json requires -dump")
+		os.Exit(2)
+	}
+	if *excludeFlag != "" {
+		slog.Error("-exclude requires -dump")
+		os.Exit(2)
+	}
 
 	if (*manifestFlag == "") != (*envFlag == "") {
 		slog.Error("-manifest and -env must be used together")

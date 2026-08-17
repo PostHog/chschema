@@ -64,6 +64,7 @@ type ValidationError struct {
 	Object  ObjectRef // the dependent object
 	Missing ObjectRef // the unresolved reference
 	Kind    string
+	Cluster string // Distributed cluster name; empty for non-Distributed findings
 	Reason  string
 }
 
@@ -650,6 +651,7 @@ func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, local
 			Object:  dep.From,
 			Missing: remote,
 			Kind:    dep.Kind,
+			Cluster: dep.Cluster,
 			Reason: fmt.Sprintf("%s references remote %q on cluster %s, which is not declared in that cluster's schema",
 				depPhrase(dep.Kind), remote, clusterDesc),
 		}
@@ -661,6 +663,7 @@ func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, local
 				Object:  dep.From,
 				Missing: remote,
 				Kind:    dep.Kind,
+				Cluster: dep.Cluster,
 				Reason: fmt.Sprintf("%s references remote %q on cluster %s, which is @absent but -strict-clusters requires every cluster to resolve against a real composition",
 					depPhrase(dep.Kind), remote, clusterDesc),
 			}
@@ -672,6 +675,7 @@ func resolveDistributedRemote(dep Dependency, declared map[ObjectRef]bool, local
 		Object:  dep.From,
 		Missing: remote,
 		Kind:    dep.Kind,
+		Cluster: dep.Cluster,
 		Reason: fmt.Sprintf("%s references remote %q on cluster %s, which is not declared locally and has no -cluster mapping (add it or mark @absent)",
 			depPhrase(dep.Kind), remote, clusterDesc),
 	}
@@ -709,6 +713,7 @@ func validateDistributedColumns(dep Dependency, proxy, remote TableSpec, strict 
 				Object:  dep.From,
 				Missing: ObjectRef{Database: dep.To.Database, Name: pc.Name},
 				Kind:    KindDistributedColumn,
+				Cluster: dep.Cluster,
 				Reason: fmt.Sprintf("Distributed table column %q is not present on remote table %q",
 					pc.Name, dep.To),
 			})
@@ -719,6 +724,7 @@ func validateDistributedColumns(dep Dependency, proxy, remote TableSpec, strict 
 				Object:  dep.From,
 				Missing: ObjectRef{Database: dep.To.Database, Name: pc.Name},
 				Kind:    KindDistributedColumn,
+				Cluster: dep.Cluster,
 				Reason: fmt.Sprintf("Distributed table column %q has type %s but remote table %q has %s",
 					pc.Name, columnTypeString(pc), dep.To, columnTypeString(rc)),
 			})
@@ -735,6 +741,7 @@ func validateDistributedColumns(dep Dependency, proxy, remote TableSpec, strict 
 					Object:  dep.From,
 					Missing: ObjectRef{Database: dep.To.Database, Name: rc.Name},
 					Kind:    KindDistributedColumn,
+					Cluster: dep.Cluster,
 					Reason: fmt.Sprintf("remote table %q column %q is missing from the Distributed table (strict-proxy-columns)",
 						dep.To, rc.Name),
 				})

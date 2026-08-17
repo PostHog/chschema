@@ -398,6 +398,52 @@ cross-cluster proxy can't be silently accepted: map its cluster, mark it
 hand-maintained skip list with a generated cluster mapping that actually
 checks the remotes exist.
 
+#### Deriving clusters from per-node dumps
+
+Use `-dump` when the input is the directory produced by `dump-cluster`, rather
+than a declared layer composition or role manifest:
+
+```sh
+# Validate every node and print the derived cluster map plus per-node findings.
+hclexp validate -dump ./clickhouse-schema/prod-eu
+
+# Select part of the topology, apply the normal validation controls, and emit
+# stable structured output for CI.
+hclexp validate -dump ./clickhouse-schema/prod-eu \
+  -glob '*[fg].hcl,*-offline.hcl' \
+  -exclude ./exclude.hcl \
+  -skip-validation legacy_proxy \
+  -strict-proxy-columns \
+  -format json
+```
+
+A dump directory is **not** a layer stack. Each `.hcl` file is loaded and
+resolved independently, so the same table declared by 58 peer nodes is not a
+redefinition conflict. Validation then builds a topology index:
+
+1. Nodes are grouped by their `node.macros.cluster` value.
+2. Each cluster exposes the union of object names declared by all of its
+   members. This is a reference-resolution union, not a merged HCL schema;
+   heterogeneous members can therefore contribute different objects.
+3. Referenced remote-server variants ending in `_writable`, `_single_shard`,
+   or `_primary_replica` are inferred as aliases when their base cluster exists
+   in the dump.
+4. Explicit `-cluster` flags are applied last and override the derived mapping,
+   including `@alias=BASE` and `@absent`.
+
+The text output prints this derived map before the per-node results. JSON emits
+the same assumptions under `clusters`, including every mapping's source
+(`dump`, `inferred`, or `explicit`), member nodes, and alias base. It also emits
+per-node findings and an aggregate `summary` suitable for CI.
+
+A `cluster_name` that has neither a member node, an inferred base, nor an
+explicit mapping is an error. It is reported once under `unmapped_clusters`
+with all referencing nodes, rather than repeated once for every Distributed
+table. Nodes without `macros.cluster` are still validated, but are listed under
+`unclustered_nodes` and contribute to no derived cluster. `-glob`,
+`-skip-validation`, `-strict-proxy-columns`, `-strict-clusters`, and `-exclude`
+all apply to dump mode.
+
 #### Deriving clusters from the role manifest
 
 Instead of listing every cluster as a flag, `-manifest`/`-env` derive the
