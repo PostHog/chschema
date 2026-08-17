@@ -19,6 +19,31 @@
 </div>
 {{end}}
 
+{{if .TablePresence}}
+<section class="table-presence">
+  <h2>Across dumped nodes</h2>
+  <p class="muted">
+    Present on {{len .TablePresence}} dumped node{{if ne (len .TablePresence) 1}}s{{end}}.
+    Schemas are compared with this node after masking per-node ReplicatedMergeTree UUIDs.
+    {{if .TableDifferent}}<span class="presence-warning">{{.TableDifferent}} differ{{if eq .TableDifferent 1}}s{{end}}.</span>{{end}}
+  </p>
+  <div class="table-presence-grid">
+    <table class="grid">
+      <thead><tr><th>Cluster / group</th><th>Node</th><th>Schema</th></tr></thead>
+      <tbody>
+        {{range .TablePresence}}
+        <tr{{if .Different}} class="schema-different-row"{{end}}>
+          <td>{{.Cluster}}</td>
+          <td><a href="{{.Href}}">{{.Node}}</a></td>
+          <td><span class="schema-marker schema-{{.MarkerClass}}">{{.Status}}</span></td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+  </div>
+</section>
+{{end}}
+
 {{if eq .View "html"}}
   {{if .Props}}
   <table class="props">

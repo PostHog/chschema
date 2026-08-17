@@ -214,6 +214,7 @@ func buildDumpMultiServer(dir, glob string, reloadInterval time.Duration) (*mult
 	}
 
 	groups := map[string]*envGroup{}
+	dumpContext := newDumpWebContext()
 	var groupOrder []string
 	for _, node := range nodes {
 		base := nodeBasePath(node.Name)
@@ -227,6 +228,9 @@ func buildDumpMultiServer(dir, glob string, reloadInterval time.Duration) (*mult
 		group := dumpNodeGroup(node)
 		srv.basePath = base
 		srv.label = group + " / " + node.Name
+		if err := srv.attachDumpContext(dumpContext, dumpNodeIdentity{Cluster: group, Node: node.Name}); err != nil {
+			return nil, fmt.Errorf("index tables for %s: %w", node.Name, err)
+		}
 		if reloadInterval > 0 {
 			srv.enableReload("", node.File, reloadInterval)
 		}

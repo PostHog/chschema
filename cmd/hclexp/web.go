@@ -112,6 +112,11 @@ type webServer struct {
 	basePath string
 	label    string // human label for the nav in manifest mode (e.g. "prod-us / ops")
 
+	// dumpContext is set only when this schema came from a per-node dump. It
+	// supplies cross-node table presence and schema comparison information.
+	dumpContext *dumpWebContext
+	dumpNode    dumpNodeIdentity
+
 	// Reload config + bookkeeping. now is injectable for tests.
 	configFlag string
 	layersFlag string
@@ -213,6 +218,11 @@ func (s *webServer) rebuildState(schema *hclload.Schema) {
 	s.problems = nil
 	s.globalProblems = nil
 	s.buildProblems()
+	if s.dumpContext != nil {
+		if err := s.dumpContext.update(s.basePath, s.dumpNode, schema); err != nil {
+			slog.Warn("reload: cannot refresh cross-node table context", "schema", s.label, "err", err)
+		}
+	}
 }
 
 // enableReload arms the server to re-stat its source files at most once per
@@ -427,27 +437,29 @@ type indexData struct {
 }
 
 type objectData struct {
-	Title       string
-	Base        string // URL prefix for links (manifest mode); "" in single mode
-	Label       string // schema label shown in the nav (manifest mode); "" otherwise
-	Database    string
-	Kind        string
-	KindLabel   string
-	Name        string
-	View        string // "html" | "ddl" | "hcl"
-	HTMLHref    string
-	DDLHref     string
-	HCLHref     string
-	Props       []kv
-	Tables      []tableSection
-	Projections []projectionView
-	Query       string
-	RawSQL      string
-	Code        string // rendered DDL or HCL for those views
-	FlowAnchor  string // anchor on /flows when this object participates in a flow
-	Problems    []problemView
-	DependsOn   []objLink
-	DependedBy  []objLink
+	Title          string
+	Base           string // URL prefix for links (manifest mode); "" in single mode
+	Label          string // schema label shown in the nav (manifest mode); "" otherwise
+	Database       string
+	Kind           string
+	KindLabel      string
+	Name           string
+	View           string // "html" | "ddl" | "hcl"
+	HTMLHref       string
+	DDLHref        string
+	HCLHref        string
+	Props          []kv
+	Tables         []tableSection
+	Projections    []projectionView
+	Query          string
+	RawSQL         string
+	Code           string // rendered DDL or HCL for those views
+	FlowAnchor     string // anchor on /flows when this object participates in a flow
+	Problems       []problemView
+	DependsOn      []objLink
+	DependedBy     []objLink
+	TablePresence  []tablePresenceView
+	TableDifferent int
 }
 
 type lookupResult struct {
@@ -518,7 +530,11 @@ func (s *webServer) handleIndex(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *webServer) handleObject(w http.ResponseWriter, r *http.Request) {
-	s.maybeReload()
+	if s.dumpContext != nil {
+		s.dumpContext.maybeReloadAll()
+	} else {
+		s.maybeReload()
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	// Path: /db/{database}/{kind}/{name}
@@ -582,6 +598,14 @@ func (s *webServer) handleObject(w http.ResponseWriter, r *http.Request) {
 	data.FlowAnchor = s.flowAnchors[indexKey(database, name)]
 	data.Problems = s.problems[indexKey(database, name)]
 	s.buildDeps(&data, database, name)
+	if kind == hclload.KindTable && s.dumpContext != nil {
+		data.TablePresence = s.dumpContext.tablePresence(s.basePath, database, name)
+		for _, peer := range data.TablePresence {
+			if peer.Different {
+				data.TableDifferent++
+			}
+		}
+	}
 	s.render(w, s.tmplObject, data)
 }
 

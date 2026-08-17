@@ -755,6 +755,14 @@ are rejected rather than silently combined. `-dump` is mutually exclusive with
 the single-schema and manifest inputs, and `-glob` accepts the same
 comma-separated filename patterns as `drift`.
 
+In dump mode, every table page also shows all cluster/node dumps containing the
+same qualified table. The current node is the comparison baseline; peer tables
+are marked **same** or **different** and link directly to that node's table page.
+Comparison uses the same default as `drift`: literal UUIDs expanded into
+ReplicatedMergeTree ZooKeeper paths are masked, while real column, engine,
+key, TTL, setting, index, projection, constraint, and comment differences remain
+visible as schema drift.
+
 The server auto-reloads on source edits: each request re-stats the source
 files at most once per `-reload-interval` (default `2s`; `0` disables) and
 reloads when a mod time changes — a broken edit keeps serving the last good

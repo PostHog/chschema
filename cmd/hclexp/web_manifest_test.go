@@ -3,9 +3,11 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -166,6 +168,78 @@ func TestWebDump_BrowseAndLookupNodes(t *testing.T) {
 	filtered, err := buildDumpMultiServer(root, "node-a.hcl", 0)
 	require.NoError(t, err)
 	require.Len(t, filtered.servers, 1, "-glob filters dump files before mounting")
+}
+
+func replicatedTableDump(node, cluster, uuid, columnType string) string {
+	return `node "` + node + `" {
+  macros = { cluster = "` + cluster + `" }
+}
+database "posthog" {
+  table "events" {
+    engine "replicated_merge_tree" {
+      zoo_path     = "/clickhouse/tables/` + uuid + `/events"
+      replica_name = "{replica}"
+    }
+    order_by = ["id"]
+    column "id" { type = "` + columnType + `" }
+  }
+}
+`
+}
+
+func TestWebDump_TablePresenceAndSchemaMarkers(t *testing.T) {
+	root := t.TempDir()
+	writeFileT(t, filepath.Join(root, "node-a.hcl"), replicatedTableDump(
+		"node-a", "cluster-a", "11111111-1111-1111-1111-111111111111", "UInt64"))
+	writeFileT(t, filepath.Join(root, "node-b.hcl"), replicatedTableDump(
+		"node-b", "cluster-a", "22222222-2222-2222-2222-222222222222", "UInt64"))
+	writeFileT(t, filepath.Join(root, "node-c.hcl"), replicatedTableDump(
+		"node-c", "cluster-b", "33333333-3333-3333-3333-333333333333", "String"))
+
+	ms, err := buildDumpMultiServer(root, "*", time.Second)
+	require.NoError(t, err)
+	code, body := getMulti(t, ms, "/n/node-a/db/posthog/table/events?view=html")
+	require.Equal(t, http.StatusOK, code)
+
+	assert.Contains(t, body, "Across dumped nodes")
+	assert.Contains(t, body, "Present on 3 dumped nodes")
+	assert.Contains(t, body, `href="/n/node-a/db/posthog/table/events"`)
+	assert.Contains(t, body, `href="/n/node-b/db/posthog/table/events"`)
+	assert.Contains(t, body, `href="/n/node-c/db/posthog/table/events"`)
+	assert.Contains(t, body, `schema-marker schema-current">current`)
+	assert.Contains(t, body, `schema-marker schema-same">same`,
+		"different replicated table UUIDs are masked like drift")
+	assert.Contains(t, body, `schema-marker schema-different">different`,
+		"a real column type change is marked different")
+	assert.Contains(t, body, "1 differs")
+
+	// Context remains visible on the source views, not only the overview.
+	code, body = getMulti(t, ms, "/n/node-a/db/posthog/table/events?view=hcl")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "Across dumped nodes")
+
+	// Visiting one node refreshes every peer before comparing. A change in
+	// node-b therefore updates node-a's marker without first opening node-b.
+	nodeBFile := filepath.Join(root, "node-b.hcl")
+	require.NoError(t, os.WriteFile(nodeBFile, []byte(replicatedTableDump(
+		"node-b", "cluster-a", "22222222-2222-2222-2222-222222222222", "String")), 0o600))
+	nodeB := ms.servers[nodeBasePath("node-b")]
+	future := nodeB.lastCheck.Add(time.Hour)
+	nodeB.now = func() time.Time { return future }
+	require.NoError(t, os.Chtimes(nodeBFile, future, future))
+
+	code, body = getMulti(t, ms, "/n/node-a/db/posthog/table/events?view=html")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "2 differ")
+	assert.NotContains(t, body, `schema-marker schema-same">same`)
+}
+
+func TestWeb_TablePresenceIsDumpOnly(t *testing.T) {
+	srv, err := newWebServer(webTestSchema())
+	require.NoError(t, err)
+	code, body := getBody(t, srv, "/db/posthog/table/events")
+	require.Equal(t, http.StatusOK, code)
+	assert.NotContains(t, body, "Across dumped nodes")
 }
 
 func TestWebDump_RejectsDuplicateNodeNames(t *testing.T) {
