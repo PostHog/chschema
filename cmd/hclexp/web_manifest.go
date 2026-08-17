@@ -15,6 +15,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclparse"
+	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
 
 // composition is one (env, role) the manifest declares, with its layer stack.
@@ -208,27 +209,33 @@ func buildDumpMultiServer(dir, glob string, reloadInterval time.Duration) (*mult
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("no .hcl files in %s match %q", dir, glob)
 	}
+	clusters, mappings, _, err := deriveDumpClusterSet(nodes, nil)
+	if err != nil {
+		return nil, fmt.Errorf("derive dump clusters: %w", err)
+	}
+	addInferredDumpClusterAliases(&clusters, mappings, dumpClusterReferences(nodes, hclload.ParseSkipSet("")))
 	ms, err := newMultiServer("Dump nodes", "Dump nodes", "No node dumps found.")
 	if err != nil {
 		return nil, err
 	}
 
 	groups := map[string]*envGroup{}
-	dumpContext := newDumpWebContext()
+	dumpContext := newDumpWebContext(dumpClusterAliases(mappings))
 	var groupOrder []string
 	for _, node := range nodes {
 		base := nodeBasePath(node.Name)
 		if _, exists := ms.servers[base]; exists {
 			return nil, fmt.Errorf("duplicate node name %q in dump directory", node.Name)
 		}
-		srv, err := newWebServer(node.Schema)
+		srv, err := newWebServerWithClusters(node.Schema, clusters)
 		if err != nil {
 			return nil, fmt.Errorf("build server %s: %w", node.Name, err)
 		}
 		group := dumpNodeGroup(node)
 		srv.basePath = base
 		srv.label = group + " / " + node.Name
-		if err := srv.attachDumpContext(dumpContext, dumpNodeIdentity{Cluster: group, Node: node.Name}); err != nil {
+		identity := dumpNodeIdentity{Cluster: group, RoutingCluster: node.Macros["cluster"], Node: node.Name}
+		if err := srv.attachDumpContext(dumpContext, identity); err != nil {
 			return nil, fmt.Errorf("index tables for %s: %w", node.Name, err)
 		}
 		if reloadInterval > 0 {

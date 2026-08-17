@@ -268,7 +268,7 @@ func TestWebSections_MaterializedViewPage(t *testing.T) {
 	code, body := getBody(t, srv, "/db/analytics/materialized_view/events_rollup?view=html")
 	require.Equal(t, http.StatusOK, code)
 	assert.Contains(t, body, "to_table")
-	assert.Contains(t, body, "analytics.events")
+	assert.Contains(t, body, `href="/db/analytics/table/events">analytics.events</a>`)
 	assert.Contains(t, body, "Columns")
 	assert.Contains(t, body, "SELECT id FROM analytics.events")
 }

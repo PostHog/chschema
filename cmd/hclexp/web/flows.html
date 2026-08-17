@@ -2,7 +2,7 @@
 {{$st := .Stage}}{{$base := .Base}}
 <span class="stage-kind">{{$st.KindLabel}}{{if $st.Engine}} · {{$st.Engine}}{{end}}{{if $st.Problems}} <span class="stage-warn">⚠</span>{{end}}</span>
 <span class="stage-name">
-  {{if $st.Href}}<a href="{{$base}}{{$st.Href}}">{{$st.Name}}</a>{{else}}{{$st.Name}}{{end}}
+  {{if $st.Href}}<a href="{{if $st.HrefFull}}{{$st.Href}}{{else}}{{$base}}{{$st.Href}}{{end}}">{{$st.Name}}</a>{{else}}{{$st.Name}}{{end}}
 </span>
 <span class="stage-meta">{{$st.Database}}{{if $st.Detail}} · {{$st.Detail}}{{end}}{{if not $st.Declared}} · not declared{{end}}</span>
 {{end}}

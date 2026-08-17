@@ -116,6 +116,7 @@ type webServer struct {
 	// supplies cross-node table presence and schema comparison information.
 	dumpContext *dumpWebContext
 	dumpNode    dumpNodeIdentity
+	clusters    hclload.ClusterSet
 
 	// Reload config + bookkeeping. now is injectable for tests.
 	configFlag string
@@ -149,6 +150,10 @@ type problemView struct {
 }
 
 func newWebServer(schema *hclload.Schema) (*webServer, error) {
+	return newWebServerWithClusters(schema, hclload.ClusterSet{})
+}
+
+func newWebServerWithClusters(schema *hclload.Schema, clusters hclload.ClusterSet) (*webServer, error) {
 	funcs := template.FuncMap{"dict": templateDict}
 	tmplIndex, err := template.New("layout").Funcs(funcs).ParseFS(webFS, "web/layout.html", "web/index.html")
 	if err != nil {
@@ -173,6 +178,7 @@ func newWebServer(schema *hclload.Schema) (*webServer, error) {
 		tmplFlows:  tmplFlows,
 		tmplLookup: tmplLookup,
 		now:        time.Now,
+		clusters:   clusters,
 	}
 	s.rebuildState(schema)
 	return s, nil
@@ -336,7 +342,7 @@ func fingerprintEqual(a, b map[string]int64) bool {
 // it is attributed to, then tags the flow stages whose object has problems.
 func (s *webServer) buildProblems() {
 	s.problems = map[string][]problemView{}
-	for _, e := range hclload.Validate(s.schema.Databases, hclload.ParseSkipSet(""), hclload.ClusterSet{}) {
+	for _, e := range hclload.Validate(s.schema.Databases, hclload.ParseSkipSet(""), s.clusters) {
 		pv := problemView{
 			Kind:    problemKind(e.Kind),
 			Reason:  e.Reason,
@@ -458,6 +464,7 @@ type objectData struct {
 	Problems       []problemView
 	DependsOn      []objLink
 	DependedBy     []objLink
+	PropHrefs      map[string]string
 	TablePresence  []tablePresenceView
 	TableDifferent int
 }
@@ -597,6 +604,7 @@ func (s *webServer) handleObject(w http.ResponseWriter, r *http.Request) {
 
 	data.FlowAnchor = s.flowAnchors[indexKey(database, name)]
 	data.Problems = s.problems[indexKey(database, name)]
+	s.buildReferenceLinks(&data, database, kind, name)
 	s.buildDeps(&data, database, name)
 	if kind == hclload.KindTable && s.dumpContext != nil {
 		data.TablePresence = s.dumpContext.tablePresence(s.basePath, database, name)
@@ -775,7 +783,7 @@ func (s *webServer) buildDeps(data *objectData, database, name string) {
 			key := ref.String() + "|" + d.Kind
 			if !seenOut[key] {
 				seenOut[key] = true
-				data.DependsOn = append(data.DependsOn, s.depLink(ref, d.Kind))
+				data.DependsOn = append(data.DependsOn, s.depLink(d))
 			}
 		}
 		if d.To == self {
@@ -783,13 +791,16 @@ func (s *webServer) buildDeps(data *objectData, database, name string) {
 			key := ref.String() + "|" + d.Kind
 			if !seenIn[key] {
 				seenIn[key] = true
-				data.DependedBy = append(data.DependedBy, s.depLink(ref, d.Kind))
+				reverse := d
+				reverse.To = ref
+				data.DependedBy = append(data.DependedBy, s.depLink(reverse))
 			}
 		}
 	}
 }
 
-func (s *webServer) depLink(ref hclload.ObjectRef, depKind string) objLink {
+func (s *webServer) depLink(dep hclload.Dependency) objLink {
+	ref := dep.To
 	kind := s.kindIndex[indexKey(ref.Database, ref.Name)]
 	if kind == "" {
 		kind = hclload.KindTable
@@ -797,8 +808,46 @@ func (s *webServer) depLink(ref hclload.ObjectRef, depKind string) objLink {
 	return objLink{
 		Kind:  kind,
 		Name:  ref.Name,
-		Label: ref.String() + " (" + depKind + ")",
-		Href:  objectHref(ref.Database, kind, ref.Name),
+		Label: ref.String() + " (" + dep.Kind + ")",
+		Href:  s.dependencyHref(dep),
+	}
+}
+
+func (s *webServer) dependencyHref(dep hclload.Dependency) string {
+	if kind := s.kindIndex[indexKey(dep.To.Database, dep.To.Name)]; kind != "" {
+		return s.basePath + objectHref(dep.To.Database, kind, dep.To.Name)
+	}
+	if s.dumpContext != nil {
+		return s.dumpContext.referenceHref(s.basePath, dep)
+	}
+	return ""
+}
+
+// buildReferenceLinks makes the explicit destination properties on MVs and
+// Distributed tables navigable. Query source references remain represented by
+// the dependency list, which uses the same cross-cluster resolver.
+func (s *webServer) buildReferenceLinks(data *objectData, database, kind, name string) {
+	self := hclload.ObjectRef{Database: database, Name: name}
+	for _, dep := range s.deps {
+		if dep.From != self {
+			continue
+		}
+		property := ""
+		switch {
+		case kind == hclload.KindMaterializedView && dep.Kind == hclload.DepMVDest:
+			property = "to_table"
+		case kind == hclload.KindTable && dep.Kind == hclload.DepDistributedRemote:
+			property = "remote_table"
+		}
+		if property == "" {
+			continue
+		}
+		if href := s.dependencyHref(dep); href != "" {
+			if data.PropHrefs == nil {
+				data.PropHrefs = map[string]string{}
+			}
+			data.PropHrefs[property] = href
+		}
 	}
 }
 

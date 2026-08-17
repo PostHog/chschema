@@ -12,8 +12,9 @@ import (
 // Cluster is the dump's cluster macro (or the grouping fallback used by the
 // dump index); Node is the node{} label or filename-derived node name.
 type dumpNodeIdentity struct {
-	Cluster string
-	Node    string
+	Cluster        string
+	RoutingCluster string
+	Node           string
 }
 
 type dumpTableSnapshot struct {
@@ -29,6 +30,7 @@ type dumpWebContext struct {
 	mu       sync.RWMutex
 	byServer map[string]map[string]dumpTableSnapshot // base path -> db\x00table -> snapshot
 	servers  []*webServer
+	aliases  map[string]string // remote_servers alias -> physical dump cluster
 }
 
 type tablePresenceView struct {
@@ -41,8 +43,21 @@ type tablePresenceView struct {
 	Different   bool
 }
 
-func newDumpWebContext() *dumpWebContext {
-	return &dumpWebContext{byServer: map[string]map[string]dumpTableSnapshot{}}
+func newDumpWebContext(aliases map[string]string) *dumpWebContext {
+	return &dumpWebContext{
+		byServer: map[string]map[string]dumpTableSnapshot{},
+		aliases:  aliases,
+	}
+}
+
+func dumpClusterAliases(mappings map[string]validateDumpCluster) map[string]string {
+	aliases := map[string]string{}
+	for name, mapping := range mappings {
+		if mapping.Kind == "alias" {
+			aliases[name] = mapping.Base
+		}
+	}
+	return aliases
 }
 
 func (s *webServer) attachDumpContext(ctx *dumpWebContext, node dumpNodeIdentity) error {
@@ -156,5 +171,95 @@ func (ctx *dumpWebContext) tablePresence(currentBase, database, name string) []t
 		}
 		return out[i].Node < out[j].Node
 	})
+	return out
+}
+
+// referenceHref resolves a dependency using the same topology order as schema
+// validation. Local declarations win. Distributed remotes then resolve through
+// their named cluster (including inferred aliases); MV read sources may resolve
+// from any mapped sibling cluster. Write targets remain local.
+func (ctx *dumpWebContext) referenceHref(currentBase string, dep hclload.Dependency) string {
+	key := indexKey(dep.To.Database, dep.To.Name)
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+
+	if local, ok := ctx.byServer[currentBase][key]; ok {
+		return local.Href
+	}
+	switch dep.Kind {
+	case hclload.DepDistributedRemote:
+		cluster := ctx.resolveCluster(dep.Cluster)
+		return firstSnapshotHref(ctx.byServer, key, func(snapshot dumpTableSnapshot) bool {
+			return snapshot.Node.RoutingCluster == cluster
+		})
+	case hclload.DepMVSource, hclload.DepViewSource:
+		return firstSnapshotHref(ctx.byServer, key, func(snapshot dumpTableSnapshot) bool {
+			return snapshot.Node.RoutingCluster != ""
+		})
+	default:
+		return ""
+	}
+}
+
+func (ctx *dumpWebContext) resolveCluster(name string) string {
+	seen := map[string]bool{}
+	for !seen[name] {
+		seen[name] = true
+		base, ok := ctx.aliases[name]
+		if !ok {
+			return name
+		}
+		name = base
+	}
+	return name
+}
+
+func firstSnapshotHref(byServer map[string]map[string]dumpTableSnapshot, key string, match func(dumpTableSnapshot) bool) string {
+	var matches []dumpTableSnapshot
+	for _, tables := range byServer {
+		if snapshot, ok := tables[key]; ok && match(snapshot) {
+			matches = append(matches, snapshot)
+		}
+	}
+	if len(matches) == 0 {
+		return ""
+	}
+	sort.Slice(matches, func(i, j int) bool {
+		if matches[i].Node.Cluster != matches[j].Node.Cluster {
+			return matches[i].Node.Cluster < matches[j].Node.Cluster
+		}
+		return matches[i].Node.Node < matches[j].Node.Node
+	})
+	return matches[0].Href
+}
+
+// resolveFlowReferences copies the precomputed flows and fills undeclared
+// stages from loaded dump clusters. The flow builder remains schema-local;
+// this presentation pass applies the same cross-cluster rules as validation
+// without merging node schemas or changing dependency construction.
+func (ctx *dumpWebContext) resolveFlowReferences(currentBase string, flows []flow, deps []hclload.Dependency) []flow {
+	out := make([]flow, len(flows))
+	for i := range flows {
+		out[i] = flows[i]
+		out[i].Stages = append([]flowStage(nil), flows[i].Stages...)
+		for j := range out[i].Stages {
+			stage := &out[i].Stages[j]
+			if stage.Declared {
+				continue
+			}
+			ref := hclload.ObjectRef{Database: stage.Database, Name: stage.Name}
+			for _, dep := range deps {
+				if dep.To != ref {
+					continue
+				}
+				if href := ctx.referenceHref(currentBase, dep); href != "" {
+					stage.Href = href
+					stage.HrefFull = true
+					stage.Declared = true
+					break
+				}
+			}
+		}
+	}
 	return out
 }

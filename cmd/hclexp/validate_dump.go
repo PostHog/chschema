@@ -109,17 +109,7 @@ func validateTopologyDump(dir string, opts validateDumpOptions) (validateDumpDoc
 		return validateDumpDoc{}, err
 	}
 	references := dumpClusterReferences(nodes, opts.Skip)
-	for _, name := range sortedMapKeys(references) {
-		if _, exists := mappings[name]; exists {
-			continue
-		}
-		if base := inferredDumpClusterBase(name, mappings); base != "" {
-			cs.AddAlias(name, base)
-			mappings[name] = validateDumpCluster{
-				Name: name, Kind: "alias", Source: "inferred", Base: base,
-			}
-		}
-	}
+	addInferredDumpClusterAliases(&cs, mappings, references)
 
 	unknown := map[string]bool{}
 	unmapped := []validateDumpUnmappedCluster{}
@@ -188,6 +178,24 @@ func validateTopologyDump(dir string, opts validateDumpOptions) (validateDumpDoc
 		doc.Summary.Errors += len(node.Errors)
 	}
 	return doc, nil
+}
+
+// addInferredDumpClusterAliases adds the well-known remote_servers aliases
+// referenced by loaded nodes to both the validation ClusterSet and its
+// descriptive mapping. Web dump browsing reuses this so its links and
+// validation resolve the same topology as `validate -dump`.
+func addInferredDumpClusterAliases(cs *hclload.ClusterSet, mappings map[string]validateDumpCluster, references map[string]map[string]bool) {
+	for _, name := range sortedMapKeys(references) {
+		if _, exists := mappings[name]; exists {
+			continue
+		}
+		if base := inferredDumpClusterBase(name, mappings); base != "" {
+			cs.AddAlias(name, base)
+			mappings[name] = validateDumpCluster{
+				Name: name, Kind: "alias", Source: "inferred", Base: base,
+			}
+		}
+	}
 }
 
 // deriveDumpClusterSet groups nodes by macros.cluster and registers each

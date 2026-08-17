@@ -17,6 +17,7 @@ type flowStage struct {
 	Name      string
 	Detail    string // optional subtitle (topic=…, cluster=…)
 	Href      string // detail-page link; "" when the object isn't declared
+	HrefFull  bool   // Href already includes the mounted schema/node base path
 	Declared  bool
 	EdgeLabel string // label on the arrow leading into this stage (empty for the first)
 	Problems  []problemView
@@ -320,14 +321,22 @@ func engineDetail(spec *hclload.EngineSpec) string {
 }
 
 func (s *webServer) handleFlows(w http.ResponseWriter, r *http.Request) {
-	s.maybeReload()
+	if s.dumpContext != nil {
+		s.dumpContext.maybeReloadAll()
+	} else {
+		s.maybeReload()
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	if r.URL.Path != "/flows" {
 		s.notFound(w)
 		return
 	}
-	s.render(w, s.tmplFlows, flowsData{Title: "Data flows", Base: s.basePath, Label: s.label, Groups: groupFlows(s.flows), GlobalProblems: s.globalProblems})
+	flows := s.flows
+	if s.dumpContext != nil {
+		flows = s.dumpContext.resolveFlowReferences(s.basePath, flows, s.deps)
+	}
+	s.render(w, s.tmplFlows, flowsData{Title: "Data flows", Base: s.basePath, Label: s.label, Groups: groupFlows(flows), GlobalProblems: s.globalProblems})
 }
 
 // refOfKey reverses indexKey for the root lookup.
