@@ -23,6 +23,7 @@ type dumpNodeIdentity struct {
 
 type dumpObjectSnapshot struct {
 	Node         dumpNodeIdentity
+	BasePath     string
 	NodeHref     string
 	Database     string
 	DatabaseHref string
@@ -30,6 +31,7 @@ type dumpObjectSnapshot struct {
 	Object       string
 	ObjectHref   string
 	Signature    string
+	Schema       *hclload.Schema
 }
 
 // dumpWebContext is a live, concurrency-safe index of every browsable object
@@ -104,9 +106,10 @@ func (ctx *dumpWebContext) maybeReloadAll() {
 // ReplicatedMergeTree UUIDs embedded in zoo_path exactly as `drift` does; every
 // other kind compares its resolved canonical HCL directly.
 func (ctx *dumpWebContext) update(base string, node dumpNodeIdentity, schema *hclload.Schema) error {
+	normalizedSchema := normalizedDumpSchema(schema)
 	objects := map[string]dumpObjectSnapshot{}
-	for di := range schema.Databases {
-		db := &schema.Databases[di]
+	for di := range normalizedSchema.Databases {
+		db := &normalizedSchema.Databases[di]
 		add := func(kind, name string) error {
 			signature, err := normalizedObjectSignature(db.Name, kind, name, db)
 			if err != nil {
@@ -114,6 +117,7 @@ func (ctx *dumpWebContext) update(base string, node dumpNodeIdentity, schema *hc
 			}
 			objects[dumpObjectKey(db.Name, kind, name)] = dumpObjectSnapshot{
 				Node:         node,
+				BasePath:     base,
 				NodeHref:     base + "/",
 				Database:     db.Name,
 				DatabaseHref: base + "/#" + databaseAnchor(db.Name),
@@ -121,6 +125,7 @@ func (ctx *dumpWebContext) update(base string, node dumpNodeIdentity, schema *hc
 				Object:       name,
 				ObjectHref:   base + objectHref(db.Name, kind, name),
 				Signature:    signature,
+				Schema:       normalizedSchema,
 			}
 			return nil
 		}
@@ -155,6 +160,29 @@ func (ctx *dumpWebContext) update(base string, node dumpNodeIdentity, schema *hc
 	ctx.byServer[base] = objects
 	ctx.mu.Unlock()
 	return nil
+}
+
+// normalizedDumpSchema makes a comparison-only shallow clone whose database,
+// table, and engine containers are independent from the live web schema. It can
+// therefore apply drift's UUID masking without mutating request-visible state.
+// Everything else is immutable after loading and can be shared safely.
+func normalizedDumpSchema(schema *hclload.Schema) *hclload.Schema {
+	normalized := *schema
+	normalized.Databases = append([]hclload.DatabaseSpec(nil), schema.Databases...)
+	for di := range normalized.Databases {
+		sourceDB := &schema.Databases[di]
+		db := &normalized.Databases[di]
+		db.Tables = append([]hclload.TableSpec(nil), sourceDB.Tables...)
+		for ti := range db.Tables {
+			if sourceDB.Tables[ti].Engine == nil {
+				continue
+			}
+			engine := *sourceDB.Tables[ti].Engine
+			db.Tables[ti].Engine = &engine
+		}
+	}
+	normalizeZKPaths(&normalized, "mask-uuid")
+	return &normalized
 }
 
 func dumpObjectKey(database, kind, name string) string {
@@ -256,6 +284,14 @@ type objectCompareSideView struct {
 	Cluster string
 	Node    string
 	Href    string
+	Matches []objectCompareMatchView
+}
+
+type objectCompareMatchView struct {
+	Cluster    string
+	Node       string
+	NodeHref   string
+	ObjectHref string
 }
 
 type schemaDiffLineView struct {
@@ -271,30 +307,136 @@ type objectCompareData struct {
 	DatabaseHref string
 	KindLabel    string
 	Name         string
+	SwapHref     string
+	PatchHref    string
 	Current      objectCompareSideView
 	Peer         objectCompareSideView
 	Same         bool
 	Lines        []schemaDiffLineView
+	ShowPatch    bool
+	PatchSQL     string
+	PatchUnsafe  []string
+}
+
+type dumpObjectComparison struct {
+	Current        dumpObjectSnapshot
+	Peer           dumpObjectSnapshot
+	CurrentMatches []dumpObjectSnapshot
+	PeerMatches    []dumpObjectSnapshot
 }
 
 // objectComparison returns the current node's canonical HCL and the requested
 // peer's canonical HCL. Dump node names are globally unique, as enforced while
 // building the dump server, so the peer query parameter identifies one mount.
-func (ctx *dumpWebContext) objectComparison(currentBase, peerNode, database, kind, name string) (dumpObjectSnapshot, dumpObjectSnapshot, bool) {
+func (ctx *dumpWebContext) objectComparison(currentBase, peerNode, database, kind, name string) (dumpObjectComparison, bool) {
 	key := dumpObjectKey(database, kind, name)
 	ctx.mu.RLock()
 	defer ctx.mu.RUnlock()
 
 	current, ok := ctx.byServer[currentBase][key]
 	if !ok {
-		return dumpObjectSnapshot{}, dumpObjectSnapshot{}, false
+		return dumpObjectComparison{}, false
 	}
+	var peer dumpObjectSnapshot
+	var snapshots []dumpObjectSnapshot
 	for _, objects := range ctx.byServer {
-		if peer, exists := objects[key]; exists && peer.Node.Node == peerNode {
-			return current, peer, true
+		if snapshot, exists := objects[key]; exists {
+			snapshots = append(snapshots, snapshot)
+			if snapshot.Node.Node == peerNode {
+				peer = snapshot
+			}
 		}
 	}
-	return dumpObjectSnapshot{}, dumpObjectSnapshot{}, false
+	if peer.Node.Node == "" {
+		return dumpObjectComparison{}, false
+	}
+
+	comparison := dumpObjectComparison{Current: current, Peer: peer}
+	for _, snapshot := range snapshots {
+		if snapshot.Signature == current.Signature {
+			comparison.CurrentMatches = append(comparison.CurrentMatches, snapshot)
+		}
+		if snapshot.Signature == peer.Signature {
+			comparison.PeerMatches = append(comparison.PeerMatches, snapshot)
+		}
+	}
+	sortObjectSnapshots(comparison.CurrentMatches)
+	sortObjectSnapshots(comparison.PeerMatches)
+	return comparison, true
+}
+
+func sortObjectSnapshots(snapshots []dumpObjectSnapshot) {
+	sort.Slice(snapshots, func(i, j int) bool {
+		if snapshots[i].Node.Cluster != snapshots[j].Node.Cluster {
+			return snapshots[i].Node.Cluster < snapshots[j].Node.Cluster
+		}
+		if snapshots[i].Node.Node != snapshots[j].Node.Node {
+			return snapshots[i].Node.Node < snapshots[j].Node.Node
+		}
+		return snapshots[i].ObjectHref < snapshots[j].ObjectHref
+	})
+}
+
+func objectCompareSide(snapshot dumpObjectSnapshot, matches []dumpObjectSnapshot) objectCompareSideView {
+	view := objectCompareSideView{
+		Cluster: snapshot.Node.Cluster,
+		Node:    snapshot.Node.Node,
+		Href:    snapshot.ObjectHref,
+	}
+	for _, match := range matches {
+		view.Matches = append(view.Matches, objectCompareMatchView{
+			Cluster:    match.Node.Cluster,
+			Node:       match.Node.Node,
+			NodeHref:   match.NodeHref,
+			ObjectHref: match.ObjectHref,
+		})
+	}
+	return view
+}
+
+func objectPatchHref(currentBase, peer, database, kind, name string) string {
+	return objectCompareHref(currentBase, peer, database, kind, name) + "&patch=1#patch-to-uniform"
+}
+
+// objectPatchSQL uses the same Diff -> GenerateSQL -> object comparison path as
+// the CLI, in right-to-left order. Only the selected object's operations are
+// rendered. Manual operations stay commented, and unsafe/unexpressible changes
+// are returned separately so the UI cannot imply that a partial patch is enough.
+func objectPatchSQL(from, to dumpObjectSnapshot, database, kind, name string) (string, []string) {
+	cs := hclload.Diff(from.Schema, to.Schema)
+	gen := hclload.GenerateSQL(cs)
+	comparisons := hclload.BuildObjectComparisons(cs, gen, from.Schema, to.Schema)
+	for _, comparison := range comparisons {
+		if comparison.Database != database || comparison.ObjectType != kind || comparison.Object != name {
+			continue
+		}
+
+		var statements []string
+		for _, operation := range comparison.Operations {
+			statement := operation.SQL + ";"
+			if operation.Manual {
+				statement = "-- MANUAL: " + statement
+			}
+			statements = append(statements, statement)
+		}
+		var unsafe []string
+		if comparison.UnsafeReason != "" {
+			unsafe = append(unsafe, comparison.UnsafeReason)
+		}
+		if comparison.Error != "" {
+			unsafe = append(unsafe, comparison.Error)
+		}
+		if len(statements) == 0 {
+			statements = append(statements, "-- no automatic SQL was generated for this change")
+			if len(unsafe) == 0 {
+				unsafe = append(unsafe, "the migration planner could not express this object change")
+			}
+		}
+		return strings.Join(statements, "\n"), unsafe
+	}
+	return "-- no automatic SQL was generated for this change", []string{
+		"the migration planner could not isolate this object change",
+	}
 }
 
 func schemaDiffLines(current, peer dumpObjectSnapshot) ([]schemaDiffLineView, error) {
@@ -346,11 +488,13 @@ func (s *webServer) handleCompare(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w)
 		return
 	}
-	current, peer, ok := s.dumpContext.objectComparison(s.basePath, peerNode, database, kind, name)
+	comparison, ok := s.dumpContext.objectComparison(s.basePath, peerNode, database, kind, name)
 	if !ok {
 		s.notFound(w)
 		return
 	}
+	current := comparison.Current
+	peer := comparison.Peer
 	lines, err := schemaDiffLines(current, peer)
 	if err != nil {
 		http.Error(w, "render schema diff: "+err.Error(), http.StatusInternalServerError)
@@ -365,18 +509,16 @@ func (s *webServer) handleCompare(w http.ResponseWriter, r *http.Request) {
 		DatabaseHref: current.DatabaseHref,
 		KindLabel:    kindLabel(kind),
 		Name:         name,
-		Current: objectCompareSideView{
-			Cluster: current.Node.Cluster,
-			Node:    current.Node.Node,
-			Href:    current.ObjectHref,
-		},
-		Peer: objectCompareSideView{
-			Cluster: peer.Node.Cluster,
-			Node:    peer.Node.Node,
-			Href:    peer.ObjectHref,
-		},
-		Same:  current.Signature == peer.Signature,
-		Lines: lines,
+		SwapHref:     objectCompareHref(peer.BasePath, current.Node.Node, database, kind, name),
+		PatchHref:    objectPatchHref(s.basePath, peer.Node.Node, database, kind, name),
+		Current:      objectCompareSide(current, comparison.CurrentMatches),
+		Peer:         objectCompareSide(peer, comparison.PeerMatches),
+		Same:         current.Signature == peer.Signature,
+		Lines:        lines,
+	}
+	if r.URL.Query().Get("patch") == "1" {
+		data.ShowPatch = true
+		data.PatchSQL, data.PatchUnsafe = objectPatchSQL(peer, current, database, kind, name)
 	}
 	s.render(w, s.tmplCompare, data)
 }

@@ -216,6 +216,8 @@ func TestWebDump_ObjectPresenceSchemaMarkersAndDiff(t *testing.T) {
 	assert.Contains(t, body, `schema-marker schema-current">current`)
 	assert.Contains(t, body, `schema-marker schema-same">same`,
 		"different replicated table UUIDs are masked like drift")
+	assert.Contains(t, body, "11111111-1111-1111-1111-111111111111",
+		"comparison normalization must not mutate the schema shown on the object page")
 	assert.Contains(t, body, `<a class="schema-marker schema-different"`,
 		"a real column type change is marked different")
 	assert.Contains(t, body, "1 differs")
@@ -237,10 +239,52 @@ func TestWebDump_ObjectPresenceSchemaMarkersAndDiff(t *testing.T) {
 	assert.NotContains(t, diffBody, "11111111-1111-1111-1111-111111111111",
 		"the displayed diff uses the same UUID-masked HCL as the marker")
 
+	swapHref := objectCompareHref(nodeBasePath("node-c"), "node-a", "posthog", "table", "events")
+	assert.Contains(t, diffBody, strings.ReplaceAll(swapHref, "&", "&amp;"))
+	assert.Contains(t, diffBody, "⇄ Swap sides")
+	assert.Contains(t, diffBody, `data-schema-side="left"`)
+	assert.Contains(t, diffBody, `Same schema as left side <span class="count">2</span>`)
+	assert.Contains(t, diffBody, `Same schema as right side <span class="count">1</span>`)
+	assert.Contains(t, diffBody, `href="/n/node-b/">node-b</a>`,
+		"every node sharing the left schema is listed")
+	leftNodeA := strings.Index(diffBody, `href="/n/node-a/">node-a</a>`)
+	leftNodeB := strings.Index(diffBody, `href="/n/node-b/">node-b</a>`)
+	require.NotEqual(t, -1, leftNodeA)
+	require.NotEqual(t, -1, leftNodeB)
+	assert.Less(t, leftNodeA, leftNodeB, "schema match nodes are sorted by cluster and node")
+
+	code, swappedBody := getMulti(t, ms, swapHref)
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, swappedBody, `<section class="compare-side baseline">
+    <span class="compare-role">Baseline</span>
+    <strong>cluster-b / node-c</strong>`)
+	assert.Contains(t, swappedBody, `<section class="compare-side peer">
+    <span class="compare-role">Compared node</span>
+    <strong>cluster-a / node-a</strong>`)
+
+	patchHref := objectPatchHref(nodeBasePath("node-a"), "node-c", "posthog", "table", "events")
+	assert.Contains(t, diffBody, strings.ReplaceAll(patchHref, "&", "&amp;"))
+	code, patchBody := getMulti(t, ms, strings.Split(patchHref, "#")[0])
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, patchBody, "MUST BE REVIEWED.")
+	assert.Contains(t, patchBody, "Target: <strong>cluster-b / node-c</strong>")
+	assert.Contains(t, patchBody, "Desired schema: <strong>cluster-a / node-a</strong>")
+	assert.Contains(t, patchBody, "ALTER TABLE posthog.events MODIFY COLUMN id UInt64;")
+	assert.NotContains(t, patchBody, "33333333-3333-3333-3333-333333333333",
+		"patch generation uses UUID-normalized schemas")
+
+	swappedPatchHref := objectPatchHref(nodeBasePath("node-c"), "node-a", "posthog", "table", "events")
+	code, swappedPatchBody := getMulti(t, ms, strings.Split(swappedPatchHref, "#")[0])
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, swappedPatchBody, "ALTER TABLE posthog.events MODIFY COLUMN id String;",
+		"swapping sides reverses the patch direction")
+
 	code, sameBody := getMulti(t, ms, objectCompareHref(
 		nodeBasePath("node-a"), "node-b", "posthog", "table", "events"))
 	require.Equal(t, http.StatusOK, code)
 	assert.Contains(t, sameBody, "The canonical HCL definitions are identical.")
+	assert.Contains(t, sameBody, `Same schema as both sides <span class="count">2</span>`)
+	assert.NotContains(t, sameBody, "Patch to uniform")
 
 	// Rows are always ordered by cluster and then node, even when the current
 	// node sorts last.
@@ -274,6 +318,20 @@ func TestWebDump_ObjectPresenceSchemaMarkersAndDiff(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 	assert.Contains(t, body, "2 differ")
 	assert.NotContains(t, body, `schema-marker schema-same">same`)
+}
+
+func TestWebDump_ObjectPatchSQLReportsUnsafeChanges(t *testing.T) {
+	desired := webTestSchema()
+	drifted := webTestSchema()
+	drifted.Databases[0].Tables[0].OrderBy = []string{"tuple()"}
+
+	sql, unsafe := objectPatchSQL(
+		dumpObjectSnapshot{Schema: normalizedDumpSchema(drifted)},
+		dumpObjectSnapshot{Schema: normalizedDumpSchema(desired)},
+		"posthog", "table", "events",
+	)
+	assert.Contains(t, sql, "no automatic SQL was generated")
+	assert.Contains(t, strings.Join(unsafe, "\n"), "ORDER BY change")
 }
 
 func TestWebDump_ObjectPresenceCoversEveryBrowsableKind(t *testing.T) {

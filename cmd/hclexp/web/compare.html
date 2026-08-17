@@ -1,6 +1,12 @@
 {{define "content"}}
 <nav class="path"><a href="{{.Base}}/">databases</a> / <a href="{{.DatabaseHref}}">{{.Database}}</a> / <span class="muted">{{.KindLabel}}</span></nav>
-<h1>Schema comparison: {{.Name}}</h1>
+<div class="compare-heading">
+  <h1>Schema comparison: {{.Name}}</h1>
+  <div class="compare-actions">
+    <a class="compare-action compare-swap" href="{{.SwapHref}}" aria-label="Swap baseline and compared node">⇄ Swap sides</a>
+    {{if not .Same}}<a class="compare-action compare-patch" href="{{.PatchHref}}">Patch to uniform</a>{{end}}
+  </div>
+</div>
 
 <div class="compare-sides" aria-label="Compared schemas">
   <section class="compare-side baseline">
@@ -21,5 +27,55 @@
 {{else}}
 <p class="muted diff-legend"><span class="legend-delete">− baseline only</span><span class="legend-add">+ compared node only</span></p>
 <pre class="schema-diff" aria-label="Unified HCL schema diff">{{range .Lines}}<span class="diff-line {{.Class}}">{{.Text}}</span>{{end}}</pre>
+{{end}}
+
+<section class="schema-matches">
+  <h2>Nodes sharing these schemas</h2>
+  {{if .Same}}
+  <div class="schema-match-groups single">
+    <section class="schema-match-group both" data-schema-side="both">
+      <h3>Same schema as both sides <span class="count">{{len .Current.Matches}}</span></h3>
+      <ul class="schema-match-list">
+        {{range .Current.Matches}}<li><span class="schema-match-cluster">{{.Cluster}}</span> / <a href="{{.NodeHref}}">{{.Node}}</a><a class="schema-match-object" href="{{.ObjectHref}}">Open object</a></li>{{end}}
+      </ul>
+    </section>
+  </div>
+  {{else}}
+  <div class="schema-match-groups">
+    <section class="schema-match-group left" data-schema-side="left">
+      <h3>Same schema as left side <span class="count">{{len .Current.Matches}}</span></h3>
+      <p class="schema-match-reference">{{.Current.Cluster}} / {{.Current.Node}}</p>
+      <ul class="schema-match-list">
+        {{range .Current.Matches}}<li><span class="schema-match-cluster">{{.Cluster}}</span> / <a href="{{.NodeHref}}">{{.Node}}</a><a class="schema-match-object" href="{{.ObjectHref}}">Open object</a></li>{{end}}
+      </ul>
+    </section>
+    <section class="schema-match-group right" data-schema-side="right">
+      <h3>Same schema as right side <span class="count">{{len .Peer.Matches}}</span></h3>
+      <p class="schema-match-reference">{{.Peer.Cluster}} / {{.Peer.Node}}</p>
+      <ul class="schema-match-list">
+        {{range .Peer.Matches}}<li><span class="schema-match-cluster">{{.Cluster}}</span> / <a href="{{.NodeHref}}">{{.Node}}</a><a class="schema-match-object" href="{{.ObjectHref}}">Open object</a></li>{{end}}
+      </ul>
+    </section>
+  </div>
+  {{end}}
+</section>
+
+{{if .ShowPatch}}
+<section class="patch-preview" id="patch-to-uniform">
+  <h2>Patch right side to match left</h2>
+  <div class="review-warning" role="alert">
+    <strong>MUST BE REVIEWED.</strong>
+    This generated SQL is a starting point, not an execution recommendation. Verify it against the live cluster, dependencies, data volume, and ClickHouse version before running anything.
+  </div>
+  <p class="muted">Target: <strong>{{.Peer.Cluster}} / {{.Peer.Node}}</strong>. Desired schema: <strong>{{.Current.Cluster}} / {{.Current.Node}}</strong>. hclexp web only previews this SQL; it never executes it.</p>
+  {{if .PatchUnsafe}}
+  <div class="patch-incomplete">
+    <strong>The automatic patch is incomplete or unsafe:</strong>
+    <ul>{{range .PatchUnsafe}}<li>{{.}}</li>{{end}}</ul>
+    Manual reconciliation is required in addition to reviewing any SQL below.
+  </div>
+  {{end}}
+  <pre class="code patch-sql" aria-label="Generated SQL to make the right schema match the left">{{.PatchSQL}}</pre>
+</section>
 {{end}}
 {{end}}
