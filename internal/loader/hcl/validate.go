@@ -136,10 +136,18 @@ func CollectDependencies(dbs []DatabaseSpec) ([]Dependency, error) {
 			if err != nil {
 				return nil, fmt.Errorf("materialized_view %s: parsing query: %w", from, err)
 			}
+			seenSources := map[ObjectRef]bool{}
 			for _, src := range sources {
 				if src.Database == "" {
 					src.Database = db.Name
 				}
+				// extractSourceTables deduplicates parser-level references, but a
+				// qualified and an unqualified spelling can resolve to the same
+				// table only after the default database is applied.
+				if seenSources[src] {
+					continue
+				}
+				seenSources[src] = true
 				deps = append(deps, Dependency{From: from, To: src, Kind: DepMVSource})
 			}
 		}

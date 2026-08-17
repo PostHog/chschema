@@ -1,6 +1,68 @@
+{{define "flow-stage-content"}}
+{{$st := .Stage}}{{$base := .Base}}
+<span class="stage-kind">{{$st.KindLabel}}{{if $st.Engine}} · {{$st.Engine}}{{end}}{{if $st.Problems}} <span class="stage-warn">⚠</span>{{end}}</span>
+<span class="stage-name">
+  {{if $st.Href}}<a href="{{$base}}{{$st.Href}}">{{$st.Name}}</a>{{else}}{{$st.Name}}{{end}}
+</span>
+<span class="stage-meta">{{$st.Database}}{{if $st.Detail}} · {{$st.Detail}}{{end}}{{if not $st.Declared}} · not declared{{end}}</span>
+{{end}}
+
+{{define "flow-stage-problems"}}
+{{range .Stage.Problems}}
+<div class="stage-problem-msg"><span class="problem-kind">{{.Kind}}</span> {{.Reason}}</div>
+{{end}}
+{{end}}
+
+{{define "flow-stage"}}
+{{$st := .Stage}}
+<div class="stage stage-{{$st.Kind}}{{if not $st.Declared}} undeclared{{end}}{{if $st.Problems}} stage-problem{{end}}">
+  {{template "flow-stage-content" .}}
+  {{template "flow-stage-problems" .}}
+</div>
+{{end}}
+
+{{define "flow-children"}}
+{{$node := .Node}}{{$base := .Base}}
+{{if $node.Children}}
+{{$branched := gt (len $node.Children) 1}}
+<div class="flow-children {{if $branched}}branched{{else}}linear{{end}}">
+  {{range $child := $node.Children}}
+  {{if $branched}}
+  <details class="flow-branch" open>
+    <summary class="flow-branch-summary{{if not $child.Stage.Declared}} undeclared{{end}}{{if $child.Stage.Problems}} stage-problem{{end}}" aria-label="Toggle downstream flow {{$child.Stage.Name}}">
+      <span class="flow-branch-disclosure" aria-hidden="true"></span>
+      <span class="flow-branch-edge">{{$child.Stage.EdgeLabel}}</span>
+      <span class="flow-branch-stage">
+        {{template "flow-stage-content" (dict "Stage" $child.Stage "Base" $base)}}
+      </span>
+    </summary>
+    <div class="flow-branch-body">
+      {{template "flow-stage-problems" (dict "Stage" $child.Stage)}}
+      {{template "flow-children" (dict "Node" $child "Base" $base)}}
+    </div>
+  </details>
+  {{else}}
+  <div class="flow-child">
+    <div class="arrow"><span class="arrow-label">{{$child.Stage.EdgeLabel}}</span><span class="arrow-glyph">▼</span></div>
+    {{template "flow-node" (dict "Node" $child "Base" $base)}}
+  </div>
+  {{end}}
+  {{end}}
+</div>
+{{end}}
+{{end}}
+
+{{define "flow-node"}}
+{{$node := .Node}}{{$base := .Base}}
+<div class="flow-node">
+  {{template "flow-stage" (dict "Stage" $node.Stage "Base" $base)}}
+  {{template "flow-children" (dict "Node" $node "Base" $base)}}
+</div>
+{{end}}
+
 {{define "content"}}
 <h1>Data flows</h1>
-<p class="muted">Ingestion chains reconstructed from materialized-view sources, targets, and Distributed remotes.</p>
+<p class="muted">Ingestion chains reconstructed from materialized-view sources, targets, and Distributed remotes. Shared prefixes are shown once; distinct downstream branches can be collapsed independently.</p>
 {{if .GlobalProblems}}
 <div class="problems">
   <h2 class="problems-title">⚠ Schema problems</h2>
@@ -10,25 +72,13 @@
 </div>
 {{end}}
 
-{{if not .Flows}}<p class="muted">No materialized-view ingestion chains found in this schema.</p>{{end}}
+{{if not .Groups}}<p class="muted">No materialized-view ingestion chains found in this schema.</p>{{end}}
 
-{{range .Flows}}
+{{range .Groups}}
 <section class="flow{{if .HasProblems}} flow-problem{{end}}" id="{{.Anchor}}">
   {{if .HasProblems}}<div class="flow-badge">⚠ this flow has problems</div>{{end}}
   <div class="chain">
-    {{range $i, $st := .Stages}}
-    {{if $i}}<div class="arrow"><span class="arrow-label">{{$st.EdgeLabel}}</span><span class="arrow-glyph">▼</span></div>{{end}}
-    <div class="stage stage-{{$st.Kind}}{{if not $st.Declared}} undeclared{{end}}{{if $st.Problems}} stage-problem{{end}}">
-      <div class="stage-kind">{{$st.KindLabel}}{{if $st.Engine}} · {{$st.Engine}}{{end}}{{if $st.Problems}} <span class="stage-warn">⚠</span>{{end}}</div>
-      <div class="stage-name">
-        {{if $st.Href}}<a href="{{$.Base}}{{$st.Href}}">{{$st.Name}}</a>{{else}}{{$st.Name}}{{end}}
-      </div>
-      <div class="stage-meta">{{$st.Database}}{{if $st.Detail}} · {{$st.Detail}}{{end}}{{if not $st.Declared}} · not declared{{end}}</div>
-      {{range $st.Problems}}
-      <div class="stage-problem-msg"><span class="problem-kind">{{.Kind}}</span> {{.Reason}}</div>
-      {{end}}
-    </div>
-    {{end}}
+    {{template "flow-node" (dict "Node" .Root "Base" $.Base)}}
   </div>
 </section>
 {{end}}

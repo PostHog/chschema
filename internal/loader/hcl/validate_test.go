@@ -676,6 +676,24 @@ func TestCollectDependencies_DefaultsSourceDatabase(t *testing.T) {
 	assert.Equal(t, ObjectRef{Database: "posthog", Name: "events_local"}, byKind[DepMVSource].To)
 }
 
+func TestCollectDependencies_DeduplicatesSourcesAfterDefaultingDatabase(t *testing.T) {
+	dbs := []DatabaseSpec{
+		mkDBMixed("posthog", nil, []MaterializedViewSpec{
+			mkMV("mv", "metrics", `
+				SELECT qualified.x
+				FROM posthog.events_local AS qualified
+				JOIN events_local AS unqualified USING x
+			`),
+		}),
+	}
+
+	deps, err := CollectDependencies(dbs)
+	require.NoError(t, err)
+	require.Len(t, deps, 2, "one destination and one canonical source edge")
+	assert.Equal(t, DepMVSource, deps[1].Kind)
+	assert.Equal(t, ObjectRef{Database: "posthog", Name: "events_local"}, deps[1].To)
+}
+
 func TestExtractReferencedTables(t *testing.T) {
 	cases := []struct {
 		name string

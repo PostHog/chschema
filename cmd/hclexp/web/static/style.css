@@ -205,6 +205,93 @@ pre.code {
   gap: 0;
 }
 
+.flow-node,
+.flow-child {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.flow-children.linear {
+  margin-left: 0;
+}
+
+.flow-children.branched {
+  margin-left: 16px;
+  padding-left: 20px;
+  border-left: 2px solid var(--border);
+  min-width: 420px;
+}
+
+.flow-children.branched > .flow-branch {
+  position: relative;
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.flow-children.branched > .flow-branch::before {
+  content: "";
+  position: absolute;
+  left: -20px;
+  top: 24px;
+  width: 20px;
+  border-top: 2px solid var(--border);
+}
+
+.flow-children.branched > .flow-branch + .flow-branch {
+  margin-top: 16px;
+}
+
+.flow-branch-summary {
+  display: grid;
+  grid-template-columns: 14px auto minmax(260px, 1fr);
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg);
+  cursor: pointer;
+  list-style: none;
+}
+
+.flow-branch-summary::-webkit-details-marker { display: none; }
+.flow-branch-summary:hover { background: var(--accent-dim); }
+.flow-branch-summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.flow-branch[open] > .flow-branch-summary { border-bottom: 1px solid var(--border); }
+.flow-branch-summary.undeclared { border-left-color: var(--muted); opacity: 0.75; }
+.flow-branch-summary.stage-problem { border-left-color: var(--warn); }
+
+.flow-branch-disclosure::before {
+  content: "▸";
+  color: var(--accent);
+}
+
+.flow-branch[open] > .flow-branch-summary .flow-branch-disclosure::before {
+  content: "▾";
+}
+
+.flow-branch-edge {
+  padding: 1px 7px;
+  border-radius: 10px;
+  background: var(--accent-dim);
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.flow-branch-stage,
+.stage-kind,
+.stage-name,
+.stage-meta {
+  display: block;
+}
+
+.flow-branch-body {
+  padding: 4px 14px 14px 34px;
+}
+
 .stage {
   border: 1px solid var(--border);
   border-left: 3px solid var(--accent);
