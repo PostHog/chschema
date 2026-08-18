@@ -1,7 +1,7 @@
 {{define "content"}}
 <nav class="path"><a href="/">dump nodes</a> / <span>object review</span></nav>
 <h1>Objects across dumped nodes</h1>
-<p class="muted">Objects are grouped by the same semantic diff used by the CLI, including normalized expressions and masked ReplicatedMergeTree UUIDs. Objects absent from a node are shown as deployment context, not classified as schema drift.</p>
+<p class="muted">Objects are grouped by the same semantic diff used by the CLI, including normalized expressions and masked ReplicatedMergeTree UUIDs. Presence is checked per cluster: an object may be on every node or no nodes in a cluster; only clusters containing it on some nodes are flagged.</p>
 
 <form class="comparison-settings" action="/comparison-settings" method="post">
   <input type="hidden" name="return" value="{{.SettingsReturn}}">
@@ -14,7 +14,7 @@
   <div class="review-stat"><strong>{{.TotalObjects}}</strong><span>objects</span></div>
   <div class="review-stat"><strong>{{.DifferentObjects}}</strong><span>different</span></div>
   <div class="review-stat"><strong>{{.UniformObjects}}</strong><span>uniform</span></div>
-  <div class="review-stat"><strong>{{.PartialObjects}}</strong><span>partial presence</span></div>
+  <div class="review-stat"><strong>{{.PartialObjects}}</strong><span>inconsistent presence</span></div>
   <div class="review-stat"><strong>{{.TotalNodes}}</strong><span>dumped nodes</span></div>
 </div>
 
@@ -43,11 +43,11 @@
         <td><a href="{{.DatabaseHref}}">{{.Database}}</a></td>
         <td>{{.KindLabel}}</td>
         <td><a href="{{.ObjectHref}}">{{.Name}}</a></td>
-        <td>{{.PresentNodes}} / {{.TotalNodes}}</td>
+        <td>{{.PresentNodes}} / {{.ExpectedNodes}} nodes in {{.PresentClusters}} cluster{{if ne .PresentClusters 1}}s{{end}}</td>
         <td><span class="schema-marker schema-{{.MarkerClass}}">{{.Status}}</span></td>
         <td class="review-cell">
           <details class="variant-review"{{if .Different}} open{{end}}>
-            <summary>{{len .Variants}} schema variant{{if ne (len .Variants) 1}}s{{end}}{{if .Partial}} · absent from {{len .MissingNodes}} node{{if ne (len .MissingNodes) 1}}s{{end}}{{end}}</summary>
+            <summary>{{len .Variants}} schema variant{{if ne (len .Variants) 1}}s{{end}}{{if .Partial}} · incomplete in {{.PartialClusters}} cluster{{if ne .PartialClusters 1}}s{{end}}{{end}}</summary>
             <div class="variant-groups">
               {{range .Variants}}
               <section class="variant-group">
@@ -60,7 +60,7 @@
               {{end}}
             </div>
             {{if .MissingNodes}}
-            <div class="missing-nodes"><strong>Not present:</strong>
+            <div class="missing-nodes"><strong>Missing within clusters where present:</strong>
               {{range .MissingNodes}}<a href="{{.NodeHref}}">{{.Cluster}} / {{.Node}}</a>{{end}}
             </div>
             {{end}}

@@ -213,21 +213,23 @@ type dumpObjectReview struct {
 }
 
 type dumpObjectReviewView struct {
-	Database     string
-	DatabaseHref string
-	Kind         string
-	KindLabel    string
-	Name         string
-	ObjectHref   string
-	PresentNodes int
-	TotalNodes   int
-	MissingNodes []dumpMissingNodeView
-	Variants     []dumpSchemaVariantView
-	Status       string
-	MarkerClass  string
-	Different    bool
-	Partial      bool
-	searchText   string
+	Database        string
+	DatabaseHref    string
+	Kind            string
+	KindLabel       string
+	Name            string
+	ObjectHref      string
+	PresentNodes    int
+	ExpectedNodes   int
+	PresentClusters int
+	PartialClusters int
+	MissingNodes    []dumpMissingNodeView
+	Variants        []dumpSchemaVariantView
+	Status          string
+	MarkerClass     string
+	Different       bool
+	Partial         bool
+	searchText      string
 }
 
 type dumpSchemaVariantView struct {
@@ -243,15 +245,19 @@ type dumpMissingNodeView struct {
 }
 
 // objectReview returns the union of browsable objects in the dump, grouped by
-// object-scoped semantic equivalence under the active diff options. Absence is
-// reported as deployment context but is not schema drift: different node roles
-// legitimately contain different object sets, matching objectPresence's
-// existing semantics.
+// object-scoped semantic equivalence under the active diff options. Presence is
+// evaluated independently within each cluster: a cluster may contain the object
+// on every loaded node or on none of them, but a mix is reported for review.
+// Schema variants are still compared across every node containing the object.
 func (ctx *dumpWebContext) objectReview(options hclload.DiffOptions) dumpObjectReview {
 	ctx.mu.RLock()
 	defer ctx.mu.RUnlock()
 
 	review := dumpObjectReview{TotalNodes: len(ctx.nodes)}
+	clusterSizes := map[string]int{}
+	for _, node := range ctx.nodes {
+		clusterSizes[node.Cluster]++
+	}
 	keys := map[string]bool{}
 	for _, objects := range ctx.byServer {
 		for key := range objects {
@@ -261,10 +267,34 @@ func (ctx *dumpWebContext) objectReview(options hclload.DiffOptions) dumpObjectR
 
 	for key := range keys {
 		var snapshots []dumpObjectSnapshot
-		var missing []dumpMissingNodeView
-		for base, node := range ctx.nodes {
+		for base := range ctx.nodes {
 			if snapshot, ok := ctx.byServer[base][key]; ok {
 				snapshots = append(snapshots, snapshot)
+			}
+		}
+		if len(snapshots) == 0 {
+			continue
+		}
+		sortObjectSnapshots(snapshots)
+
+		presentByCluster := map[string]int{}
+		for _, snapshot := range snapshots {
+			presentByCluster[snapshot.Node.Cluster]++
+		}
+		expectedNodes := 0
+		partialClusters := 0
+		for cluster, present := range presentByCluster {
+			expectedNodes += clusterSizes[cluster]
+			if present < clusterSizes[cluster] {
+				partialClusters++
+			}
+		}
+		var missing []dumpMissingNodeView
+		for base, node := range ctx.nodes {
+			if presentByCluster[node.Cluster] == 0 {
+				continue
+			}
+			if _, ok := ctx.byServer[base][key]; ok {
 				continue
 			}
 			missing = append(missing, dumpMissingNodeView{
@@ -273,10 +303,6 @@ func (ctx *dumpWebContext) objectReview(options hclload.DiffOptions) dumpObjectR
 				NodeHref: base + "/",
 			})
 		}
-		if len(snapshots) == 0 {
-			continue
-		}
-		sortObjectSnapshots(snapshots)
 		sort.Slice(missing, func(i, j int) bool {
 			if missing[i].Cluster != missing[j].Cluster {
 				return missing[i].Cluster < missing[j].Cluster
@@ -301,18 +327,20 @@ func (ctx *dumpWebContext) objectReview(options hclload.DiffOptions) dumpObjectR
 
 		first := snapshots[0]
 		view := dumpObjectReviewView{
-			Database:     first.Database,
-			DatabaseHref: first.DatabaseHref,
-			Kind:         first.Kind,
-			KindLabel:    kindLabel(first.Kind),
-			Name:         first.Object,
-			ObjectHref:   first.ObjectHref,
-			PresentNodes: len(snapshots),
-			TotalNodes:   review.TotalNodes,
-			MissingNodes: missing,
-			Status:       "uniform",
-			MarkerClass:  "same",
-			Partial:      len(missing) > 0,
+			Database:        first.Database,
+			DatabaseHref:    first.DatabaseHref,
+			Kind:            first.Kind,
+			KindLabel:       kindLabel(first.Kind),
+			Name:            first.Object,
+			ObjectHref:      first.ObjectHref,
+			PresentNodes:    len(snapshots),
+			ExpectedNodes:   expectedNodes,
+			PresentClusters: len(presentByCluster),
+			PartialClusters: partialClusters,
+			MissingNodes:    missing,
+			Status:          "uniform",
+			MarkerClass:     "same",
+			Partial:         partialClusters > 0,
 		}
 		baseline := groups[0][0]
 		for i, group := range groups {

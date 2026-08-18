@@ -235,11 +235,21 @@ database "posthog" {
 `
 }
 
-func objectSummaryDump(node, cluster, uuid, eventType string, includePartial bool) string {
+func objectSummaryDump(node, cluster, uuid, eventType string, includePartial, includeClusterLocal bool) string {
 	partial := ""
 	if includePartial {
 		partial = `
   table "partial" {
+    engine "merge_tree" {}
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+  }
+`
+	}
+	clusterLocal := ""
+	if includeClusterLocal {
+		clusterLocal = `
+  table "cluster_local" {
     engine "merge_tree" {}
     order_by = ["id"]
     column "id" { type = "UInt64" }
@@ -263,7 +273,7 @@ database "posthog" {
     order_by = ["id"]
     column "id" { type = "UInt64" }
   }
-` + partial + `
+` + clusterLocal + partial + `
   view "events_view" {
     query = "SELECT id FROM posthog.events"
   }
@@ -274,11 +284,11 @@ database "posthog" {
 func TestWebDump_ObjectDiffSummary(t *testing.T) {
 	root := t.TempDir()
 	writeFileT(t, filepath.Join(root, "node-a.hcl"), objectSummaryDump(
-		"node-a", "cluster-a", "11111111-1111-1111-1111-111111111111", "UInt64", true))
+		"node-a", "cluster-a", "11111111-1111-1111-1111-111111111111", "UInt64", true, true))
 	writeFileT(t, filepath.Join(root, "node-b.hcl"), objectSummaryDump(
-		"node-b", "cluster-a", "22222222-2222-2222-2222-222222222222", "UInt64", false))
+		"node-b", "cluster-a", "22222222-2222-2222-2222-222222222222", "UInt64", false, true))
 	writeFileT(t, filepath.Join(root, "node-c.hcl"), objectSummaryDump(
-		"node-c", "cluster-b", "33333333-3333-3333-3333-333333333333", "String", false))
+		"node-c", "cluster-b", "33333333-3333-3333-3333-333333333333", "String", false, false))
 
 	ms, err := buildDumpMultiServer(root, "*", time.Second)
 	require.NoError(t, err)
@@ -290,31 +300,50 @@ func TestWebDump_ObjectDiffSummary(t *testing.T) {
 	code, body = getMulti(t, ms, "/object-diffs")
 	require.Equal(t, http.StatusOK, code)
 	assert.Contains(t, body, "Objects across dumped nodes")
-	assert.Contains(t, body, `<strong>4</strong><span>objects</span>`)
+	assert.Contains(t, body, `<strong>5</strong><span>objects</span>`)
 	assert.Contains(t, body, `<strong>1</strong><span>different</span>`)
-	assert.Contains(t, body, `<strong>3</strong><span>uniform</span>`)
-	assert.Contains(t, body, `<strong>1</strong><span>partial presence</span>`)
+	assert.Contains(t, body, `<strong>4</strong><span>uniform</span>`)
+	assert.Contains(t, body, `<strong>1</strong><span>inconsistent presence</span>`)
 	assert.Contains(t, body, `<strong>3</strong><span>dumped nodes</span>`)
 	assert.Contains(t, body, `2 schema variants`)
 	assert.Contains(t, body, `Schema 1 · baseline <span class="count">2</span>`,
 		"UUID-only differences are grouped into one schema variant")
 	assert.Contains(t, body, `Schema 2 <span class="count">1</span>`)
-	assert.Contains(t, body, `absent from 2 nodes`)
-	assert.Contains(t, body, `href="/n/node-b/">cluster-a / node-b</a>`)
-	assert.Contains(t, body, `href="/n/node-c/">cluster-b / node-c</a>`)
+	assert.Contains(t, body, `incomplete in 1 cluster`)
+	partialStart := strings.Index(body, `href="/n/node-a/db/posthog/table/partial">partial</a>`)
+	require.NotEqual(t, -1, partialStart)
+	partialEnd := strings.Index(body[partialStart:], "</tr>")
+	require.NotEqual(t, -1, partialEnd)
+	partialRow := body[partialStart : partialStart+partialEnd]
+	assert.Contains(t, partialRow, `1 / 2 nodes in 1 cluster`)
+	assert.Contains(t, partialRow, `href="/n/node-b/">cluster-a / node-b</a>`)
+	assert.NotContains(t, partialRow, "cluster-b / node-c",
+		"a cluster where the object is wholly absent must not contribute a missing node")
+
+	clusterLocalStart := strings.Index(body, `href="/n/node-a/db/posthog/table/cluster_local">cluster_local</a>`)
+	require.NotEqual(t, -1, clusterLocalStart)
+	clusterLocalEnd := strings.Index(body[clusterLocalStart:], "</tr>")
+	require.NotEqual(t, -1, clusterLocalEnd)
+	clusterLocalRow := body[clusterLocalStart : clusterLocalStart+clusterLocalEnd]
+	assert.Contains(t, clusterLocalRow, `2 / 2 nodes in 1 cluster`)
+	assert.NotContains(t, clusterLocalRow, "incomplete",
+		"whole-cluster absence is valid and must not be flagged")
 
 	compareHref := objectCompareHref(nodeBasePath("node-a"), "node-c", "posthog", "table", "events")
 	assert.Contains(t, body, strings.ReplaceAll(compareHref, "&", "&amp;"))
 	assert.Contains(t, body, "Compare with schema 1")
 
 	commonPos := strings.Index(body, `href="/n/node-a/db/posthog/table/common">common</a>`)
+	clusterLocalPos := strings.Index(body, `href="/n/node-a/db/posthog/table/cluster_local">cluster_local</a>`)
 	eventsPos := strings.Index(body, `href="/n/node-a/db/posthog/table/events">events</a>`)
 	partialPos := strings.Index(body, `href="/n/node-a/db/posthog/table/partial">partial</a>`)
 	viewPos := strings.Index(body, `href="/n/node-a/db/posthog/view/events_view">events_view</a>`)
 	require.NotEqual(t, -1, commonPos)
+	require.NotEqual(t, -1, clusterLocalPos)
 	require.NotEqual(t, -1, eventsPos)
 	require.NotEqual(t, -1, partialPos)
 	require.NotEqual(t, -1, viewPos)
+	assert.Less(t, clusterLocalPos, commonPos)
 	assert.Less(t, commonPos, eventsPos)
 	assert.Less(t, eventsPos, partialPos)
 	assert.Less(t, partialPos, viewPos)
@@ -323,14 +352,16 @@ func TestWebDump_ObjectDiffSummary(t *testing.T) {
 	require.Equal(t, http.StatusOK, code)
 	assert.Contains(t, body, `>events</a>`)
 	assert.NotContains(t, body, `>common</a>`)
+	assert.NotContains(t, body, `>cluster_local</a>`)
 	assert.NotContains(t, body, `>partial</a>`)
 	assert.NotContains(t, body, `>events_view</a>`)
-	assert.Contains(t, body, "Showing 1 of 4 objects")
+	assert.Contains(t, body, "Showing 1 of 5 objects")
 
 	code, body = getMulti(t, ms, "/object-diffs?status=partial")
 	require.Equal(t, http.StatusOK, code)
 	assert.Contains(t, body, `>partial</a>`)
 	assert.NotContains(t, body, `>events</a>`)
+	assert.NotContains(t, body, `>cluster_local</a>`)
 
 	code, body = getMulti(t, ms, "/object-diffs?q=EVENTS_VIEW")
 	require.Equal(t, http.StatusOK, code)
@@ -342,7 +373,7 @@ func TestWebDump_ObjectDiffSummary(t *testing.T) {
 	// variants, just like an individual object's Across dumped nodes section.
 	nodeBFile := filepath.Join(root, "node-b.hcl")
 	require.NoError(t, os.WriteFile(nodeBFile, []byte(objectSummaryDump(
-		"node-b", "cluster-a", "22222222-2222-2222-2222-222222222222", "String", false)), 0o600))
+		"node-b", "cluster-a", "22222222-2222-2222-2222-222222222222", "String", false, true)), 0o600))
 	nodeB := ms.servers[nodeBasePath("node-b")]
 	future := nodeB.lastCheck.Add(time.Hour)
 	nodeB.now = func() time.Time { return future }
