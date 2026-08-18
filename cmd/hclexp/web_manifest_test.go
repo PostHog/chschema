@@ -85,6 +85,9 @@ func TestWebManifest_BrowseSchemas(t *testing.T) {
 	assert.Contains(t, body, "prod-eu")
 	assert.Contains(t, body, `href="/s/prod-us/ops/"`)
 	assert.Contains(t, body, `href="/s/prod-us/data/"`)
+	assert.NotContains(t, body, "Review object differences", "the aggregate review is dump-only")
+	code, _ = getMulti(t, ms, "/object-diffs")
+	assert.Equal(t, http.StatusNotFound, code)
 
 	// Each schema browses its own objects under its prefix.
 	code, body = getMulti(t, ms, "/s/prod-us/ops/")
@@ -190,6 +193,126 @@ database "posthog" {
   }
 }
 `
+}
+
+func objectSummaryDump(node, cluster, uuid, eventType string, includePartial bool) string {
+	partial := ""
+	if includePartial {
+		partial = `
+  table "partial" {
+    engine "merge_tree" {}
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+  }
+`
+	}
+	return `node "` + node + `" {
+  macros = { cluster = "` + cluster + `" }
+}
+database "posthog" {
+  table "events" {
+    engine "replicated_merge_tree" {
+      zoo_path     = "/clickhouse/tables/` + uuid + `/events"
+      replica_name = "{replica}"
+    }
+    order_by = ["id"]
+    column "id" { type = "` + eventType + `" }
+  }
+  table "common" {
+    engine "merge_tree" {}
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+  }
+` + partial + `
+  view "events_view" {
+    query = "SELECT id FROM posthog.events"
+  }
+}
+`
+}
+
+func TestWebDump_ObjectDiffSummary(t *testing.T) {
+	root := t.TempDir()
+	writeFileT(t, filepath.Join(root, "node-a.hcl"), objectSummaryDump(
+		"node-a", "cluster-a", "11111111-1111-1111-1111-111111111111", "UInt64", true))
+	writeFileT(t, filepath.Join(root, "node-b.hcl"), objectSummaryDump(
+		"node-b", "cluster-a", "22222222-2222-2222-2222-222222222222", "UInt64", false))
+	writeFileT(t, filepath.Join(root, "node-c.hcl"), objectSummaryDump(
+		"node-c", "cluster-b", "33333333-3333-3333-3333-333333333333", "String", false))
+
+	ms, err := buildDumpMultiServer(root, "*", time.Second)
+	require.NoError(t, err)
+
+	code, body := getMulti(t, ms, "/")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `href="/object-diffs">Review object differences</a>`)
+
+	code, body = getMulti(t, ms, "/object-diffs")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "Objects across dumped nodes")
+	assert.Contains(t, body, `<strong>4</strong><span>objects</span>`)
+	assert.Contains(t, body, `<strong>1</strong><span>different</span>`)
+	assert.Contains(t, body, `<strong>3</strong><span>uniform</span>`)
+	assert.Contains(t, body, `<strong>1</strong><span>partial presence</span>`)
+	assert.Contains(t, body, `<strong>3</strong><span>dumped nodes</span>`)
+	assert.Contains(t, body, `2 schema variants`)
+	assert.Contains(t, body, `Schema 1 · baseline <span class="count">2</span>`,
+		"UUID-only differences are grouped into one schema variant")
+	assert.Contains(t, body, `Schema 2 <span class="count">1</span>`)
+	assert.Contains(t, body, `absent from 2 nodes`)
+	assert.Contains(t, body, `href="/n/node-b/">cluster-a / node-b</a>`)
+	assert.Contains(t, body, `href="/n/node-c/">cluster-b / node-c</a>`)
+
+	compareHref := objectCompareHref(nodeBasePath("node-a"), "node-c", "posthog", "table", "events")
+	assert.Contains(t, body, strings.ReplaceAll(compareHref, "&", "&amp;"))
+	assert.Contains(t, body, "Compare with schema 1")
+
+	commonPos := strings.Index(body, `href="/n/node-a/db/posthog/table/common">common</a>`)
+	eventsPos := strings.Index(body, `href="/n/node-a/db/posthog/table/events">events</a>`)
+	partialPos := strings.Index(body, `href="/n/node-a/db/posthog/table/partial">partial</a>`)
+	viewPos := strings.Index(body, `href="/n/node-a/db/posthog/view/events_view">events_view</a>`)
+	require.NotEqual(t, -1, commonPos)
+	require.NotEqual(t, -1, eventsPos)
+	require.NotEqual(t, -1, partialPos)
+	require.NotEqual(t, -1, viewPos)
+	assert.Less(t, commonPos, eventsPos)
+	assert.Less(t, eventsPos, partialPos)
+	assert.Less(t, partialPos, viewPos)
+
+	code, body = getMulti(t, ms, "/object-diffs?status=different")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `>events</a>`)
+	assert.NotContains(t, body, `>common</a>`)
+	assert.NotContains(t, body, `>partial</a>`)
+	assert.NotContains(t, body, `>events_view</a>`)
+	assert.Contains(t, body, "Showing 1 of 4 objects")
+
+	code, body = getMulti(t, ms, "/object-diffs?status=partial")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `>partial</a>`)
+	assert.NotContains(t, body, `>events</a>`)
+
+	code, body = getMulti(t, ms, "/object-diffs?q=EVENTS_VIEW")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `value="EVENTS_VIEW"`)
+	assert.Contains(t, body, `>events_view</a>`)
+	assert.NotContains(t, body, `>events</a>`)
+
+	// Opening the aggregate review refreshes every mounted dump before grouping
+	// variants, just like an individual object's Across dumped nodes section.
+	nodeBFile := filepath.Join(root, "node-b.hcl")
+	require.NoError(t, os.WriteFile(nodeBFile, []byte(objectSummaryDump(
+		"node-b", "cluster-a", "22222222-2222-2222-2222-222222222222", "String", false)), 0o600))
+	nodeB := ms.servers[nodeBasePath("node-b")]
+	future := nodeB.lastCheck.Add(time.Hour)
+	nodeB.now = func() time.Time { return future }
+	require.NoError(t, os.Chtimes(nodeBFile, future, future))
+
+	code, body = getMulti(t, ms, "/object-diffs?status=different")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `Schema 1 · baseline <span class="count">1</span>`)
+	assert.Contains(t, body, `Schema 2 <span class="count">2</span>`,
+		"the summary uses reloaded peer signatures without visiting that node first")
 }
 
 func TestWebDump_ObjectPresenceSchemaMarkersAndDiff(t *testing.T) {
@@ -383,6 +506,18 @@ func TestWebDump_ObjectPresenceCoversEveryBrowsableKind(t *testing.T) {
 		{"dictionary", "user_dict"},
 		{"raw", "legacy_raw"},
 	}
+	review := ctx.objectReview()
+	require.Equal(t, len(objects), review.TotalObjects)
+	assert.Equal(t, 1, review.DifferentObjects)
+	assert.Equal(t, len(objects)-1, review.UniformObjects)
+	reviewed := make(map[string]string, len(review.Objects))
+	for _, object := range review.Objects {
+		reviewed[object.Kind] = object.Name
+	}
+	for _, object := range objects {
+		assert.Equal(t, object.name, reviewed[object.kind], "aggregate review must include %s", object.kind)
+	}
+
 	for _, object := range objects {
 		t.Run(object.kind, func(t *testing.T) {
 			code, body := getBody(t, baseline, "/db/analytics/"+object.kind+"/"+object.name)

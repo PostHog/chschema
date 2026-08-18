@@ -20,7 +20,7 @@ import (
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
 
-//go:embed web/layout.html web/index.html web/object.html web/flows.html web/schemas.html web/lookup.html web/compare.html web/static/*
+//go:embed web/layout.html web/index.html web/object.html web/flows.html web/schemas.html web/lookup.html web/compare.html web/object_diffs.html web/static/*
 var webFS embed.FS
 
 // runWeb loads an HCL config (single file or layers), resolves it, and serves a
