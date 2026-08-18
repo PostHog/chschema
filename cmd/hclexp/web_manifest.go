@@ -104,13 +104,15 @@ type dumpObjectFilterView struct {
 }
 
 type dumpObjectReviewData struct {
-	Title   string
-	Base    string
-	Label   string
-	Query   string
-	Status  string
-	Showing int
-	Filters []dumpObjectFilterView
+	Title             string
+	Base              string
+	Label             string
+	Query             string
+	Status            string
+	Showing           int
+	Filters           []dumpObjectFilterView
+	IgnoreColumnOrder bool
+	SettingsReturn    string
 	dumpObjectReview
 }
 
@@ -229,6 +231,14 @@ func buildMultiServer(comps []composition, layerRoot string, reloadInterval time
 // node under /n/<node>/. Nodes are grouped on the list page by their cluster
 // macro, falling back to hostClusterRole when old dumps have no cluster macro.
 func buildDumpMultiServer(dir, glob string, reloadInterval time.Duration) (*multiServer, error) {
+	return buildDumpMultiServerWithOptions(dir, glob, reloadInterval, hclload.DiffOptions{})
+}
+
+func buildDumpMultiServerWithOptions(
+	dir, glob string,
+	reloadInterval time.Duration,
+	options hclload.DiffOptions,
+) (*multiServer, error) {
 	nodes, err := loadDriftNodes(dir, glob)
 	if err != nil {
 		return nil, err
@@ -248,6 +258,7 @@ func buildDumpMultiServer(dir, glob string, reloadInterval time.Duration) (*mult
 
 	groups := map[string]*envGroup{}
 	dumpContext := newDumpWebContext(dumpClusterAliases(mappings))
+	dumpContext.defaultDiffOptions = options
 	ms.dumpContext = dumpContext
 	var groupOrder []string
 	for _, node := range nodes {
@@ -337,7 +348,8 @@ func (ms *multiServer) handleObjectDiffs(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	ms.dumpContext.maybeReloadAll()
-	review := ms.dumpContext.objectReview()
+	options := ms.dumpContext.diffOptions(r)
+	review := ms.dumpContext.objectReview(options)
 	rawQuery := strings.TrimSpace(r.URL.Query().Get("q"))
 	query := strings.ToLower(rawQuery)
 	status := r.URL.Query().Get("status")
@@ -370,11 +382,13 @@ func (ms *multiServer) handleObjectDiffs(w http.ResponseWriter, r *http.Request)
 	}
 
 	data := dumpObjectReviewData{
-		Title:            "Object diff summary",
-		Query:            rawQuery,
-		Status:           status,
-		Showing:          len(objects),
-		dumpObjectReview: review,
+		Title:             "Object diff summary",
+		Query:             rawQuery,
+		Status:            status,
+		Showing:           len(objects),
+		IgnoreColumnOrder: options.IgnoreColumnOrder,
+		SettingsReturn:    r.URL.RequestURI(),
+		dumpObjectReview:  review,
 	}
 	data.Objects = objects
 	data.Filters = []dumpObjectFilterView{
@@ -387,6 +401,67 @@ func (ms *multiServer) handleObjectDiffs(w http.ResponseWriter, r *http.Request)
 		slog.Error("render object diff summary", "err", err)
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
+}
+
+func (ms *multiServer) handleComparisonSettings(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/comparison-settings" || ms.dumpContext == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.Header().Set("Allow", http.MethodPost)
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid settings", http.StatusBadRequest)
+		return
+	}
+	value := "0"
+	if r.FormValue("ignore_column_order") == "1" {
+		value = "1"
+	}
+	// This cookie is a non-sensitive boolean display/comparison preference,
+	// not an authentication token. hclexp web serves plain HTTP by default, so
+	// Secure cannot be unconditional without disabling the setting; when the
+	// handler is served over TLS, protect it automatically.
+	http.SetCookie(w, &http.Cookie{
+		Name:     columnOrderCookie,
+		Value:    value,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
+	})
+	http.Redirect(w, r, ms.comparisonSettingsReturn(r.FormValue("return")), http.StatusSeeOther)
+}
+
+// comparisonSettingsReturn accepts only destinations emitted by the two
+// settings forms. Backslashes are normalized before parsing because browsers
+// may treat them as forward slashes; without that step, `/\attacker.example`
+// can look local to net/url but become a scheme-relative external redirect in
+// a browser. The returned URL is reconstructed from the parsed local path and
+// query rather than returning the form value verbatim.
+func (ms *multiServer) comparisonSettingsReturn(raw string) string {
+	target := strings.ReplaceAll(raw, "\\", "/")
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.IsAbs() || parsed.Hostname() != "" ||
+		!strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
+		return "/object-diffs"
+	}
+	allowed := parsed.Path == "/object-diffs"
+	if !allowed {
+		for base := range ms.servers {
+			if parsed.Path == base+"/compare" {
+				allowed = true
+				break
+			}
+		}
+	}
+	if !allowed {
+		return "/object-diffs"
+	}
+	return (&url.URL{Path: parsed.Path, RawQuery: parsed.Query().Encode()}).String()
 }
 
 // handleLookup searches every mounted schema and reports which composition or
@@ -422,6 +497,7 @@ func (ms *multiServer) handler() http.Handler {
 	mux.HandleFunc("/", ms.handleSchemas)
 	mux.HandleFunc("/lookup", ms.handleLookup)
 	mux.HandleFunc("/object-diffs", ms.handleObjectDiffs)
+	mux.HandleFunc("/comparison-settings", ms.handleComparisonSettings)
 	mux.HandleFunc("/flows", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 	})
@@ -454,8 +530,8 @@ func runWebManifest(manifestPath, env, layerRoot, addr string, reloadInterval ti
 }
 
 // runWebDump serves one independently browsable schema per selected node dump.
-func runWebDump(dir, glob, addr string, reloadInterval time.Duration) {
-	ms, err := buildDumpMultiServer(dir, glob, reloadInterval)
+func runWebDump(dir, glob, addr string, reloadInterval time.Duration, options hclload.DiffOptions) {
+	ms, err := buildDumpMultiServerWithOptions(dir, glob, reloadInterval, options)
 	if err != nil {
 		slog.Error("failed to build dump browser", "dir", dir, "err", err)
 		os.Exit(1)

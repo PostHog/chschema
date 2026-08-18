@@ -8,6 +8,13 @@
   </div>
 </div>
 
+<form class="comparison-settings" action="/comparison-settings" method="post">
+  <input type="hidden" name="return" value="{{.SettingsReturn}}">
+  <label><input type="checkbox" name="ignore_column_order" value="1"{{if .IgnoreColumnOrder}} checked{{end}}> Ignore column order</label>
+  <button type="submit">Apply to session</button>
+  <span class="muted">Uses the same semantic policy across all dump comparisons and generated patches in this browser session.</span>
+</form>
+
 <div class="compare-sides" aria-label="Compared schemas">
   <section class="compare-side baseline">
     <span class="compare-role">Baseline</span>
@@ -23,7 +30,7 @@
 </div>
 
 {{if .Same}}
-<p class="comparison-same">The canonical HCL definitions are identical.</p>
+<p class="comparison-same">No semantic differences under the current comparison settings.</p>
 {{else}}
 <p class="muted diff-legend"><span class="legend-delete">− baseline only</span><span class="legend-add">+ compared node only</span></p>
 <pre class="schema-diff" aria-label="Unified HCL schema diff">{{range .Lines}}<span class="diff-line {{.Class}}">{{.Text}}</span>{{end}}</pre>

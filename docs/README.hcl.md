@@ -1157,7 +1157,7 @@ so its DROP+CREATE is the destructive one.
 | `column:<name>` | table |
 | `index:<name>`, `projection:<name>`, `constraint:<name>` | table |
 | `setting:<name>` | table |
-| `engine`, `order_by`, `primary_key`, `partition_by`, `sample_by`, `ttl` | table |
+| `engine`, `column_order`, `order_by`, `primary_key`, `partition_by`, `sample_by`, `ttl` | table |
 | `comment` | table, view, named collection |
 | `query` | view, materialized view |
 | `to_table`, `columns` | materialized view (either forces a recreate) |
@@ -1168,8 +1168,8 @@ so its DROP+CREATE is the destructive one.
 | `source.<secret>` (`source.password`, `source.credentials_password`) | dictionary — a credential hclexp could not verify |
 
 How values render: a column as a compact descriptor (`Nullable(String) MATERIALIZED
-upper(s) CODEC(LZ4)`), an engine as its SQL clause, `order_by`/`primary_key`
-comma-joined. A rename is reported on the **new** name (`column:<new>`, with `old`
+upper(s) CODEC(LZ4)`), an engine as its SQL clause, and `column_order`/
+`order_by`/`primary_key` comma-joined. A rename is reported on the **new** name (`column:<new>`, with `old`
 = the previous name). Two cases carry no per-field values, because the diff holds
 none: a dictionary reconciles via `CREATE OR REPLACE`, so it emits one `modify`
 per changed config path; and a named-collection `param:` set is always `modify`

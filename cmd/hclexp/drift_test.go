@@ -32,6 +32,31 @@ func TestParseNodeIdentity(t *testing.T) {
 	}
 }
 
+func TestBuildDriftDoc_ColumnOrderPolicy(t *testing.T) {
+	schema := func(names ...string) *hclload.Schema {
+		columns := make([]hclload.ColumnSpec, 0, len(names))
+		for _, name := range names {
+			columns = append(columns, hclload.ColumnSpec{Name: name, Type: "UInt8"})
+		}
+		return &hclload.Schema{Databases: []hclload.DatabaseSpec{{
+			Name: "posthog",
+			Tables: []hclload.TableSpec{{
+				Name:    "events",
+				Columns: columns,
+				Engine:  &hclload.EngineSpec{Kind: "merge_tree", Decoded: hclload.EngineMergeTree{}},
+			}},
+		}}}
+	}
+	nodes := []driftNode{
+		{Name: "node-a", Role: "data", Schema: schema("a", "b")},
+		{Name: "node-b", Role: "data", Schema: schema("b", "a")},
+	}
+
+	assert.Equal(t, 1, buildDriftDoc(nodes, []string{"role"}).Summary.DriftingNodes)
+	ignored := buildDriftDocWithOptions(nodes, []string{"role"}, hclload.DiffOptions{IgnoreColumnOrder: true})
+	assert.Zero(t, ignored.Summary.DriftingNodes)
+}
+
 func TestGroupKey(t *testing.T) {
 	n := driftNode{
 		Macros:  map[string]string{"hostClusterRole": "data", "hostClusterType": "online"},

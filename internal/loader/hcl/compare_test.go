@@ -195,6 +195,7 @@ func TestFieldChangesForMaterializedView(t *testing.T) {
 			Columns: []ColumnSpec{{Name: "a", Type: "UInt8"}}},
 		&MaterializedViewSpec{Name: "mv", ToTable: "t_new", Query: "SELECT 1",
 			Columns: []ColumnSpec{{Name: "b", Type: "UInt8"}}},
+		DiffOptions{},
 	)
 	assert.True(t, mvd.Recreate)
 	assert.Equal(t, []FieldChange{
@@ -206,6 +207,7 @@ func TestFieldChangesForMaterializedView(t *testing.T) {
 	mvd = diffMaterializedView(
 		&MaterializedViewSpec{Name: "mv", ToTable: "t", Query: "SELECT 1"},
 		&MaterializedViewSpec{Name: "mv", ToTable: "t", Query: "SELECT 2"},
+		DiffOptions{},
 	)
 	assert.False(t, mvd.Recreate)
 	assert.Equal(t, []FieldChange{

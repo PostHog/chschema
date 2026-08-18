@@ -137,6 +137,90 @@ func TestDiff_AddDropColumns(t *testing.T) {
 	assert.Equal(t, expected, cs)
 }
 
+func TestDiff_ColumnOrderPolicy(t *testing.T) {
+	from := &Schema{Databases: []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{},
+		ColumnSpec{Name: "a", Type: "UInt8"},
+		ColumnSpec{Name: "b", Type: "UInt8"},
+		ColumnSpec{Name: "c", Type: "UInt8"},
+	))}}
+	to := &Schema{Databases: []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{},
+		ColumnSpec{Name: "b", Type: "UInt8"},
+		ColumnSpec{Name: "a", Type: "UInt8"},
+		ColumnSpec{Name: "c", Type: "UInt8"},
+	))}}
+
+	cs := Diff(from, to)
+	require.Len(t, cs.Databases, 1)
+	require.Len(t, cs.Databases[0].AlterTables, 1)
+	td := cs.Databases[0].AlterTables[0]
+	assert.Equal(t, &OrderByChange{
+		Old: []string{"a", "b", "c"},
+		New: []string{"b", "a", "c"},
+	}, td.ColumnOrderChange)
+	assert.True(t, td.IsUnsafe(), "existing-column reordering requires explicit operator-reviewed SQL")
+	generated := GenerateSQL(cs)
+	assert.Empty(t, generated.Statements)
+	require.Len(t, generated.Unsafe, 1)
+	assert.Contains(t, generated.Unsafe[0].Reason, "MODIFY COLUMN ... FIRST/AFTER")
+	comparisons := BuildObjectComparisons(cs, generated, from, to)
+	require.Len(t, comparisons, 1)
+	assert.Contains(t, comparisons[0].Changes, FieldChange{
+		Field: "column_order", Change: "modify", Old: "a, b, c", New: "b, a, c",
+	})
+	assert.True(t, DiffWithOptions(from, to, DiffOptions{IgnoreColumnOrder: true}).IsEmpty())
+}
+
+func TestDiff_AddColumnsCarryTargetPosition(t *testing.T) {
+	from := &Schema{Databases: []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{},
+		ColumnSpec{Name: "a", Type: "UInt8"},
+		ColumnSpec{Name: "d", Type: "UInt8"},
+	))}}
+	to := &Schema{Databases: []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{},
+		ColumnSpec{Name: "first", Type: "UInt8"},
+		ColumnSpec{Name: "a", Type: "UInt8"},
+		ColumnSpec{Name: "b", Type: "UInt8"},
+		ColumnSpec{Name: "c", Type: "UInt8"},
+		ColumnSpec{Name: "d", Type: "UInt8"},
+		ColumnSpec{Name: "z", Type: "UInt8"},
+	))}}
+
+	td := Diff(from, to).Databases[0].AlterTables[0]
+	require.Len(t, td.AddColumns, 4)
+	assert.Equal(t, "first", td.AddColumns[0].Name)
+	assert.True(t, td.AddColumns[0].First)
+	assert.Equal(t, "b", td.AddColumns[1].Name)
+	assert.Equal(t, "a", *td.AddColumns[1].After)
+	assert.Equal(t, "c", td.AddColumns[2].Name)
+	assert.Equal(t, "b", *td.AddColumns[2].After)
+	assert.Equal(t, "z", td.AddColumns[3].Name)
+	assert.Nil(t, td.AddColumns[3].After, "a suffix addition naturally appends in target order")
+	assert.False(t, td.AddColumns[3].First)
+	assert.Nil(t, td.ColumnOrderChange, "new-column placement is not a reorder of existing columns")
+	assert.Equal(t, []string{
+		"ALTER TABLE posthog.events ADD COLUMN first UInt8 FIRST, ADD COLUMN b UInt8 AFTER a, ADD COLUMN c UInt8 AFTER b, ADD COLUMN z UInt8",
+	}, GenerateSQL(Diff(from, to)).Statements)
+
+	ignored := DiffWithOptions(from, to, DiffOptions{IgnoreColumnOrder: true}).Databases[0].AlterTables[0]
+	for _, column := range ignored.AddColumns {
+		assert.Nil(t, column.After)
+		assert.False(t, column.First)
+	}
+}
+
+func TestDiff_MaterializedViewColumnOrderPolicy(t *testing.T) {
+	from := &Schema{Databases: []DatabaseSpec{{Name: "posthog", MaterializedViews: []MaterializedViewSpec{{
+		Name: "mv", ToTable: "events", Query: "SELECT a, b FROM source",
+		Columns: []ColumnSpec{{Name: "a", Type: "UInt8"}, {Name: "b", Type: "UInt8"}},
+	}}}}}
+	to := &Schema{Databases: []DatabaseSpec{{Name: "posthog", MaterializedViews: []MaterializedViewSpec{{
+		Name: "mv", ToTable: "events", Query: "SELECT a, b FROM source",
+		Columns: []ColumnSpec{{Name: "b", Type: "UInt8"}, {Name: "a", Type: "UInt8"}},
+	}}}}}
+
+	assert.False(t, Diff(from, to).IsEmpty())
+	assert.True(t, DiffWithOptions(from, to, DiffOptions{IgnoreColumnOrder: true}).IsEmpty())
+}
+
 func TestDiff_ModifyColumnType(t *testing.T) {
 	from := []DatabaseSpec{mkDB("posthog", mkTable("events", EngineMergeTree{},
 		ColumnSpec{Name: "id", Type: "UUID"},
