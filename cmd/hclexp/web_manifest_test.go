@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/tls"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -59,6 +60,35 @@ func getMultiWithCookie(t *testing.T, ms *multiServer, target string, cookie *ht
 	rec := httptest.NewRecorder()
 	ms.handler().ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String()
+}
+
+func TestComparisonSettingsReturn(t *testing.T) {
+	ms := &multiServer{servers: map[string]*webServer{
+		nodeBasePath("node-a"): nil,
+	}}
+	validCompare := objectCompareHref(nodeBasePath("node-a"), "node-b", "posthog", "table", "events")
+	cases := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{"review", "/object-diffs?status=different&q=EVENTS VIEW", "/object-diffs?q=EVENTS+VIEW&status=different"},
+		{"mounted compare", validCompare, validCompare},
+		{"absolute external", "https://attacker.example/phish", "/object-diffs"},
+		{"scheme relative", "//attacker.example/phish", "/object-diffs"},
+		{"backslash relative", `/\attacker.example/phish`, "/object-diffs"},
+		{"double backslash", `/\\attacker.example/phish`, "/object-diffs"},
+		{"encoded backslash", `/%5Cattacker.example/phish`, "/object-diffs"},
+		{"triple slash", "///attacker.example/phish", "/object-diffs"},
+		{"unmounted compare", "/n/missing/compare?peer=node-a", "/object-diffs"},
+		{"unrelated local route", "/lookup?q=events", "/object-diffs"},
+		{"control character", "/object-diffs\nLocation:https://attacker.example", "/object-diffs"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, ms.comparisonSettingsReturn(tc.raw))
+		})
+	}
 }
 
 func TestManifestCompositions(t *testing.T) {
@@ -382,6 +412,22 @@ database "posthog" {
 	require.NotNil(t, sessionCookie)
 	assert.Equal(t, "1", sessionCookie.Value)
 	assert.Zero(t, sessionCookie.MaxAge, "the comparison preference is browser-session scoped")
+	assert.False(t, sessionCookie.Secure, "direct HTTP must retain the non-sensitive preference")
+
+	tlsReq := httptest.NewRequest(http.MethodPost, "/comparison-settings", strings.NewReader(form.Encode()))
+	tlsReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	tlsReq.TLS = &tls.ConnectionState{}
+	tlsRec := httptest.NewRecorder()
+	ms.handler().ServeHTTP(tlsRec, tlsReq)
+	require.Equal(t, http.StatusSeeOther, tlsRec.Code)
+	var tlsCookie *http.Cookie
+	for _, cookie := range tlsRec.Result().Cookies() {
+		if cookie.Name == columnOrderCookie {
+			tlsCookie = cookie
+		}
+	}
+	require.NotNil(t, tlsCookie)
+	assert.True(t, tlsCookie.Secure, "the preference cookie is protected whenever the handler receives TLS")
 
 	code, body = getMultiWithCookie(t, ms, "/object-diffs", sessionCookie)
 	require.Equal(t, http.StatusOK, code)

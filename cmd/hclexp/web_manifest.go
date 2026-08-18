@@ -421,18 +421,47 @@ func (ms *multiServer) handleComparisonSettings(w http.ResponseWriter, r *http.R
 	if r.FormValue("ignore_column_order") == "1" {
 		value = "1"
 	}
+	// This cookie is a non-sensitive boolean display/comparison preference,
+	// not an authentication token. hclexp web serves plain HTTP by default, so
+	// Secure cannot be unconditional without disabling the setting; when the
+	// handler is served over TLS, protect it automatically.
 	http.SetCookie(w, &http.Cookie{
 		Name:     columnOrderCookie,
 		Value:    value,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
+		Secure:   r.TLS != nil,
 	})
-	returnTo := r.FormValue("return")
-	if parsed, err := url.Parse(returnTo); err != nil || parsed.IsAbs() || parsed.Host != "" || !strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
-		returnTo = "/object-diffs"
+	http.Redirect(w, r, ms.comparisonSettingsReturn(r.FormValue("return")), http.StatusSeeOther)
+}
+
+// comparisonSettingsReturn accepts only destinations emitted by the two
+// settings forms. Backslashes are normalized before parsing because browsers
+// may treat them as forward slashes; without that step, `/\attacker.example`
+// can look local to net/url but become a scheme-relative external redirect in
+// a browser. The returned URL is reconstructed from the parsed local path and
+// query rather than returning the form value verbatim.
+func (ms *multiServer) comparisonSettingsReturn(raw string) string {
+	target := strings.ReplaceAll(raw, "\\", "/")
+	parsed, err := url.Parse(target)
+	if err != nil || parsed.IsAbs() || parsed.Hostname() != "" ||
+		!strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") {
+		return "/object-diffs"
 	}
-	http.Redirect(w, r, returnTo, http.StatusSeeOther)
+	allowed := parsed.Path == "/object-diffs"
+	if !allowed {
+		for base := range ms.servers {
+			if parsed.Path == base+"/compare" {
+				allowed = true
+				break
+			}
+		}
+	}
+	if !allowed {
+		return "/object-diffs"
+	}
+	return (&url.URL{Path: parsed.Path, RawQuery: parsed.Query().Encode()}).String()
 }
 
 // handleLookup searches every mounted schema and reports which composition or
