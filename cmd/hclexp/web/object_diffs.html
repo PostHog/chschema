@@ -1,0 +1,68 @@
+{{define "content"}}
+<nav class="path"><a href="/">dump nodes</a> / <span>object review</span></nav>
+<h1>Objects across dumped nodes</h1>
+<p class="muted">Canonical HCL definitions are grouped into schema variants. ReplicatedMergeTree UUIDs are masked for tables. Objects absent from a node are shown as deployment context, not classified as schema drift.</p>
+
+<div class="review-stats" aria-label="Object diff summary">
+  <div class="review-stat"><strong>{{.TotalObjects}}</strong><span>objects</span></div>
+  <div class="review-stat"><strong>{{.DifferentObjects}}</strong><span>different</span></div>
+  <div class="review-stat"><strong>{{.UniformObjects}}</strong><span>uniform</span></div>
+  <div class="review-stat"><strong>{{.PartialObjects}}</strong><span>partial presence</span></div>
+  <div class="review-stat"><strong>{{.TotalNodes}}</strong><span>dumped nodes</span></div>
+</div>
+
+<form class="lookup object-review-search" action="/object-diffs" method="get" role="search">
+  <label for="object-review-q">Filter by database, kind, object, cluster, or node</label>
+  <div class="lookup-controls">
+    <input id="object-review-q" name="q" type="search" value="{{.Query}}" placeholder="Filter objects…">
+    {{if .Status}}<input name="status" type="hidden" value="{{.Status}}">{{end}}
+    <button type="submit">Filter</button>
+  </div>
+</form>
+
+<nav class="review-filters" aria-label="Object status filters">
+  {{range .Filters}}<a href="{{.Href}}" class="{{if .Active}}active{{end}}">{{.Label}} <span class="count">{{.Count}}</span></a>{{end}}
+</nav>
+
+<p class="muted">Showing {{.Showing}} of {{.TotalObjects}} objects.</p>
+{{if not .Objects}}<p class="muted">No objects match this filter.</p>{{end}}
+{{if .Objects}}
+<div class="object-review-grid">
+  <table class="grid object-review-table">
+    <thead><tr><th>Database</th><th>Kind</th><th>Object</th><th>Presence</th><th>Schema</th><th>Review</th></tr></thead>
+    <tbody>
+      {{range .Objects}}
+      <tr{{if .Different}} class="schema-different-row"{{end}}>
+        <td><a href="{{.DatabaseHref}}">{{.Database}}</a></td>
+        <td>{{.KindLabel}}</td>
+        <td><a href="{{.ObjectHref}}">{{.Name}}</a></td>
+        <td>{{.PresentNodes}} / {{.TotalNodes}}</td>
+        <td><span class="schema-marker schema-{{.MarkerClass}}">{{.Status}}</span></td>
+        <td class="review-cell">
+          <details class="variant-review"{{if .Different}} open{{end}}>
+            <summary>{{len .Variants}} schema variant{{if ne (len .Variants) 1}}s{{end}}{{if .Partial}} · absent from {{len .MissingNodes}} node{{if ne (len .MissingNodes) 1}}s{{end}}{{end}}</summary>
+            <div class="variant-groups">
+              {{range .Variants}}
+              <section class="variant-group">
+                <h3>Schema {{.Number}}{{if eq .Number 1}} · baseline{{end}} <span class="count">{{len .Nodes}}</span></h3>
+                <ul class="variant-node-list">
+                  {{range .Nodes}}<li><span>{{.Cluster}}</span> / <a href="{{.NodeHref}}">{{.Node}}</a><a class="variant-object-link" href="{{.ObjectHref}}">Open object</a></li>{{end}}
+                </ul>
+                {{if .CompareHref}}<p class="variant-compare"><a href="{{.CompareHref}}">Compare with schema 1</a></p>{{end}}
+              </section>
+              {{end}}
+            </div>
+            {{if .MissingNodes}}
+            <div class="missing-nodes"><strong>Not present:</strong>
+              {{range .MissingNodes}}<a href="{{.NodeHref}}">{{.Cluster}} / {{.Node}}</a>{{end}}
+            </div>
+            {{end}}
+          </details>
+        </td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+</div>
+{{end}}
+{{end}}

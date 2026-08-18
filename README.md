@@ -755,6 +755,14 @@ are rejected rather than silently combined. `-dump` is mutually exclusive with
 the single-schema and manifest inputs, and `-glob` accepts the same
 comma-separated filename patterns as `drift`.
 
+The dump-node list links to **Review object differences**, a fleet-wide
+inventory of every qualified object found in the loaded dumps. It summarizes
+uniform and differing canonical schemas, groups nodes by schema variant, and
+links each non-baseline variant to the full comparison view. Filters narrow the
+inventory by status or by database, kind, object, cluster, and node. Partial
+presence is shown as deployment context but is not classified as drift, since
+different node roles can legitimately contain different object sets.
+
 In dump mode, every object page (table, materialized view, view, dictionary, or
 raw object) also shows all cluster/node dumps containing the same qualified
 object, ordered by cluster and then node. The current node is the comparison
@@ -770,9 +778,9 @@ visible as schema drift.
 **Patch to uniform** previews the pretty-printed SQL needed to change the
 right-hand node's object to match the left-hand baseline, using the same
 migration planner as `hclexp diff -sql`. It never executes SQL. The preview
-**must be reviewed**
-against the live cluster before use; unsafe or unexpressible changes are called
-out explicitly and require manual reconciliation.
+**must be reviewed** against the live cluster before use; unsafe or
+unexpressible changes are called out explicitly and require manual
+reconciliation.
 
 Materialized-view `to_table` values and Distributed `remote_table` values are
 links when their targets resolve. In dump mode the browser derives the same

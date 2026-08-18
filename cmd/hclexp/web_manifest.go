@@ -87,24 +87,45 @@ type envGroup struct {
 }
 
 type schemasData struct {
+	Title          string
+	Base           string // "" — list page links are absolute schema base paths
+	Label          string // "" — list page shows the default crumb
+	Heading        string
+	Empty          string
+	ObjectDiffHref string
+	Groups         []envGroup
+}
+
+type dumpObjectFilterView struct {
+	Label  string
+	Href   string
+	Count  int
+	Active bool
+}
+
+type dumpObjectReviewData struct {
 	Title   string
-	Base    string // "" — list page links are absolute schema base paths
-	Label   string // "" — list page shows the default crumb
-	Heading string
-	Empty   string
-	Groups  []envGroup
+	Base    string
+	Label   string
+	Query   string
+	Status  string
+	Showing int
+	Filters []dumpObjectFilterView
+	dumpObjectReview
 }
 
 // multiServer serves a top-level list of composed schemas, each mounted under
 // its own /s/<env>/<role>/ prefix.
 type multiServer struct {
-	tmplSchemas *template.Template
-	tmplLookup  *template.Template
-	title       string
-	heading     string
-	empty       string
-	groups      []envGroup
-	servers     map[string]*webServer // basePath -> server
+	tmplSchemas     *template.Template
+	tmplLookup      *template.Template
+	tmplObjectDiffs *template.Template
+	title           string
+	heading         string
+	empty           string
+	groups          []envGroup
+	servers         map[string]*webServer // basePath -> server
+	dumpContext     *dumpWebContext       // non-nil only for -dump
 }
 
 // mux returns this schema's routes (rooted at "/" — mounted under a StripPrefix
@@ -139,13 +160,18 @@ func newMultiServer(title, heading, empty string) (*multiServer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse lookup template: %w", err)
 	}
+	tmplObjectDiffs, err := template.New("layout").Funcs(funcs).ParseFS(webFS, "web/layout.html", "web/object_diffs.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse object diff template: %w", err)
+	}
 	return &multiServer{
-		tmplSchemas: tmplSchemas,
-		tmplLookup:  tmplLookup,
-		title:       title,
-		heading:     heading,
-		empty:       empty,
-		servers:     map[string]*webServer{},
+		tmplSchemas:     tmplSchemas,
+		tmplLookup:      tmplLookup,
+		tmplObjectDiffs: tmplObjectDiffs,
+		title:           title,
+		heading:         heading,
+		empty:           empty,
+		servers:         map[string]*webServer{},
 	}, nil
 }
 
@@ -222,6 +248,7 @@ func buildDumpMultiServer(dir, glob string, reloadInterval time.Duration) (*mult
 
 	groups := map[string]*envGroup{}
 	dumpContext := newDumpWebContext(dumpClusterAliases(mappings))
+	ms.dumpContext = dumpContext
 	var groupOrder []string
 	for _, node := range nodes {
 		base := nodeBasePath(node.Name)
@@ -278,8 +305,86 @@ func (ms *multiServer) handleSchemas(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	data := schemasData{Title: ms.title, Heading: ms.heading, Empty: ms.empty, Groups: ms.groups}
+	if ms.dumpContext != nil {
+		data.ObjectDiffHref = "/object-diffs"
+	}
 	if err := ms.tmplSchemas.ExecuteTemplate(w, "layout", data); err != nil {
 		slog.Error("render schemas list", "err", err)
+		http.Error(w, "template error", http.StatusInternalServerError)
+	}
+}
+
+func objectDiffFilterHref(query, status string) string {
+	values := url.Values{}
+	if query != "" {
+		values.Set("q", query)
+	}
+	if status != "" {
+		values.Set("status", status)
+	}
+	if encoded := values.Encode(); encoded != "" {
+		return "/object-diffs?" + encoded
+	}
+	return "/object-diffs"
+}
+
+// handleObjectDiffs renders a dump-wide, human-reviewable inventory. Schema
+// variants come directly from dumpWebContext, the same canonical index used by
+// per-object markers and comparison pages.
+func (ms *multiServer) handleObjectDiffs(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/object-diffs" || ms.dumpContext == nil {
+		http.NotFound(w, r)
+		return
+	}
+	ms.dumpContext.maybeReloadAll()
+	review := ms.dumpContext.objectReview()
+	rawQuery := strings.TrimSpace(r.URL.Query().Get("q"))
+	query := strings.ToLower(rawQuery)
+	status := r.URL.Query().Get("status")
+	switch status {
+	case "", "different", "uniform", "partial":
+	default:
+		status = ""
+	}
+
+	objects := make([]dumpObjectReviewView, 0, len(review.Objects))
+	for _, object := range review.Objects {
+		if query != "" && !strings.Contains(object.searchText, query) {
+			continue
+		}
+		switch status {
+		case "different":
+			if !object.Different {
+				continue
+			}
+		case "uniform":
+			if object.Different {
+				continue
+			}
+		case "partial":
+			if !object.Partial {
+				continue
+			}
+		}
+		objects = append(objects, object)
+	}
+
+	data := dumpObjectReviewData{
+		Title:            "Object diff summary",
+		Query:            rawQuery,
+		Status:           status,
+		Showing:          len(objects),
+		dumpObjectReview: review,
+	}
+	data.Objects = objects
+	data.Filters = []dumpObjectFilterView{
+		{Label: "All", Href: objectDiffFilterHref(rawQuery, ""), Count: review.TotalObjects, Active: status == ""},
+		{Label: "Different", Href: objectDiffFilterHref(rawQuery, "different"), Count: review.DifferentObjects, Active: status == "different"},
+		{Label: "Uniform", Href: objectDiffFilterHref(rawQuery, "uniform"), Count: review.UniformObjects, Active: status == "uniform"},
+		{Label: "Partial presence", Href: objectDiffFilterHref(rawQuery, "partial"), Count: review.PartialObjects, Active: status == "partial"},
+	}
+	if err := ms.tmplObjectDiffs.ExecuteTemplate(w, "layout", data); err != nil {
+		slog.Error("render object diff summary", "err", err)
 		http.Error(w, "template error", http.StatusInternalServerError)
 	}
 }
@@ -316,6 +421,7 @@ func (ms *multiServer) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", ms.handleSchemas)
 	mux.HandleFunc("/lookup", ms.handleLookup)
+	mux.HandleFunc("/object-diffs", ms.handleObjectDiffs)
 	mux.HandleFunc("/flows", func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusFound)
 	})

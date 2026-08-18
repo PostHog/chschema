@@ -41,6 +41,7 @@ type dumpObjectSnapshot struct {
 type dumpWebContext struct {
 	mu       sync.RWMutex
 	byServer map[string]map[string]dumpObjectSnapshot // base path -> db\x00kind\x00name -> snapshot
+	nodes    map[string]dumpNodeIdentity              // base path -> mounted dump identity
 	servers  []*webServer
 	aliases  map[string]string // remote_servers alias -> physical dump cluster
 }
@@ -64,6 +65,7 @@ type objectPresenceView struct {
 func newDumpWebContext(aliases map[string]string) *dumpWebContext {
 	return &dumpWebContext{
 		byServer: map[string]map[string]dumpObjectSnapshot{},
+		nodes:    map[string]dumpNodeIdentity{},
 		aliases:  aliases,
 	}
 }
@@ -158,6 +160,7 @@ func (ctx *dumpWebContext) update(base string, node dumpNodeIdentity, schema *hc
 
 	ctx.mu.Lock()
 	ctx.byServer[base] = objects
+	ctx.nodes[base] = node
 	ctx.mu.Unlock()
 	return nil
 }
@@ -187,6 +190,189 @@ func normalizedDumpSchema(schema *hclload.Schema) *hclload.Schema {
 
 func dumpObjectKey(database, kind, name string) string {
 	return database + "\x00" + kind + "\x00" + name
+}
+
+type dumpObjectReview struct {
+	TotalNodes       int
+	TotalObjects     int
+	UniformObjects   int
+	DifferentObjects int
+	PartialObjects   int
+	Objects          []dumpObjectReviewView
+}
+
+type dumpObjectReviewView struct {
+	Database     string
+	DatabaseHref string
+	Kind         string
+	KindLabel    string
+	Name         string
+	ObjectHref   string
+	PresentNodes int
+	TotalNodes   int
+	MissingNodes []dumpMissingNodeView
+	Variants     []dumpSchemaVariantView
+	Status       string
+	MarkerClass  string
+	Different    bool
+	Partial      bool
+	searchText   string
+}
+
+type dumpSchemaVariantView struct {
+	Number      int
+	Nodes       []objectCompareMatchView
+	CompareHref string
+}
+
+type dumpMissingNodeView struct {
+	Cluster  string
+	Node     string
+	NodeHref string
+}
+
+// objectReview returns the union of browsable objects in the dump, grouped by
+// canonical schema signature. Absence is reported as deployment context but is
+// not schema drift: different node roles legitimately contain different object
+// sets, matching objectPresence's existing semantics.
+func (ctx *dumpWebContext) objectReview() dumpObjectReview {
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+
+	review := dumpObjectReview{TotalNodes: len(ctx.nodes)}
+	keys := map[string]bool{}
+	for _, objects := range ctx.byServer {
+		for key := range objects {
+			keys[key] = true
+		}
+	}
+
+	for key := range keys {
+		var snapshots []dumpObjectSnapshot
+		var missing []dumpMissingNodeView
+		for base, node := range ctx.nodes {
+			if snapshot, ok := ctx.byServer[base][key]; ok {
+				snapshots = append(snapshots, snapshot)
+				continue
+			}
+			missing = append(missing, dumpMissingNodeView{
+				Cluster:  node.Cluster,
+				Node:     node.Node,
+				NodeHref: base + "/",
+			})
+		}
+		if len(snapshots) == 0 {
+			continue
+		}
+		sortObjectSnapshots(snapshots)
+		sort.Slice(missing, func(i, j int) bool {
+			if missing[i].Cluster != missing[j].Cluster {
+				return missing[i].Cluster < missing[j].Cluster
+			}
+			return missing[i].Node < missing[j].Node
+		})
+
+		bySignature := map[string][]dumpObjectSnapshot{}
+		for _, snapshot := range snapshots {
+			bySignature[snapshot.Signature] = append(bySignature[snapshot.Signature], snapshot)
+		}
+		groups := make([][]dumpObjectSnapshot, 0, len(bySignature))
+		for _, group := range bySignature {
+			sortObjectSnapshots(group)
+			groups = append(groups, group)
+		}
+		sort.Slice(groups, func(i, j int) bool {
+			left, right := groups[i][0], groups[j][0]
+			if left.Node.Cluster != right.Node.Cluster {
+				return left.Node.Cluster < right.Node.Cluster
+			}
+			return left.Node.Node < right.Node.Node
+		})
+
+		first := snapshots[0]
+		view := dumpObjectReviewView{
+			Database:     first.Database,
+			DatabaseHref: first.DatabaseHref,
+			Kind:         first.Kind,
+			KindLabel:    kindLabel(first.Kind),
+			Name:         first.Object,
+			ObjectHref:   first.ObjectHref,
+			PresentNodes: len(snapshots),
+			TotalNodes:   review.TotalNodes,
+			MissingNodes: missing,
+			Status:       "uniform",
+			MarkerClass:  "same",
+			Partial:      len(missing) > 0,
+		}
+		baseline := groups[0][0]
+		for i, group := range groups {
+			variant := dumpSchemaVariantView{Number: i + 1}
+			if i > 0 {
+				variant.CompareHref = objectCompareHref(
+					baseline.BasePath, group[0].Node.Node, first.Database, first.Kind, first.Object,
+				)
+			}
+			for _, snapshot := range group {
+				variant.Nodes = append(variant.Nodes, objectCompareMatchView{
+					Cluster:    snapshot.Node.Cluster,
+					Node:       snapshot.Node.Node,
+					NodeHref:   snapshot.NodeHref,
+					ObjectHref: snapshot.ObjectHref,
+				})
+			}
+			view.Variants = append(view.Variants, variant)
+		}
+		if len(view.Variants) > 1 {
+			view.Status = "different"
+			view.MarkerClass = "different"
+			view.Different = true
+			review.DifferentObjects++
+		} else {
+			review.UniformObjects++
+		}
+		if view.Partial {
+			review.PartialObjects++
+		}
+		var searchParts = []string{view.Database, view.Kind, view.KindLabel, view.Name}
+		for _, snapshot := range snapshots {
+			searchParts = append(searchParts, snapshot.Node.Cluster, snapshot.Node.Node)
+		}
+		for _, node := range missing {
+			searchParts = append(searchParts, node.Cluster, node.Node)
+		}
+		view.searchText = strings.ToLower(strings.Join(searchParts, " "))
+		review.Objects = append(review.Objects, view)
+	}
+
+	review.TotalObjects = len(review.Objects)
+	sort.Slice(review.Objects, func(i, j int) bool {
+		left, right := review.Objects[i], review.Objects[j]
+		if left.Database != right.Database {
+			return left.Database < right.Database
+		}
+		if dumpObjectKindRank(left.Kind) != dumpObjectKindRank(right.Kind) {
+			return dumpObjectKindRank(left.Kind) < dumpObjectKindRank(right.Kind)
+		}
+		return left.Name < right.Name
+	})
+	return review
+}
+
+func dumpObjectKindRank(kind string) int {
+	switch kind {
+	case hclload.KindTable:
+		return 0
+	case hclload.KindMaterializedView:
+		return 1
+	case hclload.KindView:
+		return 2
+	case hclload.KindDictionary:
+		return 3
+	case hclload.KindRaw:
+		return 4
+	default:
+		return 5
+	}
 }
 
 func normalizedObjectSignature(database, kind, name string, db *hclload.DatabaseSpec) (string, error) {

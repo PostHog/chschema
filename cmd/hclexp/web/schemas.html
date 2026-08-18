@@ -1,5 +1,6 @@
 {{define "content"}}
 <h1>{{.Heading}}</h1>
+{{if .ObjectDiffHref}}<p class="schema-actions"><a class="summary-link" href="{{.ObjectDiffHref}}">Review object differences</a></p>{{end}}
 {{if not .Groups}}<p class="muted">{{.Empty}}</p>{{end}}
 {{range .Groups}}
 <section class="db">
