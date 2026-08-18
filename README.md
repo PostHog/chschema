@@ -285,6 +285,10 @@ hclexp diff -left ./schema/posthog.hcl \
   left-only objects. Scoping removes whole unmanaged objects only: once an
   object is present on the scope side, all of its columns, engine, TTL,
   settings, and other fields still compare exactly.
+- `-ignore-column-order` — compare table and materialized-view columns by name
+  and definition while ignoring declaration order. By default physical column
+  order is significant because it affects `SELECT *`, positional inserts, and
+  dump convergence.
 - `-sql` — emit the migration DDL (`CREATE` / `ALTER` / `DROP`) that turns
   the left side into the right side, instead of the change summary.
   Changes ClickHouse can't apply in place (engine swap, `ORDER BY`,
@@ -294,6 +298,15 @@ hclexp diff -left ./schema/posthog.hcl \
   out as `-- MANUAL:` lines — run them deliberately, never as part of an
   automated apply. In `-format json` output the same statements carry
   `"manual": true`.
+
+Comparison is semantic rather than rendered-text based: supported SQL
+expressions are canonicalized and equivalent table TTL forms such as
+`toIntervalMonth(3)` and `INTERVAL 3 MONTH` compare equal without losing a TTL
+`WHERE` condition. When adding a column before an existing target column,
+generated SQL includes `FIRST` or `AFTER <column>` so applying the migration
+converges to the right-hand declaration order. Reordering columns that already
+exist is reported for explicit review; hclexp does not auto-generate those
+`MODIFY COLUMN ... FIRST/AFTER` statements.
 
 This supports a reference schema that owns only part of a live node:
 
@@ -582,6 +595,8 @@ when any drift is found, so it doubles as a CI guard.
   - `ignore` — blank `zoo_path`/`replica_name` entirely.
 - `-details` — print the full change set of each drifting node against its
   group reference, instead of just the one-line summary
+- `-ignore-column-order` — ignore table and materialized-view column order for
+  the whole drift run; column names, types, and modifiers still compare
 
 Example output:
 
@@ -756,24 +771,30 @@ the single-schema and manifest inputs, and `-glob` accepts the same
 comma-separated filename patterns as `drift`.
 
 The dump-node list links to **Review object differences**, a fleet-wide
-inventory of every qualified object found in the loaded dumps. It summarizes
-uniform and differing canonical schemas, groups nodes by schema variant, and
-links each non-baseline variant to the full comparison view. Filters narrow the
-inventory by status or by database, kind, object, cluster, and node. Partial
-presence is shown as deployment context but is not classified as drift, since
-different node roles can legitimately contain different object sets.
+inventory of every qualified object found in the loaded dumps. It uses the same
+semantic diff as the CLI, summarizes uniform and differing schemas, groups
+nodes by semantic schema variant, and links each non-baseline variant to the
+full comparison view. Filters narrow the inventory by status or by database,
+kind, object, cluster, and node. Partial presence is shown as deployment context
+but is not classified as drift, since different node roles can legitimately
+contain different object sets.
 
 In dump mode, every object page (table, materialized view, view, dictionary, or
 raw object) also shows all cluster/node dumps containing the same qualified
 object, ordered by cluster and then node. The current node is the comparison
-baseline; peers are marked **same** or **different** from their resolved
-canonical HCL. Click **different** to open a unified HCL diff with the baseline
-and peer node identified explicitly. The comparison can swap its two sides and
-lists every dumped node sharing the canonical schema on either side. For tables,
-comparison uses the same default as `drift`: literal UUIDs expanded into
+baseline; peers are marked **same** or **different** by semantic comparison of
+their resolved HCL. Click **different** to open a unified HCL diff with the
+baseline and peer node identified explicitly. The comparison can swap its two
+sides and lists every dumped node sharing either semantic schema variant. For
+tables, comparison uses the same default as `drift`: literal UUIDs expanded into
 ReplicatedMergeTree ZooKeeper paths are masked, while real column, engine, key,
 TTL, setting, index, projection, constraint, and comment differences remain
 visible as schema drift.
+
+The **Ignore column order** control applies to the fleet review, individual
+object markers, comparison groups, and patch generation for the entire browser
+session. `hclexp web -dump ... -ignore-column-order` makes that the initial
+session default; the control can still change it without restarting the server.
 
 **Patch to uniform** previews the pretty-printed SQL needed to change the
 right-hand node's object to match the left-hand baseline, using the same

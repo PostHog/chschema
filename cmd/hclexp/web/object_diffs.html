@@ -1,7 +1,14 @@
 {{define "content"}}
 <nav class="path"><a href="/">dump nodes</a> / <span>object review</span></nav>
 <h1>Objects across dumped nodes</h1>
-<p class="muted">Canonical HCL definitions are grouped into schema variants. ReplicatedMergeTree UUIDs are masked for tables. Objects absent from a node are shown as deployment context, not classified as schema drift.</p>
+<p class="muted">Objects are grouped by the same semantic diff used by the CLI, including normalized expressions and masked ReplicatedMergeTree UUIDs. Objects absent from a node are shown as deployment context, not classified as schema drift.</p>
+
+<form class="comparison-settings" action="/comparison-settings" method="post">
+  <input type="hidden" name="return" value="{{.SettingsReturn}}">
+  <label><input type="checkbox" name="ignore_column_order" value="1"{{if .IgnoreColumnOrder}} checked{{end}}> Ignore column order</label>
+  <button type="submit">Apply to session</button>
+  <span class="muted">Applies to this review, object markers, comparisons, and patch SQL for the browser session.</span>
+</form>
 
 <div class="review-stats" aria-label="Object diff summary">
   <div class="review-stat"><strong>{{.TotalObjects}}</strong><span>objects</span></div>

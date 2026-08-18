@@ -51,6 +51,7 @@ func runDrift(args []string) {
 	details := fs.Bool("details", false, "print the full change set of each drifting node against its group reference")
 	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects matching its patterns/object_types are dropped from every node before comparing")
 	formatFlag := fs.String("format", "text", "output format: text (default) or json")
+	ignoreColumnOrder := fs.Bool("ignore-column-order", false, "ignore table and materialized-view column declaration order")
 	_ = fs.Parse(args)
 
 	if *dirFlag == "" {
@@ -89,7 +90,7 @@ func runDrift(args []string) {
 	}
 
 	keys := splitList(*groupByFlag)
-	doc := buildDriftDoc(nodes, keys)
+	doc := buildDriftDocWithOptions(nodes, keys, hclload.DiffOptions{IgnoreColumnOrder: *ignoreColumnOrder})
 
 	if *formatFlag == "json" {
 		out, err := json.MarshalIndent(doc, "", "  ")
@@ -112,6 +113,10 @@ func runDrift(args []string) {
 // Drifters are non-nil so JSON emits [] (not null) — same contract as
 // DiffJSON.Objects.
 func buildDriftDoc(nodes []driftNode, keys []string) hclload.DriftJSON {
+	return buildDriftDocWithOptions(nodes, keys, hclload.DiffOptions{})
+}
+
+func buildDriftDocWithOptions(nodes []driftNode, keys []string, options hclload.DiffOptions) hclload.DriftJSON {
 	groups, order := groupNodes(nodes, keys)
 	doc := hclload.DriftJSON{
 		Groups:  []hclload.DriftGroup{},
@@ -124,7 +129,7 @@ func buildDriftDoc(nodes []driftNode, keys []string) hclload.DriftJSON {
 		g := hclload.DriftGroup{Key: key, Reference: ref.Name, Nodes: len(members),
 			Drifters: []hclload.DriftNode{}}
 		for _, m := range members[1:] {
-			cs := hclload.Diff(ref.Schema, m.Schema)
+			cs := hclload.DiffWithOptions(ref.Schema, m.Schema, options)
 			if cs.IsEmpty() {
 				continue
 			}

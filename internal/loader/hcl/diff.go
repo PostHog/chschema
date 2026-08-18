@@ -155,7 +155,10 @@ type TableDiff struct {
 	AddProjections  []ProjectionSpec
 	DropProjections []string
 
-	EngineChange      *EngineChange
+	EngineChange *EngineChange
+	// ColumnOrderChange records a reorder among columns present on both
+	// sides. New columns carry FIRST/AFTER on AddColumns instead.
+	ColumnOrderChange *OrderByChange
 	OrderByChange     *OrderByChange
 	PartitionByChange *StringChange
 	SampleByChange    *StringChange
@@ -312,18 +315,18 @@ func (td TableDiff) IsEmpty() bool {
 		len(td.AddColumns) == 0 && len(td.DropColumns) == 0 && len(td.ModifyColumns) == 0 &&
 		len(td.AddIndexes) == 0 && len(td.DropIndexes) == 0 &&
 		len(td.AddProjections) == 0 && len(td.DropProjections) == 0 &&
-		td.EngineChange == nil && td.OrderByChange == nil &&
+		td.EngineChange == nil && td.ColumnOrderChange == nil && td.OrderByChange == nil &&
 		td.PartitionByChange == nil && td.SampleByChange == nil && td.TTLChange == nil &&
 		len(td.SettingsAdded) == 0 && len(td.SettingsRemoved) == 0 && len(td.SettingsChanged) == 0 &&
 		len(td.AddConstraints) == 0 && len(td.DropConstraints) == 0 && len(td.ModifyConstraints) == 0 &&
 		td.PrimaryKeyChange == nil && td.CommentChange == nil
 }
 
-// IsUnsafe reports whether the diff includes a change ClickHouse can't apply
-// in place (engine swap, order_by/partition_by/sample_by, primary_key). Such
-// changes require table recreation.
+// IsUnsafe reports whether the diff includes a change hclexp will not apply
+// automatically. Most require table recreation; reordering existing columns
+// is in-place-capable but deliberately left for explicit operator review.
 func (td TableDiff) IsUnsafe() bool {
-	if td.EngineChange != nil || td.OrderByChange != nil ||
+	if td.EngineChange != nil || td.ColumnOrderChange != nil || td.OrderByChange != nil ||
 		td.PartitionByChange != nil || td.SampleByChange != nil ||
 		td.PrimaryKeyChange != nil {
 		return true
@@ -336,10 +339,26 @@ func (td TableDiff) IsUnsafe() bool {
 	return false
 }
 
+// DiffOptions controls comparison semantics shared by diff, drift, and web.
+// Column order is significant by default because it changes SELECT * output
+// and must be preserved by a convergent migration. Callers may explicitly
+// ignore it when node roles or operational policy do not require uniform
+// physical ordering.
+type DiffOptions struct {
+	IgnoreColumnOrder bool
+}
+
 // Diff compares two resolved schemas and returns a deterministic ChangeSet.
 // Both inputs must already have been resolved (engines decoded, abstracts
 // dropped, extend/patches consumed).
 func Diff(from, to *Schema) ChangeSet {
+	return DiffWithOptions(from, to, DiffOptions{})
+}
+
+// DiffWithOptions compares two resolved schemas using the supplied semantic
+// policy. Both inputs must already have been resolved (engines decoded,
+// abstracts dropped, extend/patches consumed).
+func DiffWithOptions(from, to *Schema, options DiffOptions) ChangeSet {
 	if from == nil {
 		from = &Schema{}
 	}
@@ -385,7 +404,7 @@ func Diff(from, to *Schema) ChangeSet {
 			}
 			dc.DropRaws = append(dc.DropRaws, f.Raws...)
 		default:
-			dc = diffDatabase(name, f, t, fromR, toR)
+			dc = diffDatabase(name, f, t, fromR, toR, options)
 		}
 		if dc.IsEmpty() {
 			continue
@@ -421,7 +440,7 @@ func mergedKeys(a, b map[string]*DatabaseSpec) []string {
 	return out
 }
 
-func diffDatabase(name string, from, to *DatabaseSpec, fromR, toR TableResolver) DatabaseChange {
+func diffDatabase(name string, from, to *DatabaseSpec, fromR, toR TableResolver, options DiffOptions) DatabaseChange {
 	dc := DatabaseChange{Database: name}
 
 	fromTables := indexTables(from.Tables)
@@ -442,7 +461,7 @@ func diffDatabase(name string, from, to *DatabaseSpec, fromR, toR TableResolver)
 		if !ok {
 			continue
 		}
-		td := diffTable(fromTables[n], t, fromR, toR)
+		td := diffTable(fromTables[n], t, fromR, toR, options)
 		if !td.IsEmpty() {
 			dc.AlterTables = append(dc.AlterTables, td)
 		}
@@ -465,7 +484,7 @@ func diffDatabase(name string, from, to *DatabaseSpec, fromR, toR TableResolver)
 		if !ok {
 			continue
 		}
-		mvd := diffMaterializedView(fromMVs[n], t)
+		mvd := diffMaterializedView(fromMVs[n], t, options)
 		if !mvd.IsEmpty() {
 			dc.AlterMaterializedViews = append(dc.AlterMaterializedViews, mvd)
 		}
@@ -713,13 +732,13 @@ func indexMaterializedViews(mvs []MaterializedViewSpec) map[string]*Materialized
 // Recreate; an otherwise-identical view with a changed query yields a
 // QueryChange that maps to ALTER TABLE ... MODIFY QUERY. Recreate supersedes
 // QueryChange — the two are mutually exclusive.
-func diffMaterializedView(from, to *MaterializedViewSpec) MaterializedViewDiff {
+func diffMaterializedView(from, to *MaterializedViewSpec, options DiffOptions) MaterializedViewDiff {
 	mvd := MaterializedViewDiff{Name: to.Name}
 	if from.ToTable != to.ToTable {
 		o, n := from.ToTable, to.ToTable
 		mvd.ToTableChange = &StringChange{Old: &o, New: &n}
 	}
-	if !reflect.DeepEqual(from.Columns, to.Columns) {
+	if !materializedViewColumnsEqual(from.Columns, to.Columns, options.IgnoreColumnOrder) {
 		mvd.ColumnsChanged = true
 	}
 	if mvd.ToTableChange != nil || mvd.ColumnsChanged {
@@ -731,6 +750,27 @@ func diffMaterializedView(from, to *MaterializedViewSpec) MaterializedViewDiff {
 		mvd.QueryChange = &StringChange{Old: &q1, New: &q2}
 	}
 	return mvd
+}
+
+func materializedViewColumnsEqual(from, to []ColumnSpec, ignoreOrder bool) bool {
+	if !ignoreOrder {
+		return reflect.DeepEqual(from, to)
+	}
+	if len(from) != len(to) {
+		return false
+	}
+	fromColumns := indexColumns(from)
+	toColumns := indexColumns(to)
+	if len(fromColumns) != len(toColumns) {
+		return false
+	}
+	for name, column := range fromColumns {
+		other, ok := toColumns[name]
+		if !ok || !columnsEqual(*column, *other) {
+			return false
+		}
+	}
+	return true
 }
 
 func indexTables(tables []TableSpec) map[string]*TableSpec {
@@ -759,7 +799,7 @@ func isSystemProxy(t TableSpec) bool {
 	return ok && d.RemoteDatabase == "system"
 }
 
-func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
+func diffTable(from, to *TableSpec, fromR, toR TableResolver, options DiffOptions) TableDiff {
 	td := TableDiff{Table: to.Name}
 
 	fromCols := indexColumns(from.Columns)
@@ -843,14 +883,28 @@ func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 		}
 	}
 
-	for _, n := range sortedKeys(toCols) {
-		if created[n] {
+	if !options.IgnoreColumnOrder {
+		td.ColumnOrderChange = diffExistingColumnOrder(from.Columns, to.Columns, fromCols, toCols, created)
+	}
+
+	for i := range to.Columns {
+		n := to.Columns[i].Name
+		if _, included := toCols[n]; !included || created[n] {
 			continue
 		}
 		_, inFrom := fromCols[n]
-		if !inFrom || renamed[n] {
-			td.AddColumns = append(td.AddColumns, *toCols[n])
+		if inFrom && !renamed[n] {
+			continue
 		}
+		column := *toCols[n]
+		if !options.IgnoreColumnOrder && hasExistingTargetColumnAfter(to.Columns, i, fromCols, toCols, renamed, created) {
+			if predecessor := previousIncludedColumn(to.Columns, i, toCols); predecessor != "" {
+				column.After = &predecessor
+			} else {
+				column.First = true
+			}
+		}
+		td.AddColumns = append(td.AddColumns, column)
 	}
 	for _, n := range sortedKeys(fromCols) {
 		if renamed[n] {
@@ -978,6 +1032,86 @@ func diffTable(from, to *TableSpec, fromR, toR TableResolver) TableDiff {
 	td.SettingsChanged = changed
 
 	return td
+}
+
+// diffExistingColumnOrder compares the relative order of columns that exist
+// on both sides after applying explicit renames. Adds and drops are excluded:
+// an added column carries its own FIRST/AFTER placement and a drop naturally
+// disappears without requiring a second order-only change.
+func diffExistingColumnOrder(
+	fromOrder, toOrder []ColumnSpec,
+	fromCols, toCols map[string]*ColumnSpec,
+	created map[string]bool,
+) *OrderByChange {
+	renameTo := make(map[string]string, len(created))
+	for name := range created {
+		column := toCols[name]
+		if column != nil && column.RenamedFrom != nil {
+			renameTo[*column.RenamedFrom] = name
+		}
+	}
+
+	common := make(map[string]bool, len(fromCols))
+	oldOrder := make([]string, 0, len(fromCols))
+	for _, column := range fromOrder {
+		if _, included := fromCols[column.Name]; !included {
+			continue
+		}
+		name := column.Name
+		if renamedName, ok := renameTo[name]; ok {
+			name = renamedName
+		}
+		if _, included := toCols[name]; !included {
+			continue
+		}
+		common[name] = true
+		oldOrder = append(oldOrder, name)
+	}
+
+	newOrder := make([]string, 0, len(oldOrder))
+	for _, column := range toOrder {
+		if common[column.Name] {
+			newOrder = append(newOrder, column.Name)
+		}
+	}
+	if reflect.DeepEqual(oldOrder, newOrder) {
+		return nil
+	}
+	return &OrderByChange{Old: oldOrder, New: newOrder}
+}
+
+// hasExistingTargetColumnAfter reports whether appending a new column would
+// put it too late. In that case the generated ADD COLUMN needs FIRST/AFTER to
+// converge to the target declaration order. A renamed column counts as
+// existing because RENAME operations are emitted before ADD operations.
+func hasExistingTargetColumnAfter(
+	toOrder []ColumnSpec,
+	index int,
+	fromCols, toCols map[string]*ColumnSpec,
+	renamed, created map[string]bool,
+) bool {
+	for _, column := range toOrder[index+1:] {
+		name := column.Name
+		if _, included := toCols[name]; !included {
+			continue
+		}
+		if created[name] {
+			return true
+		}
+		if _, exists := fromCols[name]; exists && !renamed[name] {
+			return true
+		}
+	}
+	return false
+}
+
+func previousIncludedColumn(columns []ColumnSpec, index int, included map[string]*ColumnSpec) string {
+	for i := index - 1; i >= 0; i-- {
+		if _, ok := included[columns[i].Name]; ok {
+			return columns[i].Name
+		}
+	}
+	return ""
 }
 
 // timeSeriesAlterableSettings names the SETTINGS keys CH supports via

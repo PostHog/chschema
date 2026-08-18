@@ -896,6 +896,7 @@ func runDiff(args []string) {
 	formatFlag := fs.String("format", "text", "output format: text (default) or json (structured, dependency-ordered operations)")
 	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects matching its patterns/object_types are dropped from both sides before diffing")
 	scopeFlag := fs.String("scope", "all", "object scope: all (exact), left (ignore right-only objects), or right (ignore left-only objects)")
+	ignoreColumnOrder := fs.Bool("ignore-column-order", false, "ignore table and materialized-view column declaration order")
 	_ = fs.Parse(args)
 
 	if *leftFlag == "" || *rightFlag == "" {
@@ -927,7 +928,7 @@ func runDiff(args []string) {
 	}
 	left, right = applyDiffScope(left, right, *scopeFlag)
 
-	cs := hclload.Diff(left, right)
+	cs := hclload.DiffWithOptions(left, right, hclload.DiffOptions{IgnoreColumnOrder: *ignoreColumnOrder})
 	gen := hclload.GenerateSQL(cs)
 
 	if *formatFlag == "json" {

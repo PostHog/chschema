@@ -66,9 +66,9 @@ type UnsafeChange struct {
 // destination table and dropped before it. Within the CREATE TABLE phase,
 // tables are ordered by dependency so a Distributed table comes after the
 // local table it forwards to; the DROP TABLE phase uses the reverse order.
-// Unsafe changes (engine swap, ORDER BY change, materialized view recreation,
-// etc.) are collected into Unsafe; the generator does not synthesize a
-// recreate-and-swap procedure.
+// Unsafe or explicitly operator-reviewed changes (engine swap, existing-column
+// reorder, ORDER BY change, materialized view recreation, etc.) are collected
+// into Unsafe; the generator does not synthesize a recreate-and-swap procedure.
 func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	var out GeneratedSQL
 	// emit records one statement and its structured Operation in lockstep, so
@@ -834,7 +834,14 @@ func alterTableSQL(database string, td TableDiff) string {
 		ops = append(ops, fmt.Sprintf("RENAME COLUMN %s TO %s", r.Old, r.New))
 	}
 	for _, c := range td.AddColumns {
-		ops = append(ops, "ADD COLUMN "+columnDefSQL(c))
+		op := "ADD COLUMN " + columnDefSQL(c)
+		switch {
+		case c.First:
+			op += " FIRST"
+		case c.After != nil:
+			op += " AFTER " + *c.After
+		}
+		ops = append(ops, op)
 	}
 	for _, n := range td.DropColumns {
 		ops = append(ops, fmt.Sprintf("DROP COLUMN %s", n))
@@ -1284,6 +1291,12 @@ func unsafeReasons(database string, td TableDiff) []UnsafeChange {
 		out = append(out, UnsafeChange{
 			Database: database, Table: td.Table,
 			Reason: fmt.Sprintf("engine change from %s to %s requires recreating the table", fromKind, toKind),
+		})
+	}
+	if td.ColumnOrderChange != nil {
+		out = append(out, UnsafeChange{
+			Database: database, Table: td.Table,
+			Reason: "existing column order changed; review and apply explicit MODIFY COLUMN ... FIRST/AFTER statements",
 		})
 	}
 	if td.OrderByChange != nil {

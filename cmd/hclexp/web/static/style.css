@@ -92,6 +92,20 @@ header .crumb { color: var(--muted); }
 .lookup-results { overflow-x: auto; }
 
 .schema-actions { margin: -8px 0 18px; }
+.comparison-settings {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  margin: 14px 0 18px;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+}
+.comparison-settings label { display: flex; align-items: center; gap: 6px; }
+.comparison-settings button { padding: 4px 10px; }
+.comparison-settings .muted { font-size: 12px; }
 .summary-link {
   display: inline-block;
   padding: 6px 12px;

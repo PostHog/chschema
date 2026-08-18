@@ -39,11 +39,22 @@ type dumpObjectSnapshot struct {
 // reload, so object pages can show current cross-node presence without locking
 // peers.
 type dumpWebContext struct {
-	mu       sync.RWMutex
-	byServer map[string]map[string]dumpObjectSnapshot // base path -> db\x00kind\x00name -> snapshot
-	nodes    map[string]dumpNodeIdentity              // base path -> mounted dump identity
-	servers  []*webServer
-	aliases  map[string]string // remote_servers alias -> physical dump cluster
+	mu                 sync.RWMutex
+	byServer           map[string]map[string]dumpObjectSnapshot // base path -> db\x00kind\x00name -> snapshot
+	nodes              map[string]dumpNodeIdentity              // base path -> mounted dump identity
+	servers            []*webServer
+	aliases            map[string]string // remote_servers alias -> physical dump cluster
+	defaultDiffOptions hclload.DiffOptions
+}
+
+const columnOrderCookie = "hclexp_ignore_column_order"
+
+func (ctx *dumpWebContext) diffOptions(r *http.Request) hclload.DiffOptions {
+	options := ctx.defaultDiffOptions
+	if cookie, err := r.Cookie(columnOrderCookie); err == nil {
+		options.IgnoreColumnOrder = cookie.Value == "1"
+	}
+	return options
 }
 
 type objectPresenceView struct {
@@ -232,10 +243,11 @@ type dumpMissingNodeView struct {
 }
 
 // objectReview returns the union of browsable objects in the dump, grouped by
-// canonical schema signature. Absence is reported as deployment context but is
-// not schema drift: different node roles legitimately contain different object
-// sets, matching objectPresence's existing semantics.
-func (ctx *dumpWebContext) objectReview() dumpObjectReview {
+// object-scoped semantic equivalence under the active diff options. Absence is
+// reported as deployment context but is not schema drift: different node roles
+// legitimately contain different object sets, matching objectPresence's
+// existing semantics.
+func (ctx *dumpWebContext) objectReview(options hclload.DiffOptions) dumpObjectReview {
 	ctx.mu.RLock()
 	defer ctx.mu.RUnlock()
 
@@ -272,22 +284,20 @@ func (ctx *dumpWebContext) objectReview() dumpObjectReview {
 			return missing[i].Node < missing[j].Node
 		})
 
-		bySignature := map[string][]dumpObjectSnapshot{}
+		var groups [][]dumpObjectSnapshot
 		for _, snapshot := range snapshots {
-			bySignature[snapshot.Signature] = append(bySignature[snapshot.Signature], snapshot)
-		}
-		groups := make([][]dumpObjectSnapshot, 0, len(bySignature))
-		for _, group := range bySignature {
-			sortObjectSnapshots(group)
-			groups = append(groups, group)
-		}
-		sort.Slice(groups, func(i, j int) bool {
-			left, right := groups[i][0], groups[j][0]
-			if left.Node.Cluster != right.Node.Cluster {
-				return left.Node.Cluster < right.Node.Cluster
+			matched := false
+			for i := range groups {
+				if objectSnapshotsEqual(groups[i][0], snapshot, options) {
+					groups[i] = append(groups[i], snapshot)
+					matched = true
+					break
+				}
 			}
-			return left.Node.Node < right.Node.Node
-		})
+			if !matched {
+				groups = append(groups, []dumpObjectSnapshot{snapshot})
+			}
+		}
 
 		first := snapshots[0]
 		view := dumpObjectReviewView{
@@ -399,11 +409,39 @@ func normalizedTableSignature(database string, table hclload.TableSpec) (string,
 	return hclload.RenderObjectHCL(database, hclload.KindTable, table.Name, db)
 }
 
+// objectSnapshotsEqual uses the core semantic diff rather than rendered HCL
+// equality. The signature remains the source for the human-readable unified
+// diff and is a safe fast path, while DiffWithOptions handles normalized SQL
+// expressions, redacted fields, engine-specific comparison, and column-order
+// policy exactly like the CLI.
+func objectSnapshotsEqual(left, right dumpObjectSnapshot, options hclload.DiffOptions) bool {
+	if left.Signature == right.Signature {
+		return true
+	}
+	changes := hclload.DiffWithOptions(left.Schema, right.Schema, options)
+	return !changeSetContainsObject(changes, left.Database, left.Kind, left.Object)
+}
+
+func changeSetContainsObject(changes hclload.ChangeSet, database, kind, name string) bool {
+	for _, comparison := range hclload.BuildObjectComparisons(
+		changes, hclload.GeneratedSQL{}, nil, nil,
+	) {
+		if comparison.Database == database && comparison.ObjectType == kind && comparison.Object == name {
+			return true
+		}
+	}
+	return false
+}
+
 // objectPresence returns every dumped node containing the same object. The
-// current node is the baseline; every other signature is marked same/different
-// against it. Missing objects are intentionally omitted: this answers where the
-// object exists without flooding role-specific pages with every unrelated node.
-func (ctx *dumpWebContext) objectPresence(currentBase, database, kind, name string) []objectPresenceView {
+// current node is the baseline; every peer is marked semantically same or
+// different under the active options. Missing objects are intentionally
+// omitted: this answers where the object exists without flooding role-specific
+// pages with every unrelated node.
+func (ctx *dumpWebContext) objectPresence(
+	currentBase, database, kind, name string,
+	options hclload.DiffOptions,
+) []objectPresenceView {
 	key := dumpObjectKey(database, kind, name)
 	ctx.mu.RLock()
 	defer ctx.mu.RUnlock()
@@ -433,7 +471,7 @@ func (ctx *dumpWebContext) objectPresence(currentBase, database, kind, name stri
 			view.Status = "current"
 			view.MarkerClass = "current"
 			view.Current = true
-		case peer.Signature == current.Signature:
+		case objectSnapshotsEqual(current, peer, options):
 			view.Status = "same"
 			view.MarkerClass = "same"
 		default:
@@ -486,22 +524,24 @@ type schemaDiffLineView struct {
 }
 
 type objectCompareData struct {
-	Title        string
-	Base         string
-	Label        string
-	Database     string
-	DatabaseHref string
-	KindLabel    string
-	Name         string
-	SwapHref     string
-	PatchHref    string
-	Current      objectCompareSideView
-	Peer         objectCompareSideView
-	Same         bool
-	Lines        []schemaDiffLineView
-	ShowPatch    bool
-	PatchSQL     string
-	PatchUnsafe  []string
+	Title             string
+	Base              string
+	Label             string
+	Database          string
+	DatabaseHref      string
+	KindLabel         string
+	Name              string
+	SwapHref          string
+	PatchHref         string
+	Current           objectCompareSideView
+	Peer              objectCompareSideView
+	Same              bool
+	Lines             []schemaDiffLineView
+	ShowPatch         bool
+	PatchSQL          string
+	PatchUnsafe       []string
+	IgnoreColumnOrder bool
+	SettingsReturn    string
 }
 
 type dumpObjectComparison struct {
@@ -514,7 +554,10 @@ type dumpObjectComparison struct {
 // objectComparison returns the current node's canonical HCL and the requested
 // peer's canonical HCL. Dump node names are globally unique, as enforced while
 // building the dump server, so the peer query parameter identifies one mount.
-func (ctx *dumpWebContext) objectComparison(currentBase, peerNode, database, kind, name string) (dumpObjectComparison, bool) {
+func (ctx *dumpWebContext) objectComparison(
+	currentBase, peerNode, database, kind, name string,
+	options hclload.DiffOptions,
+) (dumpObjectComparison, bool) {
 	key := dumpObjectKey(database, kind, name)
 	ctx.mu.RLock()
 	defer ctx.mu.RUnlock()
@@ -539,10 +582,10 @@ func (ctx *dumpWebContext) objectComparison(currentBase, peerNode, database, kin
 
 	comparison := dumpObjectComparison{Current: current, Peer: peer}
 	for _, snapshot := range snapshots {
-		if snapshot.Signature == current.Signature {
+		if objectSnapshotsEqual(current, snapshot, options) {
 			comparison.CurrentMatches = append(comparison.CurrentMatches, snapshot)
 		}
-		if snapshot.Signature == peer.Signature {
+		if objectSnapshotsEqual(peer, snapshot, options) {
 			comparison.PeerMatches = append(comparison.PeerMatches, snapshot)
 		}
 	}
@@ -589,8 +632,12 @@ func objectPatchHref(currentBase, peer, database, kind, name string) string {
 // rendered and each statement is parser-beautified for the preview. Manual
 // operations stay commented, and unsafe/unexpressible changes are returned
 // separately so the UI cannot imply that a partial patch is enough.
-func objectPatchSQL(from, to dumpObjectSnapshot, database, kind, name string) (string, []string) {
-	cs := hclload.Diff(from.Schema, to.Schema)
+func objectPatchSQL(
+	from, to dumpObjectSnapshot,
+	database, kind, name string,
+	options hclload.DiffOptions,
+) (string, []string) {
+	cs := hclload.DiffWithOptions(from.Schema, to.Schema, options)
 	gen := hclload.GenerateSQL(cs)
 	comparisons := hclload.BuildObjectComparisons(cs, gen, from.Schema, to.Schema)
 	for _, comparison := range comparisons {
@@ -679,7 +726,8 @@ func (s *webServer) handleCompare(w http.ResponseWriter, r *http.Request) {
 		s.notFound(w)
 		return
 	}
-	comparison, ok := s.dumpContext.objectComparison(s.basePath, peerNode, database, kind, name)
+	options := s.dumpContext.diffOptions(r)
+	comparison, ok := s.dumpContext.objectComparison(s.basePath, peerNode, database, kind, name, options)
 	if !ok {
 		s.notFound(w)
 		return
@@ -693,23 +741,25 @@ func (s *webServer) handleCompare(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := objectCompareData{
-		Title:        "Schema comparison: " + name,
-		Base:         s.basePath,
-		Label:        s.label,
-		Database:     database,
-		DatabaseHref: current.DatabaseHref,
-		KindLabel:    kindLabel(kind),
-		Name:         name,
-		SwapHref:     objectCompareHref(peer.BasePath, current.Node.Node, database, kind, name),
-		PatchHref:    objectPatchHref(s.basePath, peer.Node.Node, database, kind, name),
-		Current:      objectCompareSide(current, comparison.CurrentMatches),
-		Peer:         objectCompareSide(peer, comparison.PeerMatches),
-		Same:         current.Signature == peer.Signature,
-		Lines:        lines,
+		Title:             "Schema comparison: " + name,
+		Base:              s.basePath,
+		Label:             s.label,
+		Database:          database,
+		DatabaseHref:      current.DatabaseHref,
+		KindLabel:         kindLabel(kind),
+		Name:              name,
+		SwapHref:          objectCompareHref(peer.BasePath, current.Node.Node, database, kind, name),
+		PatchHref:         objectPatchHref(s.basePath, peer.Node.Node, database, kind, name),
+		Current:           objectCompareSide(current, comparison.CurrentMatches),
+		Peer:              objectCompareSide(peer, comparison.PeerMatches),
+		Same:              objectSnapshotsEqual(current, peer, options),
+		Lines:             lines,
+		IgnoreColumnOrder: options.IgnoreColumnOrder,
+		SettingsReturn:    s.basePath + r.URL.RequestURI(),
 	}
 	if r.URL.Query().Get("patch") == "1" {
 		data.ShowPatch = true
-		data.PatchSQL, data.PatchUnsafe = objectPatchSQL(peer, current, database, kind, name)
+		data.PatchSQL, data.PatchUnsafe = objectPatchSQL(peer, current, database, kind, name, options)
 	}
 	s.render(w, s.tmplCompare, data)
 }

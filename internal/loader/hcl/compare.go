@@ -266,6 +266,10 @@ func fieldChangesForTable(td TableDiff) []FieldChange {
 		newSQL, _ := engineSQL(c.New)
 		out = append(out, FieldChange{Field: "engine", Change: "modify", Old: oldSQL, New: newSQL})
 	}
+	if c := td.ColumnOrderChange; c != nil {
+		out = append(out, FieldChange{Field: "column_order", Change: "modify",
+			Old: strings.Join(c.Old, ", "), New: strings.Join(c.New, ", ")})
+	}
 	if c := td.OrderByChange; c != nil {
 		out = append(out, FieldChange{Field: "order_by", Change: "modify",
 			Old: strings.Join(c.Old, ", "), New: strings.Join(c.New, ", ")})

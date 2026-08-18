@@ -286,8 +286,10 @@ type ColumnSpec struct {
 	// redeclaring the table (#158). Patch-only — a declared table or MV
 	// column carrying either is a resolve error, and modify_column rejects
 	// them (repositioning base columns is genuine drift). Consumed and
-	// cleared at patch application; tagged diff:"-" as transient placement
-	// metadata, like RenamedFrom.
+	// cleared at patch application; the diff engine may also populate these
+	// fields on its private AddColumns copies so SQL generation preserves the
+	// target order. Tagged diff:"-" as transient placement metadata, like
+	// RenamedFrom.
 	After *string `hcl:"after,optional" diff:"-"`
 	First bool    `hcl:"first,optional" diff:"-"`
 }

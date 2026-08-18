@@ -3,6 +3,7 @@ package main
 import (
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,15 @@ role "data" {
 func getMulti(t *testing.T, ms *multiServer, target string) (int, string) {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, target, nil)
+	rec := httptest.NewRecorder()
+	ms.handler().ServeHTTP(rec, req)
+	return rec.Code, rec.Body.String()
+}
+
+func getMultiWithCookie(t *testing.T, ms *multiServer, target string, cookie *http.Cookie) (int, string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, target, nil)
+	req.AddCookie(cookie)
 	rec := httptest.NewRecorder()
 	ms.handler().ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String()
@@ -315,6 +325,89 @@ func TestWebDump_ObjectDiffSummary(t *testing.T) {
 		"the summary uses reloaded peer signatures without visiting that node first")
 }
 
+func TestWebDump_SemanticDiffAndSessionColumnOrder(t *testing.T) {
+	root := t.TempDir()
+	writeFileT(t, filepath.Join(root, "node-a.hcl"), `node "node-a" {
+  macros = { cluster = "cluster-a" }
+}
+database "posthog" {
+  table "events" {
+    engine "merge_tree" {}
+    order_by = ["deleted_at"]
+    ttl = "deleted_at + toIntervalMonth(3) WHERE is_deleted = 1"
+    column "deleted_at" { type = "DateTime" }
+    column "is_deleted" { type = "UInt8" }
+  }
+}
+`)
+	writeFileT(t, filepath.Join(root, "node-b.hcl"), `node "node-b" {
+  macros = { cluster = "cluster-b" }
+}
+database "posthog" {
+  table "events" {
+    engine "merge_tree" {}
+    order_by = ["deleted_at"]
+    ttl = "deleted_at + INTERVAL 3 MONTH WHERE is_deleted = 1"
+    column "is_deleted" { type = "UInt8" }
+    column "deleted_at" { type = "DateTime" }
+  }
+}
+`)
+
+	ms, err := buildDumpMultiServer(root, "*", 0)
+	require.NoError(t, err)
+
+	code, body := getMulti(t, ms, "/object-diffs")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `<strong>1</strong><span>different</span>`)
+	assert.Contains(t, body, `2 schema variants`)
+	assert.NotContains(t, body, `name="ignore_column_order" value="1" checked`)
+
+	form := url.Values{
+		"ignore_column_order": {"1"},
+		"return":              {"/object-diffs"},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/comparison-settings", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	ms.handler().ServeHTTP(rec, req)
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+	assert.Equal(t, "/object-diffs", rec.Header().Get("Location"))
+	var sessionCookie *http.Cookie
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == columnOrderCookie {
+			sessionCookie = cookie
+		}
+	}
+	require.NotNil(t, sessionCookie)
+	assert.Equal(t, "1", sessionCookie.Value)
+	assert.Zero(t, sessionCookie.MaxAge, "the comparison preference is browser-session scoped")
+
+	code, body = getMultiWithCookie(t, ms, "/object-diffs", sessionCookie)
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `<strong>0</strong><span>different</span>`)
+	assert.Contains(t, body, `<strong>1</strong><span>uniform</span>`)
+	assert.Contains(t, body, `1 schema variant`)
+	assert.Contains(t, body, `name="ignore_column_order" value="1" checked`)
+
+	compareHref := objectCompareHref(nodeBasePath("node-a"), "node-b", "posthog", "table", "events")
+	code, body = getMultiWithCookie(t, ms, compareHref, sessionCookie)
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "No semantic differences under the current comparison settings.",
+		"equivalent TTL syntax remains equal after the only real difference, column order, is ignored")
+	assert.NotContains(t, body, "Patch to uniform")
+
+	defaultIgnored, err := buildDumpMultiServerWithOptions(
+		root, "*", 0, hclload.DiffOptions{IgnoreColumnOrder: true},
+	)
+	require.NoError(t, err)
+	code, body = getMulti(t, defaultIgnored, "/object-diffs")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, `<strong>0</strong><span>different</span>`)
+	assert.Contains(t, body, `name="ignore_column_order" value="1" checked`,
+		"the web startup option becomes the default for a new browser session")
+}
+
 func TestWebDump_ObjectPresenceSchemaMarkersAndDiff(t *testing.T) {
 	root := t.TempDir()
 	writeFileT(t, filepath.Join(root, "node-a.hcl"), replicatedTableDump(
@@ -360,6 +453,8 @@ func TestWebDump_ObjectPresenceSchemaMarkersAndDiff(t *testing.T) {
 	assert.Contains(t, diffBody, `class="diff-line diff-add"`)
 	assert.Contains(t, diffBody, "UInt64")
 	assert.Contains(t, diffBody, "String")
+	assert.Contains(t, diffBody, `name="return" value="`+strings.ReplaceAll(compareHref, "&", "&amp;")+`"`,
+		"session settings return to the mounted node comparison, not the root mux")
 	assert.NotContains(t, diffBody, "11111111-1111-1111-1111-111111111111",
 		"the displayed diff uses the same UUID-masked HCL as the marker")
 
@@ -407,7 +502,7 @@ func TestWebDump_ObjectPresenceSchemaMarkersAndDiff(t *testing.T) {
 	code, sameBody := getMulti(t, ms, objectCompareHref(
 		nodeBasePath("node-a"), "node-b", "posthog", "table", "events"))
 	require.Equal(t, http.StatusOK, code)
-	assert.Contains(t, sameBody, "The canonical HCL definitions are identical.")
+	assert.Contains(t, sameBody, "No semantic differences under the current comparison settings.")
 	assert.Contains(t, sameBody, `Same schema as both sides <span class="count">2</span>`)
 	assert.NotContains(t, sameBody, "Patch to uniform")
 
@@ -454,9 +549,33 @@ func TestWebDump_ObjectPatchSQLReportsUnsafeChanges(t *testing.T) {
 		dumpObjectSnapshot{Schema: normalizedDumpSchema(drifted)},
 		dumpObjectSnapshot{Schema: normalizedDumpSchema(desired)},
 		"posthog", "table", "events",
+		hclload.DiffOptions{},
 	)
 	assert.Contains(t, sql, "no automatic SQL was generated")
 	assert.Contains(t, strings.Join(unsafe, "\n"), "ORDER BY change")
+}
+
+func TestWebDump_ObjectPatchSQLPreservesAddedColumnPosition(t *testing.T) {
+	current := webTestSchema()
+	desired := webTestSchema()
+	current.Databases[0].Tables[0].Columns = []hclload.ColumnSpec{
+		{Name: "a", Type: "UInt8"},
+		{Name: "d", Type: "UInt8"},
+	}
+	desired.Databases[0].Tables[0].Columns = []hclload.ColumnSpec{
+		{Name: "a", Type: "UInt8"},
+		{Name: "b", Type: "UInt8"},
+		{Name: "d", Type: "UInt8"},
+	}
+
+	sql, unsafe := objectPatchSQL(
+		dumpObjectSnapshot{Schema: normalizedDumpSchema(current)},
+		dumpObjectSnapshot{Schema: normalizedDumpSchema(desired)},
+		"posthog", "table", "events",
+		hclload.DiffOptions{},
+	)
+	require.Empty(t, unsafe)
+	assert.Contains(t, sql, "ADD COLUMN b UInt8 AFTER a;")
 }
 
 func TestWebDump_ObjectPatchSQLCommentsEveryManualLine(t *testing.T) {
@@ -470,6 +589,7 @@ func TestWebDump_ObjectPatchSQLCommentsEveryManualLine(t *testing.T) {
 		dumpObjectSnapshot{Schema: normalizedDumpSchema(current)},
 		dumpObjectSnapshot{Schema: normalizedDumpSchema(desired)},
 		"posthog", "table", "events",
+		hclload.DiffOptions{},
 	)
 	require.Empty(t, unsafe)
 	manualAt := strings.Index(sql, "-- MANUAL:")
@@ -506,7 +626,7 @@ func TestWebDump_ObjectPresenceCoversEveryBrowsableKind(t *testing.T) {
 		{"dictionary", "user_dict"},
 		{"raw", "legacy_raw"},
 	}
-	review := ctx.objectReview()
+	review := ctx.objectReview(hclload.DiffOptions{})
 	require.Equal(t, len(objects), review.TotalObjects)
 	assert.Equal(t, 1, review.DifferentObjects)
 	assert.Equal(t, len(objects)-1, review.UniformObjects)
