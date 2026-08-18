@@ -775,9 +775,13 @@ inventory of every qualified object found in the loaded dumps. It uses the same
 semantic diff as the CLI, summarizes uniform and differing schemas, groups
 nodes by semantic schema variant, and links each non-baseline variant to the
 full comparison view. Filters narrow the inventory by status or by database,
-kind, object, cluster, and node. Partial presence is shown as deployment context
-but is not classified as drift, since different node roles can legitimately
-contain different object sets.
+kind, object, cluster, and node. Object presence follows an all-or-none rule per
+cluster. It is valid for an object to be absent from every loaded node of a
+cluster, because different clusters can legitimately contain different object
+sets. If the object exists on any node of a cluster, however, the review expects
+it on every loaded node of that cluster and reports the missing nodes as
+**inconsistent presence**. Presence inconsistencies are kept separate from
+semantic schema differences.
 
 In dump mode, every object page (table, materialized view, view, dictionary, or
 raw object) also shows all cluster/node dumps containing the same qualified

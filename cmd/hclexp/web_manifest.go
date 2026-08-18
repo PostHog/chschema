@@ -395,7 +395,7 @@ func (ms *multiServer) handleObjectDiffs(w http.ResponseWriter, r *http.Request)
 		{Label: "All", Href: objectDiffFilterHref(rawQuery, ""), Count: review.TotalObjects, Active: status == ""},
 		{Label: "Different", Href: objectDiffFilterHref(rawQuery, "different"), Count: review.DifferentObjects, Active: status == "different"},
 		{Label: "Uniform", Href: objectDiffFilterHref(rawQuery, "uniform"), Count: review.UniformObjects, Active: status == "uniform"},
-		{Label: "Partial presence", Href: objectDiffFilterHref(rawQuery, "partial"), Count: review.PartialObjects, Active: status == "partial"},
+		{Label: "Inconsistent presence", Href: objectDiffFilterHref(rawQuery, "partial"), Count: review.PartialObjects, Active: status == "partial"},
 	}
 	if err := ms.tmplObjectDiffs.ExecuteTemplate(w, "layout", data); err != nil {
 		slog.Error("render object diff summary", "err", err)
