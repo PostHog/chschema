@@ -210,6 +210,65 @@ func TestCHLive_AlterMaterializedViewAdditiveProjection(t *testing.T) {
 	require.True(t, secondDiff.IsEmpty(),
 		"generated migration did not converge; residual SQL: %#v; unsafe: %#v",
 		GenerateSQL(secondDiff).Statements, GenerateSQL(secondDiff).Unsafe)
+
+	// Starting from the converged live schema, verify that removing an output
+	// or changing an existing output definition does not inherit the additive
+	// exception. Both require recreation and must emit no MODIFY QUERY.
+	for _, tc := range []struct {
+		name   string
+		mutate func(*MaterializedViewSpec)
+	}{
+		{
+			name: "drop output",
+			mutate: func(mv *MaterializedViewSpec) {
+				mv.Columns = mv.Columns[:1]
+				query, ok := normalizeQuery(fmt.Sprintf("SELECT id FROM %s.source", dbName))
+				require.True(t, ok)
+				mv.Query = query
+			},
+		},
+		{
+			name: "change output type",
+			mutate: func(mv *MaterializedViewSpec) {
+				for i := range mv.Columns {
+					if mv.Columns[i].Name == "value" {
+						mv.Columns[i].Type = "String"
+					}
+				}
+				query, ok := normalizeQuery(fmt.Sprintf("SELECT id, value FROM %s.source", dbName))
+				require.True(t, ok)
+				mv.Query = query
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			unsafeDB := *afterDB
+			unsafeDB.MaterializedViews = append(
+				[]MaterializedViewSpec(nil), afterDB.MaterializedViews...)
+			require.Len(t, unsafeDB.MaterializedViews, 1)
+			unsafeDB.MaterializedViews[0].Columns = append(
+				[]ColumnSpec(nil), unsafeDB.MaterializedViews[0].Columns...)
+			tc.mutate(&unsafeDB.MaterializedViews[0])
+
+			change := Diff(
+				&Schema{Databases: []DatabaseSpec{*afterDB}},
+				&Schema{Databases: []DatabaseSpec{unsafeDB}},
+			)
+			require.Len(t, change.Databases, 1)
+			require.Len(t, change.Databases[0].AlterMaterializedViews, 1)
+			mvChange := change.Databases[0].AlterMaterializedViews[0]
+			assert.True(t, mvChange.ColumnsChanged)
+			assert.True(t, mvChange.Recreate)
+			assert.Nil(t, mvChange.QueryChange)
+
+			got := GenerateSQL(change)
+			assert.Empty(t, got.Statements)
+			require.Len(t, got.Unsafe, 1)
+			assert.Equal(t, dbName, got.Unsafe[0].Database)
+			assert.Equal(t, "events_mv", got.Unsafe[0].Table)
+			assert.Contains(t, got.Unsafe[0].Reason, "incompatible column list")
+		})
+	}
 }
 
 // mustParseResolve parses HCL source from a literal string by writing it to
