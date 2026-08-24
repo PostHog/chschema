@@ -655,6 +655,139 @@ func TestDiff_AlterMaterializedViewColumnListRecreate(t *testing.T) {
 	assert.Nil(t, mvd.QueryChange)
 }
 
+func TestDiff_AlterMaterializedViewAdditiveProjection(t *testing.T) {
+	id := ColumnSpec{Name: "id", Type: "UInt64"}
+	value := ColumnSpec{Name: "value", Type: "Nullable(String)"}
+	fromMV := MaterializedViewSpec{
+		Name:    "events_mv",
+		ToTable: "default.destination",
+		Query:   "SELECT id FROM default.source",
+		Columns: []ColumnSpec{id},
+	}
+	toMV := MaterializedViewSpec{
+		Name:    "events_mv",
+		ToTable: "default.destination",
+		Query:   "SELECT id, nullIf(value, '') AS value FROM default.source",
+		Columns: []ColumnSpec{id, value},
+	}
+	from := &Schema{Databases: []DatabaseSpec{{
+		Name: "default",
+		Tables: []TableSpec{
+			mkTable("source", EngineMergeTree{}, id, ColumnSpec{Name: "value", Type: "String"}),
+			mkTable("destination", EngineMergeTree{}, id),
+		},
+		MaterializedViews: []MaterializedViewSpec{fromMV},
+	}}}
+	to := &Schema{Databases: []DatabaseSpec{{
+		Name: "default",
+		Tables: []TableSpec{
+			mkTable("source", EngineMergeTree{}, id, ColumnSpec{Name: "value", Type: "String"}),
+			mkTable("destination", EngineMergeTree{}, id, value),
+		},
+		MaterializedViews: []MaterializedViewSpec{toMV},
+	}}}
+
+	cs := Diff(from, to)
+	require.Len(t, cs.Databases, 1)
+	require.Len(t, cs.Databases[0].AlterMaterializedViews, 1)
+	mvd := cs.Databases[0].AlterMaterializedViews[0]
+	assert.True(t, mvd.ColumnsChanged)
+	assert.False(t, mvd.Recreate)
+	assert.False(t, mvd.IsUnsafe())
+	require.NotNil(t, mvd.QueryChange)
+
+	generated := GenerateSQL(cs)
+	assert.Empty(t, generated.Unsafe)
+	assert.Equal(t, []string{
+		"ALTER TABLE default.destination ADD COLUMN value Nullable(String)",
+		"ALTER TABLE default.events_mv MODIFY QUERY SELECT id, nullIf(value, '') AS value FROM default.source",
+	}, generated.Statements)
+}
+
+func TestDiff_AlterMaterializedViewAdditiveProjectionUnsafeBoundaries(t *testing.T) {
+	id := ColumnSpec{Name: "id", Type: "UInt64"}
+	value := ColumnSpec{Name: "value", Type: "Nullable(String)"}
+	other := ColumnSpec{Name: "other", Type: "Nullable(String)"}
+	oldQuery := "SELECT id FROM default.source"
+	newQuery := "SELECT id, nullIf(value, '') AS value FROM default.source"
+	compatibleResolver := NewSchemaResolver([]DatabaseSpec{{
+		Name:   "default",
+		Tables: []TableSpec{mkTable("destination", EngineMergeTree{}, id, value)},
+	}})
+
+	tests := []struct {
+		name     string
+		from     MaterializedViewSpec
+		to       MaterializedViewSpec
+		resolver TableResolver
+	}{
+		{
+			name: "column only",
+			from: MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: oldQuery, Columns: []ColumnSpec{id}},
+			to:   MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: oldQuery, Columns: []ColumnSpec{id, value}},
+		},
+		{
+			name: "removed output",
+			from: MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: oldQuery, Columns: []ColumnSpec{id, value}},
+			to:   MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: newQuery, Columns: []ColumnSpec{id}},
+		},
+		{
+			name: "renamed output",
+			from: MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: oldQuery, Columns: []ColumnSpec{id}},
+			to:   MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: newQuery, Columns: []ColumnSpec{other}},
+		},
+		{
+			name: "existing output type changed",
+			from: MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: oldQuery, Columns: []ColumnSpec{id}},
+			to: MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: newQuery, Columns: []ColumnSpec{
+				{Name: "id", Type: "UInt32"}, value,
+			}},
+		},
+		{
+			name: "destination missing output",
+			from: MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: oldQuery, Columns: []ColumnSpec{id}},
+			to:   MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: newQuery, Columns: []ColumnSpec{id, value}},
+			resolver: NewSchemaResolver([]DatabaseSpec{{
+				Name:   "default",
+				Tables: []TableSpec{mkTable("destination", EngineMergeTree{}, id)},
+			}}),
+		},
+		{
+			name: "destination output type incompatible",
+			from: MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: oldQuery, Columns: []ColumnSpec{id}},
+			to:   MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: newQuery, Columns: []ColumnSpec{id, value}},
+			resolver: NewSchemaResolver([]DatabaseSpec{{
+				Name: "default",
+				Tables: []TableSpec{mkTable("destination", EngineMergeTree{}, id,
+					ColumnSpec{Name: "value", Type: "String"})},
+			}}),
+		},
+		{
+			name: "destination output is computed",
+			from: MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: oldQuery, Columns: []ColumnSpec{id}},
+			to:   MaterializedViewSpec{Name: "mv", ToTable: "default.destination", Query: newQuery, Columns: []ColumnSpec{id, value}},
+			resolver: NewSchemaResolver([]DatabaseSpec{{
+				Name: "default",
+				Tables: []TableSpec{mkTable("destination", EngineMergeTree{}, id,
+					ColumnSpec{Name: "value", Type: "Nullable(String)", Alias: ptr("NULL")})},
+			}}),
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			resolver := tc.resolver
+			if resolver == nil {
+				resolver = compatibleResolver
+			}
+			got := diffMaterializedView("default", &tc.from, &tc.to, resolver, DiffOptions{})
+			assert.True(t, got.Recreate)
+			assert.True(t, got.IsUnsafe())
+			assert.Nil(t, got.QueryChange)
+		})
+	}
+}
+
 func TestDiff_AlterMaterializedViewBothToTableAndQueryRecreateOnly(t *testing.T) {
 	// When both to_table and query change, Recreate supersedes QueryChange.
 	from := []DatabaseSpec{mkDBWithMVs("posthog",

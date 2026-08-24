@@ -191,10 +191,12 @@ func TestFieldChangesForTable(t *testing.T) {
 func TestFieldChangesForMaterializedView(t *testing.T) {
 	// Structural change: to_table and columns both differ.
 	mvd := diffMaterializedView(
+		"",
 		&MaterializedViewSpec{Name: "mv", ToTable: "t_old", Query: "SELECT 1",
 			Columns: []ColumnSpec{{Name: "a", Type: "UInt8"}}},
 		&MaterializedViewSpec{Name: "mv", ToTable: "t_new", Query: "SELECT 1",
 			Columns: []ColumnSpec{{Name: "b", Type: "UInt8"}}},
+		nil,
 		DiffOptions{},
 	)
 	assert.True(t, mvd.Recreate)
@@ -205,8 +207,10 @@ func TestFieldChangesForMaterializedView(t *testing.T) {
 
 	// Query-only change.
 	mvd = diffMaterializedView(
+		"",
 		&MaterializedViewSpec{Name: "mv", ToTable: "t", Query: "SELECT 1"},
 		&MaterializedViewSpec{Name: "mv", ToTable: "t", Query: "SELECT 2"},
+		nil,
 		DiffOptions{},
 	)
 	assert.False(t, mvd.Recreate)

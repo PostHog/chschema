@@ -229,6 +229,61 @@ database "posthog" {
 	require.Empty(t, buf.String())
 }
 
+func TestRunDiff_MaterializedViewAdditiveProjectionSQL(t *testing.T) {
+	left := writeTemp(t, "before.hcl", `
+database "default" {
+  table "source" {
+    order_by = ["id"]
+    column "id"    { type = "UInt64" }
+    column "value" { type = "String" }
+    engine "merge_tree" {}
+  }
+  table "destination" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+  }
+  materialized_view "events_mv" {
+    to_table = "default.destination"
+    query    = "SELECT id FROM default.source"
+    column "id" { type = "UInt64" }
+  }
+}`)
+	right := writeTemp(t, "after.hcl", `
+database "default" {
+  table "source" {
+    order_by = ["id"]
+    column "id"    { type = "UInt64" }
+    column "value" { type = "String" }
+    engine "merge_tree" {}
+  }
+  table "destination" {
+    order_by = ["id"]
+    column "id"    { type = "UInt64" }
+    column "value" { type = "Nullable(String)" }
+    engine "merge_tree" {}
+  }
+  materialized_view "events_mv" {
+    to_table = "default.destination"
+    query    = "SELECT id, nullIf(value, '') AS value FROM default.source"
+    column "id"    { type = "UInt64" }
+    column "value" { type = "Nullable(String)" }
+  }
+}`)
+
+	leftSchema, err := loadSide(left)
+	require.NoError(t, err)
+	rightSchema, err := loadSide(right)
+	require.NoError(t, err)
+
+	generated := hclload.GenerateSQL(hclload.Diff(leftSchema, rightSchema))
+	require.Empty(t, generated.Unsafe)
+	require.Equal(t, []string{
+		"ALTER TABLE default.destination ADD COLUMN value Nullable(String)",
+		"ALTER TABLE default.events_mv MODIFY QUERY SELECT id, nullIf(value, '') AS value\nFROM default.source",
+	}, generated.Statements)
+}
+
 func TestRenderChangeSet_MaterializedViews(t *testing.T) {
 	cs := hclload.ChangeSet{
 		Databases: []hclload.DatabaseChange{
@@ -253,7 +308,7 @@ func TestRenderChangeSet_MaterializedViews(t *testing.T) {
 	want := `database "posthog"
   + materialized_view mv_events
   - materialized_view mv_old
-  ~ materialized_view mv_rebuild (UNSAFE: materialized view to_table or column list change requires recreating the view)
+  ~ materialized_view mv_rebuild (UNSAFE: materialized view to_table or incompatible column list change requires recreating the view)
       ~ to_table: t_old -> t_new
       ~ columns changed
   ~ materialized_view mv_query_update

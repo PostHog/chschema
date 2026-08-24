@@ -120,6 +120,157 @@ func TestCHLive_IntrospectMaterializedView(t *testing.T) {
 	assert.ElementsMatch(t, []string{"metrics", "events"}, tableNames)
 }
 
+// TestCHLive_AlterMaterializedViewAdditiveProjection exercises issue #197
+// end-to-end against ClickHouse: introspect the current source/destination/MV,
+// diff to an additive destination + MV projection, execute the generated
+// statements, verify routed data, and require a converged second diff.
+func TestCHLive_AlterMaterializedViewAdditiveProjection(t *testing.T) {
+	if !*clickhouseLive {
+		t.Skip("pass -clickhouse to run against a live ClickHouse")
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	ctx := context.Background()
+
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
+		"CREATE TABLE %s.source (id UInt64, value String) ENGINE = MergeTree ORDER BY id", dbName)))
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
+		"CREATE TABLE %s.destination (id UInt64) ENGINE = MergeTree ORDER BY id", dbName)))
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
+		"CREATE MATERIALIZED VIEW %s.events_mv TO %s.destination (id UInt64) "+
+			"AS SELECT id FROM %s.source", dbName, dbName, dbName)))
+
+	currentDB, err := Introspect(ctx, conn, dbName, false)
+	require.NoError(t, err)
+
+	// Clone the introspected state and express the exact desired change: add a
+	// nullable destination column and the matching MV output/query projection.
+	desiredDB := *currentDB
+	desiredDB.Tables = append([]TableSpec(nil), currentDB.Tables...)
+	for i := range desiredDB.Tables {
+		desiredDB.Tables[i].Columns = append([]ColumnSpec(nil), desiredDB.Tables[i].Columns...)
+		if desiredDB.Tables[i].Name == "destination" {
+			desiredDB.Tables[i].Columns = append(desiredDB.Tables[i].Columns,
+				ColumnSpec{Name: "value", Type: "Nullable(String)"})
+		}
+	}
+	desiredDB.MaterializedViews = append([]MaterializedViewSpec(nil), currentDB.MaterializedViews...)
+	for i := range desiredDB.MaterializedViews {
+		desiredDB.MaterializedViews[i].Columns = append(
+			[]ColumnSpec(nil), desiredDB.MaterializedViews[i].Columns...)
+		if desiredDB.MaterializedViews[i].Name == "events_mv" {
+			desiredDB.MaterializedViews[i].Columns = append(desiredDB.MaterializedViews[i].Columns,
+				ColumnSpec{Name: "value", Type: "Nullable(String)"})
+			query, ok := normalizeQuery(fmt.Sprintf(
+				"SELECT id, nullIf(value, '') AS value FROM %s.source", dbName))
+			require.True(t, ok)
+			desiredDB.MaterializedViews[i].Query = query
+		}
+	}
+
+	current := &Schema{Databases: []DatabaseSpec{*currentDB}}
+	desired := &Schema{Databases: []DatabaseSpec{desiredDB}}
+	generated := GenerateSQL(Diff(current, desired))
+	require.Empty(t, generated.Unsafe)
+	require.Equal(t, []string{
+		fmt.Sprintf("ALTER TABLE %s.destination ADD COLUMN value Nullable(String)", dbName),
+		fmt.Sprintf("ALTER TABLE %s.events_mv MODIFY QUERY %s",
+			dbName, desiredDB.MaterializedViews[0].Query),
+	}, generated.Statements)
+
+	for _, statement := range generated.Statements {
+		require.NoError(t, conn.Exec(ctx, statement), "ClickHouse rejected generated statement:\n%s", statement)
+	}
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(
+		"INSERT INTO %s.source VALUES (1, 'kept'), (2, '')", dbName)))
+
+	rows, err := conn.Query(ctx, fmt.Sprintf(
+		"SELECT id, value FROM %s.destination ORDER BY id", dbName))
+	require.NoError(t, err)
+	defer rows.Close()
+	var gotIDs []uint64
+	var gotValues []*string
+	for rows.Next() {
+		var id uint64
+		var value *string
+		require.NoError(t, rows.Scan(&id, &value))
+		gotIDs = append(gotIDs, id)
+		gotValues = append(gotValues, value)
+	}
+	require.NoError(t, rows.Err())
+	require.Equal(t, []uint64{1, 2}, gotIDs)
+	require.Len(t, gotValues, 2)
+	require.NotNil(t, gotValues[0])
+	assert.Equal(t, "kept", *gotValues[0])
+	assert.Nil(t, gotValues[1])
+
+	afterDB, err := Introspect(ctx, conn, dbName, false)
+	require.NoError(t, err)
+	secondDiff := Diff(&Schema{Databases: []DatabaseSpec{*afterDB}}, desired)
+	require.True(t, secondDiff.IsEmpty(),
+		"generated migration did not converge; residual SQL: %#v; unsafe: %#v",
+		GenerateSQL(secondDiff).Statements, GenerateSQL(secondDiff).Unsafe)
+
+	// Starting from the converged live schema, verify that removing an output
+	// or changing an existing output definition does not inherit the additive
+	// exception. Both require recreation and must emit no MODIFY QUERY.
+	for _, tc := range []struct {
+		name   string
+		mutate func(*MaterializedViewSpec)
+	}{
+		{
+			name: "drop output",
+			mutate: func(mv *MaterializedViewSpec) {
+				mv.Columns = mv.Columns[:1]
+				query, ok := normalizeQuery(fmt.Sprintf("SELECT id FROM %s.source", dbName))
+				require.True(t, ok)
+				mv.Query = query
+			},
+		},
+		{
+			name: "change output type",
+			mutate: func(mv *MaterializedViewSpec) {
+				for i := range mv.Columns {
+					if mv.Columns[i].Name == "value" {
+						mv.Columns[i].Type = "String"
+					}
+				}
+				query, ok := normalizeQuery(fmt.Sprintf("SELECT id, value FROM %s.source", dbName))
+				require.True(t, ok)
+				mv.Query = query
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			unsafeDB := *afterDB
+			unsafeDB.MaterializedViews = append(
+				[]MaterializedViewSpec(nil), afterDB.MaterializedViews...)
+			require.Len(t, unsafeDB.MaterializedViews, 1)
+			unsafeDB.MaterializedViews[0].Columns = append(
+				[]ColumnSpec(nil), unsafeDB.MaterializedViews[0].Columns...)
+			tc.mutate(&unsafeDB.MaterializedViews[0])
+
+			change := Diff(
+				&Schema{Databases: []DatabaseSpec{*afterDB}},
+				&Schema{Databases: []DatabaseSpec{unsafeDB}},
+			)
+			require.Len(t, change.Databases, 1)
+			require.Len(t, change.Databases[0].AlterMaterializedViews, 1)
+			mvChange := change.Databases[0].AlterMaterializedViews[0]
+			assert.True(t, mvChange.ColumnsChanged)
+			assert.True(t, mvChange.Recreate)
+			assert.Nil(t, mvChange.QueryChange)
+
+			got := GenerateSQL(change)
+			assert.Empty(t, got.Statements)
+			require.Len(t, got.Unsafe, 1)
+			assert.Equal(t, dbName, got.Unsafe[0].Database)
+			assert.Equal(t, "events_mv", got.Unsafe[0].Table)
+			assert.Contains(t, got.Unsafe[0].Reason, "incompatible column list")
+		})
+	}
+}
+
 // mustParseResolve parses HCL source from a literal string by writing it to
 // a temp file, then runs Resolve, returning the single DatabaseSpec.
 func mustParseResolve(t *testing.T, src string) *DatabaseSpec {
