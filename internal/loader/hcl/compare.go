@@ -302,8 +302,9 @@ func fieldChangesForTable(td TableDiff) []FieldChange {
 	return out
 }
 
-// fieldChangesForMaterializedView flattens an MV diff. A structural change
-// (to_table / columns) implies recreation; query-only maps to MODIFY QUERY.
+// fieldChangesForMaterializedView flattens an MV diff. A destination or
+// incompatible column change implies recreation; query-only and compatible
+// additive output changes map to MODIFY QUERY.
 func fieldChangesForMaterializedView(mvd MaterializedViewDiff) []FieldChange {
 	var out []FieldChange
 	if c := mvd.ToTableChange; c != nil {

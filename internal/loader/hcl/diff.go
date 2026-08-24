@@ -90,15 +90,16 @@ func (d DictionaryDiff) IsEmpty() bool {
 func (d DictionaryDiff) IsUnsafe() bool { return false }
 
 // MaterializedViewDiff is the set of mutations to a single existing
-// materialized view. A query-only change is applied in place via
-// ALTER TABLE ... MODIFY QUERY; any structural change (to_table or the
-// column list) requires recreating the view and is flagged unsafe.
+// materialized view. Query changes are applied in place via ALTER TABLE ...
+// MODIFY QUERY. A destination change or a non-additive/incompatible column
+// change requires recreating the view and is flagged unsafe.
 type MaterializedViewDiff struct {
 	Name        string
 	QueryChange *StringChange // the AS SELECT body changed
-	Recreate    bool          // to_table or the column list changed
+	Recreate    bool          // the change cannot be applied with MODIFY QUERY
 
-	// Set alongside Recreate so consumers can tell WHAT forced it.
+	// Detail fields used by renderers. ColumnsChanged can accompany a safe
+	// QueryChange when the desired output is a compatible additive projection.
 	ToTableChange  *StringChange
 	ColumnsChanged bool
 }
@@ -107,8 +108,7 @@ func (mvd MaterializedViewDiff) IsEmpty() bool {
 	return mvd.QueryChange == nil && !mvd.Recreate
 }
 
-// IsUnsafe reports whether the diff requires recreating the view (ClickHouse
-// can't change a materialized view's destination or columns in place).
+// IsUnsafe reports whether the diff requires recreating the view.
 func (mvd MaterializedViewDiff) IsUnsafe() bool {
 	return mvd.Recreate
 }
@@ -484,7 +484,7 @@ func diffDatabase(name string, from, to *DatabaseSpec, fromR, toR TableResolver,
 		if !ok {
 			continue
 		}
-		mvd := diffMaterializedView(fromMVs[n], t, options)
+		mvd := diffMaterializedView(name, fromMVs[n], t, toR, options)
 		if !mvd.IsEmpty() {
 			dc.AlterMaterializedViews = append(dc.AlterMaterializedViews, mvd)
 		}
@@ -727,12 +727,12 @@ func indexMaterializedViews(mvs []MaterializedViewSpec) map[string]*Materialized
 	return out
 }
 
-// diffMaterializedView compares two materialized views with the same name. A
-// changed to_table or column list can't be applied in place, so it sets
-// Recreate; an otherwise-identical view with a changed query yields a
-// QueryChange that maps to ALTER TABLE ... MODIFY QUERY. Recreate supersedes
-// QueryChange — the two are mutually exclusive.
-func diffMaterializedView(from, to *MaterializedViewSpec, options DiffOptions) MaterializedViewDiff {
+// diffMaterializedView compares two materialized views with the same name.
+// A changed to_table or a non-additive/incompatible column change requires
+// recreation. A query change accompanied by strictly additive output columns
+// is safe when the desired destination table accepts the complete output; it
+// maps to ALTER TABLE ... MODIFY QUERY just like a query-only change.
+func diffMaterializedView(database string, from, to *MaterializedViewSpec, toR TableResolver, options DiffOptions) MaterializedViewDiff {
 	mvd := MaterializedViewDiff{Name: to.Name}
 	if from.ToTable != to.ToTable {
 		o, n := from.ToTable, to.ToTable
@@ -741,15 +741,87 @@ func diffMaterializedView(from, to *MaterializedViewSpec, options DiffOptions) M
 	if !materializedViewColumnsEqual(from.Columns, to.Columns, options.IgnoreColumnOrder) {
 		mvd.ColumnsChanged = true
 	}
-	if mvd.ToTableChange != nil || mvd.ColumnsChanged {
+	queryChanged := from.Query != to.Query
+	if mvd.ToTableChange != nil {
 		mvd.Recreate = true
 		return mvd
 	}
-	if from.Query != to.Query {
+	if mvd.ColumnsChanged {
+		if !queryChanged ||
+			!materializedViewColumnsAdditive(from.Columns, to.Columns, options.IgnoreColumnOrder) ||
+			!materializedViewDestinationAccepts(database, to, toR) {
+			mvd.Recreate = true
+			return mvd
+		}
+	}
+	if queryChanged {
 		q1, q2 := from.Query, to.Query
 		mvd.QueryChange = &StringChange{Old: &q1, New: &q2}
 	}
 	return mvd
+}
+
+// materializedViewColumnsAdditive reports whether to is a strict superset of
+// from: every existing column keeps its name, definition, and (unless the
+// caller ignores order) relative position.
+func materializedViewColumnsAdditive(from, to []ColumnSpec, ignoreOrder bool) bool {
+	if len(to) <= len(from) {
+		return false
+	}
+	fromColumns := indexColumns(from)
+	toColumns := indexColumns(to)
+	if len(fromColumns) != len(from) || len(toColumns) != len(to) {
+		return false
+	}
+	for name, column := range fromColumns {
+		other, ok := toColumns[name]
+		if !ok || !columnsEqual(*column, *other) {
+			return false
+		}
+	}
+
+	if !ignoreOrder {
+		fromIndex := 0
+		for i := range to {
+			if _, existed := fromColumns[to[i].Name]; !existed {
+				continue
+			}
+			if fromIndex >= len(from) || from[fromIndex].Name != to[i].Name {
+				return false
+			}
+			fromIndex++
+		}
+	}
+	return true
+}
+
+// materializedViewDestinationAccepts applies a deliberately narrow offline
+// compatibility rule: every declared MV output must exist as a writable
+// destination column with exactly the same effective ClickHouse type. We do
+// not guess at implicit casts; an unresolved destination is unsafe.
+func materializedViewDestinationAccepts(database string, mv *MaterializedViewSpec, r TableResolver) bool {
+	if r == nil {
+		return false
+	}
+	destination := splitQualified(mv.ToTable, database)
+	table, ok := r.LookupTable(destination.Database, destination.Name)
+	if !ok {
+		return false
+	}
+	destinationColumns := indexColumns(table.Columns)
+	if len(destinationColumns) != len(table.Columns) {
+		return false
+	}
+	for _, output := range mv.Columns {
+		column, ok := destinationColumns[output.Name]
+		if !ok || effectiveType(output) != effectiveType(*column) {
+			return false
+		}
+		if column.Alias != nil || column.Materialized != nil || column.Ephemeral != nil {
+			return false
+		}
+	}
+	return true
 }
 
 func materializedViewColumnsEqual(from, to []ColumnSpec, ignoreOrder bool) bool {

@@ -192,7 +192,7 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 			if mvd.Recreate {
 				out.Unsafe = append(out.Unsafe, UnsafeChange{
 					Database: dc.Database, Table: mvd.Name,
-					Reason: "materialized view to_table or column list change requires recreating the view",
+					Reason: "materialized view to_table or incompatible column list change requires recreating the view",
 				})
 				continue
 			}
