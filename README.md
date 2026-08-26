@@ -615,6 +615,56 @@ summary: 58 nodes, 8 groups, 2 groups with drift, 28 drifting nodes
 > finer deployment role from the node name and usually isolates genuine
 > drift.
 
+## Decompose node dumps into layers
+
+`hclexp decompose` turns a dump-repository layout (one directory per
+environment, one HCL file per node) into deterministic shared and
+environment-specific layers:
+
+```bash
+hclexp decompose \
+  -dump-root ../clickhouse-schema \
+  -env dev,prod-eu,prod-us \
+  -out ./generated-schema
+```
+
+The command first verifies that selected replicas for each environment and
+`hostClusterRole` agree. It places objects identical in every environment
+under `layers/shared/<role>`, puts partial-presence objects in environment
+layers, and emits exact `patch_table` deltas where differing table shapes can
+be represented without loss. Added columns carry `first` / `after` anchors
+computed from the target physical order. Unsupported shared splits fall back
+to complete per-environment declarations in automatic mode.
+
+Before writing, every generated stack is loaded and composed again and
+compared to its normalized input dump with column order enabled. A failed
+round trip writes nothing. The output also includes canonical goldens and a
+generated-file ledger; later runs remove only stale files recorded in that
+ledger and never delete untracked files in the output directory.
+
+Use `-list` to inspect the cross-environment inventory as JSON. Persistent
+human decisions live in an optional, versioned JSON assignment file:
+
+```json
+{
+  "version": 1,
+  "baseline_env": "prod-eu",
+  "objects": {
+    "ops/posthog/table/events_recent": { "mode": "environment" },
+    "ops/posthog/table/temporary_table": { "mode": "exclude" }
+  }
+}
+```
+
+Object modes are `auto`, `shared`, `environment`, and `exclude`. `shared` is a
+strict assertion: if an object is absent or its delta cannot be expressed by
+the patch vocabulary (for example, existing columns appear in a new order),
+decomposition fails with the object and conflicting columns instead of
+silently reordering them. Assignment keys are validated so stale or mistyped
+decisions cannot be ignored. `-exclude` applies the standard HCL exclude rules
+before inventory and decomposition. ReplicatedMergeTree UUIDs are masked by
+default; use `-zk-paths keep|mask-uuid|ignore` to select another policy.
+
 ## Cross-role planning
 
 `hclexp plan` diffs **every role in a manifest** in one run and emits a single
