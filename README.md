@@ -636,6 +636,14 @@ be represented without loss. Added columns carry `first` / `after` anchors
 computed from the target physical order. Unsupported shared splits fall back
 to complete per-environment declarations in automatic mode.
 
+Every object kind hclexp can load is included: tables, materialized views,
+views, dictionaries, raw escape-hatch objects, and cluster-scoped named
+collections. Decompose uses `patch_materialized_view`, `patch_view`,
+`patch_dictionary`, and named-collection overrides when their vocabulary can
+represent the delta exactly. Recreate-only or otherwise unrepresentable
+changes use complete environment declarations in `auto` mode; an explicit
+`shared` assignment fails instead of weakening the requested layout.
+
 Before writing, every generated stack is loaded and composed again and
 compared to its normalized input dump with column order enabled. A failed
 round trip writes nothing. The output also includes canonical goldens and a

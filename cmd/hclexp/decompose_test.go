@@ -140,6 +140,94 @@ func TestBuildDecomposition_IncludesClusterScopedNamedCollections(t *testing.T) 
 	assert.Contains(t, shared, `param "host"`)
 }
 
+func TestBuildDecomposition_PatchesEveryPatchableObjectKind(t *testing.T) {
+	t.Run("materialized view", func(t *testing.T) {
+		from := &hclload.Schema{Databases: []hclload.DatabaseSpec{{Name: "analytics", MaterializedViews: []hclload.MaterializedViewSpec{{
+			Name: "events_mv", ToTable: "events", Query: "SELECT 1",
+			Columns: []hclload.ColumnSpec{{Name: "id", Type: "UInt64"}, {Name: "created_at", Type: "DateTime"}},
+		}}}}}
+		to := &hclload.Schema{Databases: []hclload.DatabaseSpec{{Name: "analytics", MaterializedViews: []hclload.MaterializedViewSpec{{
+			Name: "events_mv", ToTable: "events", Query: "SELECT 2",
+			Columns: []hclload.ColumnSpec{{Name: "runtime", Type: "String"}, {Name: "id", Type: "UInt64"}, {Name: "created_at", Type: "DateTime"}},
+		}}}}}
+		generated, err := buildDecomposition([]decomposeSnapshot{
+			{Env: "eu", Role: "events", Schema: from}, {Env: "us", Role: "events", Schema: to},
+		}, []string{"eu", "us"}, decomposeAssignment{Version: 1, Objects: map[string]decomposeObjectAssignment{}})
+		require.NoError(t, err)
+		patch := string(generated.Files[envLayerPath("us", "events")])
+		assert.Contains(t, patch, `patch_materialized_view "events_mv"`)
+		assert.Contains(t, patch, `column "runtime"`)
+		assert.Contains(t, patch, "first = true")
+	})
+
+	t.Run("view", func(t *testing.T) {
+		commentA, commentB := "old", "new"
+		from := &hclload.Schema{Databases: []hclload.DatabaseSpec{{Name: "analytics", Views: []hclload.ViewSpec{{Name: "events", Query: "SELECT 1", Comment: &commentA}}}}}
+		to := &hclload.Schema{Databases: []hclload.DatabaseSpec{{Name: "analytics", Views: []hclload.ViewSpec{{Name: "events", Query: "SELECT 2", Comment: &commentB}}}}}
+		generated, err := buildDecomposition([]decomposeSnapshot{
+			{Env: "eu", Role: "ops", Schema: from}, {Env: "us", Role: "ops", Schema: to},
+		}, []string{"eu", "us"}, decomposeAssignment{Version: 1, Objects: map[string]decomposeObjectAssignment{}})
+		require.NoError(t, err)
+		patch := string(generated.Files[envLayerPath("us", "ops")])
+		assert.Contains(t, patch, `patch_view "events"`)
+		assert.Contains(t, patch, `query   = "SELECT 2"`)
+		assert.Contains(t, patch, `comment = "new"`)
+	})
+
+	t.Run("dictionary", func(t *testing.T) {
+		lifetimeA, lifetimeB := int64(10), int64(20)
+		base := hclload.DictionarySpec{
+			Name: "countries", PrimaryKey: []string{"id"},
+			Attributes: []hclload.DictionaryAttribute{{Name: "id", Type: "UInt64"}},
+			Source:     &hclload.DictionarySourceSpec{Kind: "null", Decoded: hclload.SourceNull{}},
+			Layout:     &hclload.DictionaryLayoutSpec{Kind: "direct", Decoded: hclload.LayoutDirect{}},
+			Lifetime:   &hclload.DictionaryLifetime{Min: &lifetimeA}, Settings: map[string]string{"max_threads_for_updates": "1"},
+		}
+		target := base
+		target.Lifetime = &hclload.DictionaryLifetime{Min: &lifetimeB}
+		target.Settings = map[string]string{"max_threads_for_updates": "2"}
+		from := &hclload.Schema{Databases: []hclload.DatabaseSpec{{Name: "analytics", Dictionaries: []hclload.DictionarySpec{base}}}}
+		to := &hclload.Schema{Databases: []hclload.DatabaseSpec{{Name: "analytics", Dictionaries: []hclload.DictionarySpec{target}}}}
+		generated, err := buildDecomposition([]decomposeSnapshot{
+			{Env: "eu", Role: "ops", Schema: from}, {Env: "us", Role: "ops", Schema: to},
+		}, []string{"eu", "us"}, decomposeAssignment{Version: 1, Objects: map[string]decomposeObjectAssignment{}})
+		require.NoError(t, err)
+		patch := string(generated.Files[envLayerPath("us", "ops")])
+		assert.Contains(t, patch, `patch_dictionary "countries"`)
+		assert.Contains(t, patch, "min = 20")
+		assert.Contains(t, patch, `max_threads_for_updates = "2"`)
+	})
+
+	t.Run("named collection override", func(t *testing.T) {
+		from := &hclload.Schema{NamedCollections: []hclload.NamedCollectionSpec{{Name: "warehouse", Params: []hclload.NamedCollectionParam{{Key: "host", Value: "eu.internal"}}}}}
+		to := &hclload.Schema{NamedCollections: []hclload.NamedCollectionSpec{{Name: "warehouse", Params: []hclload.NamedCollectionParam{{Key: "host", Value: "us.internal"}}}}}
+		generated, err := buildDecomposition([]decomposeSnapshot{
+			{Env: "eu", Role: "ops", Schema: from}, {Env: "us", Role: "ops", Schema: to},
+		}, []string{"eu", "us"}, decomposeAssignment{Version: 1, Objects: map[string]decomposeObjectAssignment{}})
+		require.NoError(t, err)
+		patch := string(generated.Files[envLayerPath("us", "ops")])
+		assert.Contains(t, patch, `named_collection "warehouse"`)
+		assert.Contains(t, patch, "override = true")
+		assert.Contains(t, patch, `value = "us.internal"`)
+	})
+}
+
+func TestBuildDecomposition_RecreateOnlyRawUsesEnvironmentDeclarations(t *testing.T) {
+	from := &hclload.Schema{Databases: []hclload.DatabaseSpec{{Name: "analytics", Raws: []hclload.RawSpec{{
+		Kind: hclload.KindView, Name: "unsupported", SQL: "CREATE VIEW analytics.unsupported AS SELECT 1\n",
+	}}}}}
+	to := &hclload.Schema{Databases: []hclload.DatabaseSpec{{Name: "analytics", Raws: []hclload.RawSpec{{
+		Kind: hclload.KindView, Name: "unsupported", SQL: "CREATE VIEW analytics.unsupported AS SELECT 2\n",
+	}}}}}
+	generated, err := buildDecomposition([]decomposeSnapshot{
+		{Env: "eu", Role: "ops", Schema: from}, {Env: "us", Role: "ops", Schema: to},
+	}, []string{"eu", "us"}, decomposeAssignment{Version: 1, Objects: map[string]decomposeObjectAssignment{}})
+	require.NoError(t, err)
+	assert.NotContains(t, generated.Files, sharedLayerPath("ops"))
+	assert.Contains(t, string(generated.Files[envLayerPath("eu", "ops")]), "SELECT 1")
+	assert.Contains(t, string(generated.Files[envLayerPath("us", "ops")]), "SELECT 2")
+}
+
 func TestWriteDecomposition_IsIdempotentAndOnlyRemovesTrackedFiles(t *testing.T) {
 	out := t.TempDir()
 	userFile := filepath.Join(out, "keep.txt")

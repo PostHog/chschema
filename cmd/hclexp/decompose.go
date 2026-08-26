@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 
@@ -216,11 +217,20 @@ func loadDecomposeSnapshots(root string, requested []string, glob, zkMode string
 			nodes := byRole[role]
 			sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
 			for _, peer := range nodes[1:] {
-				if diff := hclload.Diff(nodes[0].Schema, peer.Schema); !diff.IsEmpty() {
+				diff := hclload.Diff(nodes[0].Schema, peer.Schema)
+				equal, err := canonicalSchemasEqual(nodes[0].Schema, peer.Schema)
+				if err != nil {
+					return nil, nil, nil, fmt.Errorf("environment %q role %q: compare canonical dumps: %w", env, role, err)
+				}
+				if !equal {
 					objects := hclload.BuildObjectComparisons(diff, hclload.GenerateSQL(diff), nodes[0].Schema, peer.Schema)
+					summary := "canonical HCL differs"
+					if !diff.IsEmpty() {
+						summary = hclload.SummarizeComparisons(objects).OneLiner()
+					}
 					replicaDrift = append(replicaDrift, decomposeReplicaDrift{
 						Environment: env, Role: role, Reference: nodes[0].Name, Node: peer.Name,
-						Summary: hclload.SummarizeComparisons(objects).OneLiner(),
+						Summary: summary,
 					})
 				}
 			}
@@ -319,29 +329,19 @@ func buildDecomposition(snapshots []decomposeSnapshot, envs []string, assignment
 			addObjectToSchema(layer(layers, sharedLayerPath(object.Role)), baseObject, object)
 			continue
 		}
-		if object.Kind != hclload.KindTable {
-			if mode == "shared" {
-				return generatedDecomposition{}, fmt.Errorf("assignment %q requests shared placement, but differing %s objects cannot yet be represented as an exact patch; use mode environment", object.key(), object.Kind)
-			}
-			for _, env := range present {
-				addObjectToSchema(layer(layers, envLayerPath(env, object.Role)), byEnvRole[env][object.Role], object)
-			}
-			continue
-		}
-
-		patches := map[string]hclload.PatchTableSpec{}
+		patches := map[string]func(*hclload.Schema){}
 		patchable := true
 		var patchErr error
 		for _, env := range present {
 			if env == baseline {
 				continue
 			}
-			patch, err := tablePatch(baseObject, objectSchema(byEnvRole[env][object.Role], object), object)
+			apply, err := objectPatch(baseObject, objectSchema(byEnvRole[env][object.Role], object), object)
 			if err != nil {
 				patchable, patchErr = false, err
 				break
 			}
-			patches[env] = patch
+			patches[env] = apply
 		}
 		if !patchable {
 			if mode == "shared" {
@@ -353,11 +353,10 @@ func buildDecomposition(snapshots []decomposeSnapshot, envs []string, assignment
 			continue
 		}
 		addObjectToSchema(layer(layers, sharedLayerPath(object.Role)), baseObject, object)
-		for env, patch := range patches {
-			if patchTableEmpty(patch) {
-				continue
+		for env, apply := range patches {
+			if apply != nil {
+				apply(layer(layers, envLayerPath(env, object.Role)))
 			}
-			addTablePatch(layer(layers, envLayerPath(env, object.Role)), object.Database, patch)
 		}
 	}
 
@@ -387,6 +386,54 @@ func buildDecomposition(snapshots []decomposeSnapshot, envs []string, assignment
 		return generatedDecomposition{}, err
 	}
 	return generatedDecomposition{Files: files, Inventory: inventory}, nil
+}
+
+// objectPatch returns a mutation which adds the exact authored patch for one
+// target environment. A nil mutation means the isolated objects are equal.
+// Unsupported transitions return an error so auto mode can fall back to an
+// environment declaration and explicit shared mode can fail closed.
+func objectPatch(from, to *hclload.Schema, object decomposeObject) (func(*hclload.Schema), error) {
+	switch object.Kind {
+	case hclload.KindTable:
+		patch, err := tablePatch(from, to, object)
+		if err != nil || patchTableEmpty(patch) {
+			return nil, err
+		}
+		return func(schema *hclload.Schema) { addTablePatch(schema, object.Database, patch) }, nil
+	case hclload.KindMaterializedView:
+		patch, err := materializedViewPatch(from, to, object)
+		if err != nil || patchMaterializedViewEmpty(patch) {
+			return nil, err
+		}
+		return func(schema *hclload.Schema) {
+			db := ensureDatabase(schema, object.Database)
+			db.MaterializedViewPatches = append(db.MaterializedViewPatches, patch)
+		}, nil
+	case hclload.KindView:
+		patch, err := viewPatch(from, to, object)
+		if err != nil || (patch.Query == nil && patch.Comment == nil) {
+			return nil, err
+		}
+		return func(schema *hclload.Schema) {
+			db := ensureDatabase(schema, object.Database)
+			db.ViewPatches = append(db.ViewPatches, patch)
+		}, nil
+	case hclload.KindDictionary:
+		patch, err := dictionaryPatch(from, to, object)
+		if err != nil || patchDictionaryEmpty(patch) {
+			return nil, err
+		}
+		return func(schema *hclload.Schema) {
+			db := ensureDatabase(schema, object.Database)
+			db.DictionaryPatches = append(db.DictionaryPatches, patch)
+		}, nil
+	case decomposeNamedCollectionKind:
+		collection := to.NamedCollections[0]
+		collection.Override = true
+		return func(schema *hclload.Schema) { schema.NamedCollections = append(schema.NamedCollections, collection) }, nil
+	default:
+		return nil, fmt.Errorf("%s cannot use a shared base: %s changes are recreate-only; use mode environment", object.key(), object.Kind)
+	}
 }
 
 func tablePatch(from, to *hclload.Schema, object decomposeObject) (hclload.PatchTableSpec, error) {
@@ -473,6 +520,192 @@ func tablePatch(from, to *hclload.Schema, object decomposeObject) (hclload.Patch
 		patch.Settings = nil
 	}
 	return patch, nil
+}
+
+func materializedViewPatch(from, to *hclload.Schema, object decomposeObject) (hclload.PatchMaterializedViewSpec, error) {
+	f, t := onlyMaterializedView(from), onlyMaterializedView(to)
+	var unsupported []string
+	if f.ToTable != t.ToTable {
+		unsupported = append(unsupported, "to_table")
+	}
+	if !reflect.DeepEqual(f.Cluster, t.Cluster) {
+		unsupported = append(unsupported, "cluster")
+	}
+	if !reflect.DeepEqual(f.Comment, t.Comment) {
+		unsupported = append(unsupported, "comment")
+	}
+	adds, modifies, drops, err := columnPatch(f.Columns, t.Columns)
+	if err != nil {
+		unsupported = append(unsupported, err.Error())
+	}
+	if len(unsupported) > 0 {
+		return hclload.PatchMaterializedViewSpec{}, fmt.Errorf("%s cannot use patch_materialized_view without loss: %s", object.key(), strings.Join(unsupported, ", "))
+	}
+	patch := hclload.PatchMaterializedViewSpec{Name: object.Name, Columns: adds, ModifyColumns: modifies, DropColumns: drops}
+	if f.Query != t.Query {
+		query := t.Query
+		patch.Query = &query
+	}
+	return patch, nil
+}
+
+func columnPatch(from, to []hclload.ColumnSpec) (adds, modifies []hclload.ColumnSpec, drops []string, err error) {
+	fromByName := map[string]hclload.ColumnSpec{}
+	toByName := map[string]hclload.ColumnSpec{}
+	for _, column := range from {
+		fromByName[column.Name] = column
+	}
+	for _, column := range to {
+		toByName[column.Name] = column
+	}
+	commonOld := []string{}
+	for _, column := range from {
+		if _, ok := toByName[column.Name]; ok {
+			commonOld = append(commonOld, column.Name)
+		} else {
+			drops = append(drops, column.Name)
+		}
+	}
+	commonNew := []string{}
+	for _, column := range to {
+		if old, ok := fromByName[column.Name]; ok {
+			commonNew = append(commonNew, column.Name)
+			if !reflect.DeepEqual(old, column) {
+				modifies = append(modifies, column)
+			}
+		}
+	}
+	if !slicesEqual(commonOld, commonNew) {
+		return nil, nil, nil, fmt.Errorf("existing-column reorder %v -> %v", commonOld, commonNew)
+	}
+
+	current := append([]string(nil), commonOld...)
+	newNames := map[string]bool{}
+	for _, column := range to {
+		if _, existed := fromByName[column.Name]; !existed {
+			newNames[column.Name] = true
+		}
+	}
+	for targetPos, target := range to {
+		if !newNames[target.Name] {
+			continue
+		}
+		column := target
+		needsPosition := false
+		for _, later := range to[targetPos+1:] {
+			if containsString(current, later.Name) || newNames[later.Name] {
+				needsPosition = true
+				break
+			}
+		}
+		if needsPosition {
+			predecessor := ""
+			for i := targetPos - 1; i >= 0; i-- {
+				if containsString(current, to[i].Name) {
+					predecessor = to[i].Name
+					break
+				}
+			}
+			if predecessor == "" {
+				column.First = true
+			} else {
+				column.After = &predecessor
+			}
+		}
+		adds = append(adds, column)
+		current = insertName(current, column.Name, column.After, column.First)
+	}
+	return adds, modifies, drops, nil
+}
+
+func viewPatch(from, to *hclload.Schema, object decomposeObject) (hclload.PatchViewSpec, error) {
+	diff := hclload.Diff(from, to)
+	if len(diff.Databases) != 1 || len(diff.Databases[0].AlterViews) != 1 {
+		return hclload.PatchViewSpec{}, fmt.Errorf("%s: expected one view delta", object.key())
+	}
+	change := diff.Databases[0].AlterViews[0]
+	if change.Recreate {
+		return hclload.PatchViewSpec{}, fmt.Errorf("%s cannot use patch_view without recreation: %s", object.key(), strings.Join(change.RecreateChanged, ", "))
+	}
+	patch := hclload.PatchViewSpec{Name: object.Name}
+	if change.QueryChange != nil {
+		patch.Query = change.QueryChange.New
+	}
+	if change.Comment != nil {
+		if change.Comment.New == nil {
+			return hclload.PatchViewSpec{}, fmt.Errorf("%s cannot use patch_view to clear comment", object.key())
+		}
+		patch.Comment = change.Comment.New
+	}
+	return patch, nil
+}
+
+func dictionaryPatch(from, to *hclload.Schema, object decomposeObject) (hclload.PatchDictionarySpec, error) {
+	diff := hclload.Diff(from, to)
+	if len(diff.Databases) != 1 || len(diff.Databases[0].AlterDictionaries) != 1 {
+		return hclload.PatchDictionarySpec{}, fmt.Errorf("%s: expected one dictionary delta", object.key())
+	}
+	change := diff.Databases[0].AlterDictionaries[0]
+	if len(change.SkippedRedactedSecrets) > 0 {
+		return hclload.PatchDictionarySpec{}, fmt.Errorf("%s has unverifiable redacted fields: %s", object.key(), strings.Join(change.SkippedRedactedSecrets, ", "))
+	}
+	supported := map[string]bool{"source": true, "layout": true, "lifetime": true, "settings": true}
+	var unsupported []string
+	for _, field := range change.Changed {
+		if !supported[field] {
+			unsupported = append(unsupported, field)
+		}
+	}
+	oldDictionary, newDictionary := change.Old, change.New
+	patch := hclload.PatchDictionarySpec{Name: object.Name}
+	if containsString(change.Changed, "source") {
+		if newDictionary.Source == nil {
+			unsupported = append(unsupported, "clearing source")
+		} else {
+			patch.Source = newDictionary.Source
+		}
+	}
+	if containsString(change.Changed, "layout") {
+		if newDictionary.Layout == nil {
+			unsupported = append(unsupported, "clearing layout")
+		} else {
+			patch.Layout = newDictionary.Layout
+		}
+	}
+	if containsString(change.Changed, "lifetime") {
+		if newDictionary.Lifetime == nil {
+			unsupported = append(unsupported, "clearing lifetime")
+		} else {
+			patch.Lifetime = newDictionary.Lifetime
+		}
+	}
+	if containsString(change.Changed, "settings") {
+		patch.Settings = map[string]string{}
+		for key, value := range newDictionary.Settings {
+			patch.Settings[key] = value
+		}
+		for key := range oldDictionary.Settings {
+			if _, exists := newDictionary.Settings[key]; !exists {
+				unsupported = append(unsupported, "removing setting "+key)
+			}
+		}
+	}
+	if len(unsupported) > 0 {
+		return hclload.PatchDictionarySpec{}, fmt.Errorf("%s cannot use patch_dictionary without loss: %s", object.key(), strings.Join(unsupported, ", "))
+	}
+	return patch, nil
+}
+
+func onlyMaterializedView(schema *hclload.Schema) *hclload.MaterializedViewSpec {
+	return &schema.Databases[0].MaterializedViews[0]
+}
+
+func patchMaterializedViewEmpty(p hclload.PatchMaterializedViewSpec) bool {
+	return len(p.Columns)+len(p.ModifyColumns)+len(p.DropColumns) == 0 && p.Query == nil
+}
+
+func patchDictionaryEmpty(p hclload.PatchDictionarySpec) bool {
+	return p.Source == nil && p.Layout == nil && p.Lifetime == nil && len(p.Settings) == 0
 }
 
 func onlyTable(schema *hclload.Schema) *hclload.TableSpec {
@@ -581,6 +814,24 @@ func containsString(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func insertName(current []string, name string, after *string, first bool) []string {
+	position := len(current)
+	if first {
+		position = 0
+	} else if after != nil {
+		for i, existing := range current {
+			if existing == *after {
+				position = i + 1
+				break
+			}
+		}
+	}
+	current = append(current, "")
+	copy(current[position+1:], current[position:])
+	current[position] = name
+	return current
 }
 
 func patchTableEmpty(p hclload.PatchTableSpec) bool {
@@ -778,11 +1029,23 @@ func objectUniform(object decomposeObject, envs []string, schemas map[string]map
 	}
 	first := objectSchema(schemas[envs[0]][object.Role], object)
 	for _, env := range envs[1:] {
-		if !hclload.Diff(first, objectSchema(schemas[env][object.Role], object)).IsEmpty() {
+		equal, err := canonicalSchemasEqual(first, objectSchema(schemas[env][object.Role], object))
+		if err != nil || !equal {
 			return false
 		}
 	}
 	return true
+}
+
+func canonicalSchemasEqual(a, b *hclload.Schema) (bool, error) {
+	var left, right bytes.Buffer
+	if err := hclload.Write(&left, a); err != nil {
+		return false, err
+	}
+	if err := hclload.Write(&right, b); err != nil {
+		return false, err
+	}
+	return bytes.Equal(left.Bytes(), right.Bytes()), nil
 }
 
 func objectExists(schema *hclload.Schema, object decomposeObject) bool {
