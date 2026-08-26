@@ -38,10 +38,11 @@ jobs:
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
       with:
-        # v2.12.2's prebuilt binary is built with go1.26, so it type-checks this
-        # module's go1.26 source. (Older v2.4.0 was built with go1.25 and
-        # panicked: "file requires newer Go version go1.26".)
-        version: v2.12.2
+        # No tagged golangci-lint release supports Go 1.27 yet. Build a pinned
+        # upstream commit containing the required x/tools support with the
+        # setup-go toolchain instead of using the Go 1.26 prebuilt binary.
+        install-mode: goinstall
+        version: f34e0bb6c3f4a48513018de81894f5bca1e186c1
 
   vet:
     runs-on: depot-ubuntu-24.04
@@ -163,7 +164,7 @@ jobs:
 
     - name: Smoke-test every subcommand's help
       run: |
-        for cmd in introspect dump-cluster dump-sql diff plan validate drift sql2hcl load web github-token; do
+        for cmd in introspect dump-cluster dump-sql diff plan validate drift decompose sql2hcl load web github-token; do
           echo "== hclexp $cmd -h =="
           ./hclexp "$cmd" -h
         done

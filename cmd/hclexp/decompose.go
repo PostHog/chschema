@@ -844,7 +844,7 @@ func verifyGeneratedDecomposition(files map[string][]byte, envs, roles []string,
 	if err != nil {
 		return err
 	}
-	defer os.RemoveAll(root)
+	defer func() { _ = os.RemoveAll(root) }()
 	for path, body := range files {
 		if strings.HasPrefix(path, "goldens/") || path == "manifest.hcl" {
 			continue
