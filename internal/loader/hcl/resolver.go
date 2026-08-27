@@ -16,6 +16,12 @@ func Resolve(s *Schema) error {
 	if err := validateNamedCollections(s); err != nil {
 		return err
 	}
+	// Override is layer-authoring control metadata, like table/view Override.
+	// Once the winning declaration has been selected it must not leak into a
+	// resolved schema or its canonical dump.
+	for i := range s.NamedCollections {
+		s.NamedCollections[i].Override = false
+	}
 	for di := range s.Databases {
 		if err := applyViewPatches(&s.Databases[di]); err != nil {
 			return err

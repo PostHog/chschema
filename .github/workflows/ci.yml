@@ -163,7 +163,7 @@ jobs:
 
     - name: Smoke-test every subcommand's help
       run: |
-        for cmd in introspect dump-cluster dump-sql diff plan validate drift sql2hcl load web github-token; do
+        for cmd in introspect dump-cluster dump-sql diff plan validate drift decompose sql2hcl load web github-token; do
           echo "== hclexp $cmd -h =="
           ./hclexp "$cmd" -h
         done

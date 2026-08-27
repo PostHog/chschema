@@ -665,3 +665,13 @@ func TestResolve_TimeSeries_AllValidForms_OK(t *testing.T) {
 	}}}
 	require.NoError(t, Resolve(s))
 }
+
+func TestResolve_ConsumesNamedCollectionOverride(t *testing.T) {
+	schema := &Schema{NamedCollections: []NamedCollectionSpec{{
+		Name: "warehouse", Override: true,
+		Params: []NamedCollectionParam{{Key: "host", Value: "db.internal"}},
+	}}}
+	require.NoError(t, Resolve(schema))
+	require.Len(t, schema.NamedCollections, 1)
+	assert.False(t, schema.NamedCollections[0].Override)
+}

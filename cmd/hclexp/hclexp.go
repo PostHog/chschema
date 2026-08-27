@@ -46,6 +46,9 @@ func main() {
 	case "drift":
 		runDrift(os.Args[2:])
 		return
+	case "decompose":
+		runDecompose(os.Args[2:])
+		return
 	case "locate":
 		runLocate(os.Args[2:])
 		return
@@ -100,6 +103,8 @@ Commands:
                or a directory of per-node topology dumps (-format json)
   drift        detect cross-node schema drift across per-node HCL dumps
                (-format json for structured output)
+  decompose    turn per-environment node dumps into shared and env HCL layers,
+               with an exact compose-against-dump round-trip gate
   locate       find every declaration site of an object across manifest
                layers and dump directories (-duplicates audits the once-only rule)
   sql2hcl      apply SQL DDL edits (CREATE/ALTER/DROP/RENAME) to an HCL schema

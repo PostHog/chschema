@@ -57,6 +57,175 @@ func Write(w io.Writer, schema *Schema) error {
 	return err
 }
 
+// WriteLayer emits an unresolved authored layer. Unlike Write, it preserves
+// patch blocks so generated decompositions can be loaded back through
+// LoadLayers and Resolve. Declarations use the same canonical writers as
+// dumps; patch collections are sorted by target name for deterministic output.
+func WriteLayer(w io.Writer, schema *Schema) error {
+	if schema == nil {
+		return errors.New("WriteLayer: nil schema")
+	}
+	f := hclwrite.NewEmptyFile()
+	body := f.Body()
+	for i, db := range schema.Databases {
+		if i > 0 {
+			body.AppendNewline()
+		}
+		block := body.AppendNewBlock("database", []string{db.Name})
+		writeLayerDatabase(block.Body(), db)
+	}
+	namedCollections := append([]NamedCollectionSpec(nil), schema.NamedCollections...)
+	sort.Slice(namedCollections, func(i, j int) bool { return namedCollections[i].Name < namedCollections[j].Name })
+	for i, collection := range namedCollections {
+		if len(schema.Databases) > 0 || i > 0 {
+			body.AppendNewline()
+		}
+		writeNamedCollection(body.AppendNewBlock("named_collection", []string{collection.Name}).Body(), collection)
+	}
+	_, err := w.Write(f.Bytes())
+	return err
+}
+
+func writeLayerDatabase(body *hclwrite.Body, db DatabaseSpec) {
+	declarations := db
+	declarations.Patches = nil
+	declarations.MaterializedViewPatches = nil
+	declarations.ViewPatches = nil
+	declarations.DictionaryPatches = nil
+	writeDatabase(body, declarations)
+
+	patches := append([]PatchTableSpec(nil), db.Patches...)
+	sort.Slice(patches, func(i, j int) bool { return patches[i].Name < patches[j].Name })
+	for _, patch := range patches {
+		body.AppendNewline()
+		writePatchTable(body.AppendNewBlock("patch_table", []string{patch.Name}).Body(), patch)
+	}
+
+	mvPatches := append([]PatchMaterializedViewSpec(nil), db.MaterializedViewPatches...)
+	sort.Slice(mvPatches, func(i, j int) bool { return mvPatches[i].Name < mvPatches[j].Name })
+	for _, patch := range mvPatches {
+		body.AppendNewline()
+		pb := body.AppendNewBlock("patch_materialized_view", []string{patch.Name}).Body()
+		if patch.Query != nil {
+			setQueryAttribute(pb, *patch.Query)
+		}
+		if len(patch.DropColumns) > 0 {
+			pb.SetAttributeValue("drop_columns", stringList(patch.DropColumns))
+		}
+		for _, column := range patch.ModifyColumns {
+			writeNamedColumn(pb, "modify_column", column)
+		}
+		for _, column := range patch.Columns {
+			writeNamedColumn(pb, "column", column)
+		}
+	}
+
+	viewPatches := append([]PatchViewSpec(nil), db.ViewPatches...)
+	sort.Slice(viewPatches, func(i, j int) bool { return viewPatches[i].Name < viewPatches[j].Name })
+	for _, patch := range viewPatches {
+		body.AppendNewline()
+		pb := body.AppendNewBlock("patch_view", []string{patch.Name}).Body()
+		if patch.Query != nil {
+			setQueryAttribute(pb, *patch.Query)
+		}
+		if patch.Comment != nil {
+			pb.SetAttributeValue("comment", cty.StringVal(*patch.Comment))
+		}
+	}
+
+	dictionaryPatches := append([]PatchDictionarySpec(nil), db.DictionaryPatches...)
+	sort.Slice(dictionaryPatches, func(i, j int) bool { return dictionaryPatches[i].Name < dictionaryPatches[j].Name })
+	for _, patch := range dictionaryPatches {
+		body.AppendNewline()
+		pb := body.AppendNewBlock("patch_dictionary", []string{patch.Name}).Body()
+		if patch.Source != nil && patch.Source.Decoded != nil {
+			writeDictionarySource(pb, patch.Source.Decoded)
+		}
+		if patch.Layout != nil && patch.Layout.Decoded != nil {
+			writeDictionaryLayout(pb, patch.Layout.Decoded)
+		}
+		if patch.Lifetime != nil {
+			lt := pb.AppendNewBlock("lifetime", nil).Body()
+			if patch.Lifetime.Min != nil {
+				lt.SetAttributeValue("min", cty.NumberIntVal(*patch.Lifetime.Min))
+			}
+			if patch.Lifetime.Max != nil {
+				lt.SetAttributeValue("max", cty.NumberIntVal(*patch.Lifetime.Max))
+			}
+		}
+		if len(patch.Settings) > 0 {
+			pb.SetAttributeValue("settings", stringMap(patch.Settings))
+		}
+	}
+}
+
+func writePatchTable(body *hclwrite.Body, patch PatchTableSpec) {
+	if len(patch.DropColumns) > 0 {
+		body.SetAttributeValue("drop_columns", stringList(patch.DropColumns))
+	}
+	if len(patch.DropIndexes) > 0 {
+		body.SetAttributeValue("drop_indexes", stringList(patch.DropIndexes))
+	}
+	if patch.OrderBy != nil {
+		body.SetAttributeValue("order_by", stringList(patch.OrderBy))
+	}
+	if patch.PartitionBy != nil {
+		body.SetAttributeValue("partition_by", cty.StringVal(*patch.PartitionBy))
+	}
+	if patch.SampleBy != nil {
+		body.SetAttributeValue("sample_by", cty.StringVal(*patch.SampleBy))
+	}
+	if patch.TTL != nil {
+		body.SetAttributeValue("ttl", cty.StringVal(*patch.TTL))
+	}
+	if len(patch.Settings) > 0 {
+		body.SetAttributeValue("settings", stringMap(patch.Settings))
+	}
+	for _, column := range patch.ModifyColumns {
+		writeNamedColumn(body, "modify_column", column)
+	}
+	for _, column := range patch.Columns {
+		writeNamedColumn(body, "column", column)
+	}
+	for _, index := range patch.Indexes {
+		writeNamedIndex(body, "index", index)
+	}
+	for _, projection := range patch.Projections {
+		pb := body.AppendNewBlock("projection", []string{projection.Name}).Body()
+		setQueryAttribute(pb, projection.Query)
+		if len(projection.Settings) > 0 {
+			pb.SetAttributeValue("settings", stringMap(projection.Settings))
+		}
+	}
+	if patch.Engine != nil && patch.Engine.Decoded != nil {
+		writeEngine(body, patch.Engine.Decoded)
+	}
+}
+
+func writeNamedColumn(parent *hclwrite.Body, kind string, column ColumnSpec) {
+	cb := parent.AppendNewBlock(kind, []string{column.Name}).Body()
+	writeColumnAttributes(cb, column)
+	if column.First {
+		cb.SetAttributeValue("first", cty.True)
+	} else if column.After != nil {
+		cb.SetAttributeValue("after", cty.StringVal(*column.After))
+	}
+}
+
+func writeNamedIndex(parent *hclwrite.Body, kind string, index IndexSpec) {
+	ib := parent.AppendNewBlock(kind, []string{index.Name}).Body()
+	ib.SetAttributeValue("expr", cty.StringVal(index.Expr))
+	ib.SetAttributeValue("type", cty.StringVal(index.Type))
+	if index.Granularity != 0 {
+		ib.SetAttributeValue("granularity", cty.NumberIntVal(int64(index.Granularity)))
+	}
+	if index.First {
+		ib.SetAttributeValue("first", cty.True)
+	} else if index.After != nil {
+		ib.SetAttributeValue("after", cty.StringVal(*index.After))
+	}
+}
+
 // writeNode emits a node block carrying the node's macros. Macro keys are
 // sorted for deterministic output (via stringMap).
 func writeNode(body *hclwrite.Body, n NodeSpec) {
@@ -267,6 +436,10 @@ func writeTable(body *hclwrite.Body, t TableSpec) {
 // round-trip identically (issue #45).
 func writeColumn(parent *hclwrite.Body, c ColumnSpec) {
 	cb := parent.AppendNewBlock("column", []string{c.Name}).Body()
+	writeColumnAttributes(cb, c)
+}
+
+func writeColumnAttributes(cb *hclwrite.Body, c ColumnSpec) {
 	cb.SetAttributeValue("type", cty.StringVal(c.Type))
 	if c.Nullable {
 		cb.SetAttributeValue("nullable", cty.True)
