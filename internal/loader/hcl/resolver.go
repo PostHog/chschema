@@ -160,8 +160,9 @@ func validateNamedCollections(s *Schema) error {
 	return nil
 }
 
-// validateKafkaEngines enforces XOR between collection and inline settings,
-// required-fields-when-inline, and that referenced collections exist.
+// validateKafkaEngines requires the complete connection tuple for inline
+// engines and verifies named-collection references. A collection-backed
+// engine may carry any typed field as a per-table override.
 func validateKafkaEngines(s *Schema) error {
 	ncDeclared := map[string]bool{}
 	for _, nc := range s.NamedCollections {
@@ -187,9 +188,6 @@ func validateKafkaEngines(s *Schema) error {
 
 			if k.Collection == nil && !hasInline {
 				return fmt.Errorf("%s.%s: kafka engine requires either `collection` or inline settings", db.Name, t.Name)
-			}
-			if k.Collection != nil && hasInline {
-				return fmt.Errorf("%s.%s: kafka engine `collection` and inline settings are mutually exclusive", db.Name, t.Name)
 			}
 			if k.Collection != nil {
 				if !ncDeclared[*k.Collection] {

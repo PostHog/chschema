@@ -574,7 +574,6 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 	case EngineKafka:
 		if v.Collection != nil {
 			b.SetAttributeValue("collection", cty.StringVal(*v.Collection))
-			return
 		}
 		setStr := func(name string, p *string) {
 			if p != nil {

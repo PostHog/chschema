@@ -780,11 +780,15 @@ func TestParseKafkaEngine_Cases(t *testing.T) {
 			},
 		},
 		{
-			name:      "mixed form: Kafka(my_nc) + kafka_* settings errors",
-			params:    []string{"my_nc"},
-			settings:  map[string]string{"kafka_num_consumers": "4"},
-			expectErr: true,
-			errSubstr: "cannot be combined",
+			name:     "named collection with settings overrides",
+			params:   []string{"my_nc"},
+			settings: map[string]string{"kafka_num_consumers": "4"},
+			check: func(t *testing.T, k EngineKafka) {
+				require.NotNil(t, k.Collection)
+				assert.Equal(t, "my_nc", *k.Collection)
+				require.NotNil(t, k.NumConsumers)
+				assert.Equal(t, int64(4), *k.NumConsumers)
+			},
 		},
 	}
 	for _, tc := range tests {

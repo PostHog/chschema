@@ -250,7 +250,7 @@ attributes depend on the kind.
 | `shared_aggregating_merge_tree`       | `zoo_path`, `replica_name`                         | —                      |
 | `distributed`                         | `cluster_name`, `remote_database`, `remote_table`  | `sharding_key`, `policy_name` (requires `sharding_key`) |
 | `log`                                 | —                                                  | —                      |
-| `kafka`                               | `broker_list = [...]`, `topic`, `consumer_group`, `format` | —              |
+| `kafka`                               | `collection`, or `broker_list`, `topic_list`, `group_name`, `format` | Typed `kafka_*` fields and `extra`; all act as overrides with `collection` |
 | `time_series` (experimental)          | —                                                  | `settings`, `tags_to_columns`, nested `samples`/`tags`/`metrics` blocks |
 | `join`                                | `strictness` (`ANY`/`ALL`/`SEMI`/`ANTI`), `type` (`LEFT`/`INNER`/`RIGHT`/`FULL`), `keys = [...]` | — |
 | `null`                                | —                                                  | —                      |

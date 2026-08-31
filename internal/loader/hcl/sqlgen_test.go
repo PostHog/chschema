@@ -142,6 +142,26 @@ func TestSQLGen_CreateKafkaFoldsSettings(t *testing.T) {
 	assert.Equal(t, []string{expected}, out.Statements)
 }
 
+func TestSQLGen_CreateKafkaCollectionFoldsOverridesIntoSettings(t *testing.T) {
+	tbl := mkTable("ingest", EngineKafka{
+		Collection:        ptr("warpstream_ingestion"),
+		TopicList:         ptr("events"),
+		GroupName:         ptr("group1"),
+		Format:            ptr("JSONEachRow"),
+		NumConsumers:      ptr(int64(4)),
+		ThreadPerConsumer: ptr(true),
+	}, ColumnSpec{Name: "id", Type: "UUID"})
+
+	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
+		{Database: "posthog", AddTables: []TableSpec{tbl}},
+	}})
+
+	expected := `CREATE TABLE posthog.ingest (
+  id UUID
+) ENGINE = Kafka(warpstream_ingestion) SETTINGS kafka_format = 'JSONEachRow', kafka_group_name = 'group1', kafka_num_consumers = 4, kafka_thread_per_consumer = 1, kafka_topic_list = 'events'`
+	assert.Equal(t, []string{expected}, out.Statements)
+}
+
 func TestSQLGen_DropTable(t *testing.T) {
 	out := GenerateSQL(ChangeSet{Databases: []DatabaseChange{
 		{Database: "posthog", DropTables: []TableSpec{{Name: "old_events"}}},

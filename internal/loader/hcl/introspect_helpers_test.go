@@ -5,6 +5,7 @@ import (
 
 	"github.com/hashicorp/hcl/v2/hclwrite"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestKafkaSetting_TypedFields(t *testing.T) {
@@ -41,25 +42,39 @@ func TestKafkaSetting_TypedFields(t *testing.T) {
 		{"thread_per_consumer false", "kafka_thread_per_consumer", "false", EngineKafka{ThreadPerConsumer: ptr(false)}},
 		{"commit_on_select", "kafka_commit_on_select", "true", EngineKafka{CommitOnSelect: ptr(true)}},
 		{"autodetect_client_rack", "kafka_autodetect_client_rack", "false", EngineKafka{AutodetectClientRack: ptr(false)}},
-		{"malformed int leaves field unset", "kafka_num_consumers", "many", EngineKafka{}},
-		{"empty int leaves field unset", "kafka_max_block_size", "", EngineKafka{}},
-		{"malformed bool leaves field unset", "kafka_commit_every_batch", "maybe", EngineKafka{}},
 		{"unknown key lands in Extra", "kafka_client_dns_lookup", "use_all_dns_ips", EngineKafka{Extra: map[string]string{"kafka_client_dns_lookup": "use_all_dns_ips"}}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			k := EngineKafka{}
-			applyKafkaSetting(&k, tc.key, tc.val)
+			require.NoError(t, applyKafkaSetting(&k, tc.key, tc.val))
 			assert.Equal(t, tc.want, k)
+		})
+	}
+}
+
+func TestKafkaSetting_InvalidTypedValuesError(t *testing.T) {
+	for _, tc := range []struct {
+		key string
+		val string
+	}{
+		{"kafka_num_consumers", "many"},
+		{"kafka_max_block_size", ""},
+		{"kafka_commit_every_batch", "maybe"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			err := applyKafkaSetting(&EngineKafka{}, tc.key, tc.val)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.key)
 		})
 	}
 }
 
 func TestKafkaSetting_ExtraAccumulates(t *testing.T) {
 	k := EngineKafka{}
-	applyKafkaSetting(&k, "kafka_fetch_min_bytes", "1024")
-	applyKafkaSetting(&k, "kafka_queued_min_messages", "100000")
-	applyKafkaSetting(&k, "kafka_format", "Avro")
+	require.NoError(t, applyKafkaSetting(&k, "kafka_fetch_min_bytes", "1024"))
+	require.NoError(t, applyKafkaSetting(&k, "kafka_queued_min_messages", "100000"))
+	require.NoError(t, applyKafkaSetting(&k, "kafka_format", "Avro"))
 
 	want := EngineKafka{
 		Format: strPtr("Avro"),
