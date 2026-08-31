@@ -1102,6 +1102,11 @@ func unquoteString(s string) string {
 						continue
 					}
 				}
+				if inner[i] == first && i+1 < len(inner) && inner[i+1] == first {
+					decoded.WriteByte(first)
+					i++
+					continue
+				}
 				decoded.WriteByte(inner[i])
 			}
 			return decoded.String()

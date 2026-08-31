@@ -167,7 +167,7 @@ func dictArgValueString(v chparser.Expr) string {
 		return ""
 	}
 	if s, ok := v.(*chparser.StringLiteral); ok {
-		return s.Literal
+		return unquoteString(formatNode(s))
 	}
 	return formatNode(v)
 }
