@@ -606,6 +606,7 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 		setStr("schema", v.Schema)
 		setStr("handle_error_mode", v.HandleErrorMode)
 		setStr("compression_codec", v.CompressionCodec)
+		setStr("autodetect_client_rack", v.AutodetectClientRack)
 		setInt("num_consumers", v.NumConsumers)
 		setInt("max_block_size", v.MaxBlockSize)
 		setInt("skip_broken_messages", v.SkipBrokenMessages)
@@ -618,7 +619,6 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 		setBool("commit_every_batch", v.CommitEveryBatch)
 		setBool("thread_per_consumer", v.ThreadPerConsumer)
 		setBool("commit_on_select", v.CommitOnSelect)
-		setBool("autodetect_client_rack", v.AutodetectClientRack)
 		if len(v.Extra) > 0 {
 			b.SetAttributeValue("extra", stringMap(v.Extra))
 		}

@@ -200,3 +200,42 @@ func TestCHLive_Kafka_AllSettingsForm(t *testing.T) {
 	require.NotNil(t, gotKafka.HandleErrorMode)
 	assert.Equal(t, "stream", *gotKafka.HandleErrorMode)
 }
+
+// TestCHLive_Kafka_AutodetectClientRack starts from raw ClickHouse SQL so the
+// test covers the live SHOW CREATE representation, not only syntax generated
+// by hclexp. The setting first shipped on the ClickHouse 26.5 release line.
+func TestCHLive_Kafka_AutodetectClientRack(t *testing.T) {
+	if !*clickhouseLive {
+		t.Skip("pass -clickhouse to run against a live ClickHouse")
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	ctx := context.Background()
+
+	var major, minor uint64
+	require.NoError(t, conn.QueryRow(ctx, `
+		SELECT
+			toUInt64(splitByChar('.', version())[1]),
+			toUInt64(splitByChar('.', version())[2])
+	`).Scan(&major, &minor))
+	if major < 26 || (major == 26 && minor < 5) {
+		t.Skipf("kafka_autodetect_client_rack requires ClickHouse >= 26.5; server is %d.%d", major, minor)
+	}
+
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s.kafka_rack (
+		id UInt64
+	) ENGINE = Kafka SETTINGS
+		kafka_broker_list = 'kafka:9092',
+		kafka_topic_list = 'events',
+		kafka_group_name = 'group1',
+		kafka_format = 'JSONEachRow',
+		kafka_autodetect_client_rack = 'CLICKHOUSE'`, dbName)))
+
+	dbIntrospected, err := Introspect(ctx, conn, dbName, false)
+	require.NoError(t, err)
+	require.Len(t, dbIntrospected.Tables, 1)
+	gotKafka, ok := dbIntrospected.Tables[0].Engine.Decoded.(EngineKafka)
+	require.True(t, ok)
+	require.NotNil(t, gotKafka.AutodetectClientRack)
+	assert.Equal(t, "CLICKHOUSE", *gotKafka.AutodetectClientRack)
+}

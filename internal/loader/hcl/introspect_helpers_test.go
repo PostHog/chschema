@@ -41,7 +41,7 @@ func TestKafkaSetting_TypedFields(t *testing.T) {
 		{"thread_per_consumer zero", "kafka_thread_per_consumer", "0", EngineKafka{ThreadPerConsumer: ptr(false)}},
 		{"thread_per_consumer false", "kafka_thread_per_consumer", "false", EngineKafka{ThreadPerConsumer: ptr(false)}},
 		{"commit_on_select", "kafka_commit_on_select", "true", EngineKafka{CommitOnSelect: ptr(true)}},
-		{"autodetect_client_rack", "kafka_autodetect_client_rack", "false", EngineKafka{AutodetectClientRack: ptr(false)}},
+		{"autodetect_client_rack", "kafka_autodetect_client_rack", "CLICKHOUSE", EngineKafka{AutodetectClientRack: ptr("CLICKHOUSE")}},
 		{"unknown key lands in Extra", "kafka_client_dns_lookup", "use_all_dns_ips", EngineKafka{Extra: map[string]string{"kafka_client_dns_lookup": "use_all_dns_ips"}}},
 	}
 	for _, tc := range tests {

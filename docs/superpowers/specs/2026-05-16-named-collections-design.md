@@ -210,16 +210,16 @@ type EngineKafka struct {
     CompressionLevel     *int64 `hcl:"compression_level,optional"`
 
     // Optional booleans (introspected as 0/1, presented as bool in HCL).
-    CommitEveryBatch     *bool `hcl:"commit_every_batch,optional"`
-    ThreadPerConsumer    *bool `hcl:"thread_per_consumer,optional"`
-    CommitOnSelect       *bool `hcl:"commit_on_select,optional"`
-    AutodetectClientRack *bool `hcl:"autodetect_client_rack,optional"`
+    CommitEveryBatch  *bool `hcl:"commit_every_batch,optional"`
+    ThreadPerConsumer *bool `hcl:"thread_per_consumer,optional"`
+    CommitOnSelect    *bool `hcl:"commit_on_select,optional"`
 
     // Optional strings.
-    ClientID         *string `hcl:"client_id,optional"`
-    Schema           *string `hcl:"schema,optional"`
-    HandleErrorMode  *string `hcl:"handle_error_mode,optional"`
-    CompressionCodec *string `hcl:"compression_codec,optional"`
+    ClientID             *string `hcl:"client_id,optional"`
+    Schema               *string `hcl:"schema,optional"`
+    HandleErrorMode      *string `hcl:"handle_error_mode,optional"`
+    CompressionCodec     *string `hcl:"compression_codec,optional"`
+    AutodetectClientRack *string `hcl:"autodetect_client_rack,optional"`
 
     // Extra is the escape valve for kafka_* settings ClickHouse adds in
     // versions we don't yet model. Keys are passed through verbatim and

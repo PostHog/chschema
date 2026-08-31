@@ -6,6 +6,8 @@ import (
 
 	"github.com/hashicorp/hcl/v2"
 	"github.com/hashicorp/hcl/v2/gohcl"
+	"github.com/hashicorp/hcl/v2/hclsyntax"
+	"github.com/zclconf/go-cty/cty"
 )
 
 // Engine is the typed, decoded form of an engine block. Each ClickHouse
@@ -232,16 +234,16 @@ type EngineKafka struct {
 	CompressionLevel     *int64 `hcl:"compression_level,optional"`
 
 	// Optional booleans (introspected as 0/1, presented as bool in HCL).
-	CommitEveryBatch     *bool `hcl:"commit_every_batch,optional"`
-	ThreadPerConsumer    *bool `hcl:"thread_per_consumer,optional"`
-	CommitOnSelect       *bool `hcl:"commit_on_select,optional"`
-	AutodetectClientRack *bool `hcl:"autodetect_client_rack,optional"`
+	CommitEveryBatch  *bool `hcl:"commit_every_batch,optional"`
+	ThreadPerConsumer *bool `hcl:"thread_per_consumer,optional"`
+	CommitOnSelect    *bool `hcl:"commit_on_select,optional"`
 
 	// Optional strings.
-	ClientID         *string `hcl:"client_id,optional"`
-	Schema           *string `hcl:"schema,optional"`
-	HandleErrorMode  *string `hcl:"handle_error_mode,optional"`
-	CompressionCodec *string `hcl:"compression_codec,optional"`
+	ClientID             *string `hcl:"client_id,optional"`
+	Schema               *string `hcl:"schema,optional"`
+	HandleErrorMode      *string `hcl:"handle_error_mode,optional"`
+	CompressionCodec     *string `hcl:"compression_codec,optional"`
+	AutodetectClientRack *string `hcl:"autodetect_client_rack,optional"`
 
 	// Extra is the escape valve for kafka_* settings ClickHouse adds in
 	// versions we don't yet model. Keys are passed through verbatim and
@@ -550,6 +552,9 @@ func DecodeEngine(spec *EngineSpec) (Engine, error) {
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
 	case "kafka":
+		if kafkaAutodetectClientRackIsBool(spec.Body) {
+			return nil, errors.New("kafka autodetect_client_rack must be a string; boolean HCL is no longer supported (use \"\" to disable, or a ClickHouse rack-detection value such as \"CLICKHOUSE\")")
+		}
 		var e EngineKafka
 		diags = gohcl.DecodeBody(spec.Body, nil, &e)
 		target = e
@@ -579,4 +584,21 @@ func DecodeEngine(spec *EngineSpec) (Engine, error) {
 		return nil, errors.New(diags.Error())
 	}
 	return target, nil
+}
+
+// kafkaAutodetectClientRackIsBool detects legacy HCL before gohcl decodes it.
+// cty otherwise coerces true/false into the strings "true"/"false", which
+// ClickHouse's string setting does not support and which would hide the type
+// migration behind apparently successful schema resolution.
+func kafkaAutodetectClientRackIsBool(body hcl.Body) bool {
+	syntaxBody, ok := body.(*hclsyntax.Body)
+	if !ok {
+		return false
+	}
+	attr, ok := syntaxBody.Attributes["autodetect_client_rack"]
+	if !ok {
+		return false
+	}
+	v, diags := attr.Expr.Value(nil)
+	return !diags.HasErrors() && !v.IsNull() && v.Type() == cty.Bool
 }

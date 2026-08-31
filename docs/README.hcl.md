@@ -258,6 +258,10 @@ attributes depend on the kind.
 | `merge`                               | `db_regex`, `table_regex`                          | —                      |
 | `buffer`                              | `database`, `table`, `num_layers`, `min_time`, `max_time`, `min_rows`, `max_rows`, `min_bytes`, `max_bytes` | `flush_time`, `flush_rows`, `flush_bytes` |
 
+Kafka's `autodetect_client_rack` attribute is a string on ClickHouse 26.5 and
+newer. Supported values currently include `AWS_ZONE_ID`, `AWS_ZONE_NAME`,
+`GCP_ZONE`, `CLICKHOUSE`, and `AWS_ZONE_NAME_THEN_GCP_ZONE`; `""` disables it.
+
 `is_deleted_column` (ClickHouse's `is_deleted` ReplacingMergeTree parameter:
 rows with a `1` in that column are delete markers) requires `version_column`,
 matching ClickHouse's own rule that `is_deleted` can only be used with `ver`.

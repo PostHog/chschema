@@ -1453,6 +1453,7 @@ engine "kafka" {
   num_consumers        = 4
   max_block_size       = 1048576
   commit_on_select     = false
+  autodetect_client_rack = "CLICKHOUSE"
   skip_broken_messages = 100
   handle_error_mode    = "stream"
   sasl_mechanism       = "PLAIN"
@@ -1468,6 +1469,10 @@ Field names drop the `kafka_` prefix (implicit inside `engine "kafka"`). The
 `extra` map carries any setting that doesn't have a typed field; its keys must
 include the `kafka_` prefix. Collection overrides generate the canonical
 `Kafka(<collection>) SETTINGS kafka_* = ...` form.
+
+`autodetect_client_rack` is a string on ClickHouse 26.5 and newer. Supported
+values currently include `AWS_ZONE_ID`, `AWS_ZONE_NAME`, `GCP_ZONE`,
+`CLICKHOUSE`, and `AWS_ZONE_NAME_THEN_GCP_ZONE`; an empty string disables it.
 
 ## Layering & inheritance
 
