@@ -1095,10 +1095,6 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 		}
 		return fmt.Sprintf("Buffer(%s)", strings.Join(args, ", ")), nil
 	case EngineKafka:
-		if v.Collection != nil {
-			// Named collection form: Kafka(<collection>); no settings emitted.
-			return fmt.Sprintf("Kafka(%s)", *v.Collection), nil
-		}
 		settings := map[string]string{}
 		setStr := func(name string, p *string) {
 			if p != nil {
@@ -1146,6 +1142,11 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 		setBool("kafka_autodetect_client_rack", v.AutodetectClientRack)
 		for k, val := range v.Extra {
 			settings[k] = val
+		}
+		if v.Collection != nil {
+			// ClickHouse's canonical mixed form keeps the collection in the
+			// constructor and emits per-table overrides through SETTINGS.
+			return fmt.Sprintf("Kafka(%s)", *v.Collection), settings
 		}
 		return "Kafka()", settings
 	case EngineTimeSeries:

@@ -87,6 +87,51 @@ func TestCHLive_Kafka_WithNamedCollection_E2E(t *testing.T) {
 	assert.Nil(t, gotKafka.BrokerList, "Kafka(<nc>) form should NOT resolve to inline settings on introspect")
 }
 
+// TestCHLive_Kafka_RawNamedCollectionOverrides starts from a production-shaped
+// CREATE statement rather than GenerateSQL output. This closes the coverage gap
+// where self-generated round trips could never exercise a live DDL form the
+// generator did not already know how to emit.
+func TestCHLive_Kafka_RawNamedCollectionOverrides(t *testing.T) {
+	if !*clickhouseLive {
+		t.Skip("pass -clickhouse to run against a live ClickHouse")
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	ctx := context.Background()
+	ncName := fmt.Sprintf("kafka_raw_overrides_%d", time.Now().UnixNano())
+	t.Cleanup(func() { _ = conn.Exec(ctx, "DROP NAMED COLLECTION IF EXISTS "+ncName) })
+
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(`CREATE NAMED COLLECTION %s AS
+		kafka_broker_list = 'kafka:9092',
+		kafka_topic_list = 'base_topic' OVERRIDABLE,
+		kafka_group_name = 'base_group' OVERRIDABLE,
+		kafka_format = 'JSONEachRow' OVERRIDABLE`, ncName)))
+
+	rawCreate := fmt.Sprintf(`CREATE TABLE %s.kafka_raw (
+		id UInt64,
+		payload String
+	) ENGINE = Kafka(%s,
+		kafka_topic_list = 'override_topic',
+		kafka_group_name = 'override_group',
+		kafka_format = 'JSONEachRow')
+	SETTINGS kafka_num_consumers = 1, kafka_max_block_size = 100000`, dbName, ncName)
+	require.NoError(t, conn.Exec(ctx, rawCreate))
+
+	dbIntrospected, err := Introspect(ctx, conn, dbName, false)
+	require.NoError(t, err)
+	require.Len(t, dbIntrospected.Tables, 1)
+	gotKafka, ok := dbIntrospected.Tables[0].Engine.Decoded.(EngineKafka)
+	require.True(t, ok)
+	assert.Equal(t, EngineKafka{
+		Collection:   &ncName,
+		TopicList:    ptr("override_topic"),
+		GroupName:    ptr("override_group"),
+		Format:       ptr("JSONEachRow"),
+		NumConsumers: ptr(int64(1)),
+		MaxBlockSize: ptr(int64(100000)),
+	}, gotKafka)
+}
+
 // TestCHLive_Kafka_AllSettingsForm exercises the canonical Kafka() +
 // SETTINGS form with mixed typed settings (numeric, bool, string) to
 // confirm introspection captures every type.

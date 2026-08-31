@@ -1278,7 +1278,7 @@ func extractEngineParams(decl string) ([]string, error) {
 		parts = append(parts, strings.TrimSpace(b.String()))
 	}
 	for i, p := range parts {
-		parts[i] = strings.Trim(p, `'"`)
+		parts[i] = unquoteString(strings.TrimSpace(p))
 	}
 	return parts, nil
 }
@@ -1297,89 +1297,157 @@ func parseSummingMergeTreeHCL(decl string) (Engine, error) {
 
 func parseKafkaEngine(engineFull, decl string) (Engine, error) {
 	settings := extractEngineSettings(engineFull)
-	if len(settings) > 0 {
-		k, err := buildKafkaEngine(nil, settings)
-		if err != nil {
-			return nil, err
-		}
-		return k, nil
-	}
 	p, err := extractEngineParams(decl)
 	if err != nil {
 		return nil, err
 	}
-	return buildKafkaEngine(p, nil)
+	return buildKafkaEngine(p, settings)
 }
 
-// buildKafkaEngine decodes Kafka engine parameters into the typed
-// EngineKafka struct across the four supported forms:
-//  1. Kafka() + kafka_* settings (canonical inline form)
-//  2. Kafka(<collection_name>) with no settings (named collection)
-//  3. Kafka('broker', 'topic', 'group', 'format') legacy positional
-//  4. Kafka(<collection>) + kafka_* settings → error (mixed form)
+var kafkaPositionalSettingKeys = []string{
+	"kafka_broker_list",
+	"kafka_topic_list",
+	"kafka_group_name",
+	"kafka_format",
+	"kafka_row_delimiter",
+	"kafka_schema",
+	"kafka_num_consumers",
+	"kafka_max_block_size",
+	"kafka_skip_broken_messages",
+	"kafka_commit_every_batch",
+	"kafka_client_id",
+	"kafka_poll_timeout_ms",
+	"kafka_poll_max_batch_size",
+	"kafka_flush_interval_ms",
+	"kafka_consumer_reschedule_ms",
+	"kafka_thread_per_consumer",
+	"kafka_handle_error_mode",
+	"kafka_commit_on_select",
+	"kafka_max_rows_per_message",
+}
+
+func kafkaCollectionName(s string) bool {
+	return s != "" && !strings.ContainsAny(s, ":,/ \t\r\n")
+}
+
+// splitKafkaNamedArgument separates constructor overrides such as
+// kafka_topic_list = 'events'. Any equals sign marks named-argument syntax so
+// a malformed key=value token can never fall through into a positional slot.
+func splitKafkaNamedArgument(param string) (key, value string, named bool, err error) {
+	eq := strings.IndexRune(param, '=')
+	if eq == -1 {
+		return "", "", false, nil
+	}
+	key = strings.TrimSpace(param[:eq])
+	value = strings.TrimSpace(param[eq+1:])
+	if !strings.HasPrefix(key, "kafka_") || strings.ContainsAny(key, " \t\r\n") {
+		return "", "", true, fmt.Errorf("kafka constructor has invalid named argument %q", param)
+	}
+	if value == "" {
+		return "", "", true, fmt.Errorf("kafka constructor named argument %q has no value", key)
+	}
+	return key, unquoteString(value), true, nil
+}
+
+// buildKafkaEngine classifies constructor arguments before decoding them. It
+// supports Kafka() + SETTINGS, named collections with constructor or SETTINGS
+// overrides, the 3/4-argument positional forms, and the deprecated positional
+// tail. Named key=value tokens are never accepted as positional values.
 func buildKafkaEngine(params []string, allSettings map[string]string) (EngineKafka, error) {
-	hasKafkaSettings := false
-	for k := range allSettings {
-		if strings.HasPrefix(k, "kafka_") {
-			hasKafkaSettings = true
+	k := EngineKafka{}
+	constructorKeys := map[string]bool{}
+	hasNamed := false
+	for _, param := range params {
+		if strings.ContainsRune(param, '=') {
+			hasNamed = true
 			break
 		}
 	}
 
-	// Form 2 / 4: single arg that looks like an identifier — no colon
-	// (broker list always has host:port), no comma (broker list is
-	// comma-joined), no slash, no whitespace.
-	if len(params) == 1 && !strings.ContainsAny(params[0], ":,/ ") {
+	if hasNamed {
+		if len(params) == 0 || strings.ContainsRune(params[0], '=') {
+			return EngineKafka{}, fmt.Errorf("kafka constructor named arguments require a collection as the first argument")
+		}
+		if !kafkaCollectionName(params[0]) {
+			return EngineKafka{}, fmt.Errorf("kafka constructor named arguments require a collection as the first argument; got %q", params[0])
+		}
 		name := params[0]
-		if hasKafkaSettings {
-			return EngineKafka{}, fmt.Errorf("Kafka(%s) cannot be combined with kafka_* SETTINGS overrides — declare full inline settings instead", name)
+		k.Collection = &name
+		for _, param := range params[1:] {
+			key, val, named, err := splitKafkaNamedArgument(param)
+			if err != nil {
+				return EngineKafka{}, err
+			}
+			if !named {
+				return EngineKafka{}, fmt.Errorf("Kafka(%s, ...) cannot mix named arguments with bare positional value %q", name, param)
+			}
+			if constructorKeys[key] {
+				return EngineKafka{}, fmt.Errorf("kafka constructor repeats named argument %q", key)
+			}
+			if err := applyKafkaSetting(&k, key, val); err != nil {
+				return EngineKafka{}, err
+			}
+			constructorKeys[key] = true
 		}
-		return EngineKafka{Collection: &name}, nil
+	} else {
+		switch {
+		case len(params) == 0:
+			// Canonical inline form; SETTINGS are applied below.
+		case len(params) == 1 && kafkaCollectionName(params[0]):
+			name := params[0]
+			k.Collection = &name
+		case len(params) >= 3 && len(params) <= len(kafkaPositionalSettingKeys):
+			for i, val := range params {
+				key := kafkaPositionalSettingKeys[i]
+				if err := applyKafkaSetting(&k, key, val); err != nil {
+					return EngineKafka{}, fmt.Errorf("kafka positional argument %d: %w", i+1, err)
+				}
+				constructorKeys[key] = true
+			}
+		case len(params) > len(kafkaPositionalSettingKeys):
+			return EngineKafka{}, fmt.Errorf("kafka takes at most %d positional arguments; got %d", len(kafkaPositionalSettingKeys), len(params))
+		default:
+			return EngineKafka{}, fmt.Errorf("Kafka() unexpected positional args: %v", params)
+		}
 	}
 
-	// Form 3: legacy positional Kafka('broker', 'topic', 'group', 'format').
-	if len(params) == 4 {
-		broker := params[0]
-		topic := params[1]
-		group := params[2]
-		format := params[3]
-		k := EngineKafka{
-			BrokerList: &broker,
-			TopicList:  &topic,
-			GroupName:  &group,
-			Format:     &format,
-		}
-		for key, val := range allSettings {
-			if !strings.HasPrefix(key, "kafka_") {
-				continue
-			}
-			// Skip keys already populated by positional args.
-			switch key {
-			case "kafka_broker_list", "kafka_topic_list", "kafka_group_name", "kafka_format":
-				continue
-			}
-			applyKafkaSetting(&k, key, val)
-		}
-		return k, nil
-	}
-
-	// Form 1: Kafka() + kafka_* settings.
-	if len(params) > 0 {
-		return EngineKafka{}, fmt.Errorf("Kafka() unexpected positional args: %v", params)
-	}
-	k := EngineKafka{}
 	for key, val := range allSettings {
 		if !strings.HasPrefix(key, "kafka_") {
 			continue
 		}
-		applyKafkaSetting(&k, key, val)
+		// Constructor values retain the historical precedence over duplicate
+		// SETTINGS keys; SETTINGS fill missing positional values and add
+		// collection/table overrides.
+		if constructorKeys[key] {
+			continue
+		}
+		if err := applyKafkaSetting(&k, key, val); err != nil {
+			return EngineKafka{}, err
+		}
 	}
 	return k, nil
 }
 
 // applyKafkaSetting routes one kafka_* setting into the matching typed
 // field. Unknown keys land in Extra with their prefix intact.
-func applyKafkaSetting(k *EngineKafka, key, val string) {
+func applyKafkaSetting(k *EngineKafka, key, val string) error {
+	setInt := func(dst **int64) error {
+		parsed := parseInt64Ptr(val)
+		if parsed == nil {
+			return fmt.Errorf("%s requires an integer value; got %q", key, val)
+		}
+		*dst = parsed
+		return nil
+	}
+	setBool := func(dst **bool) error {
+		parsed := parseBoolPtr(val)
+		if parsed == nil {
+			return fmt.Errorf("%s requires a boolean or 0/1 value; got %q", key, val)
+		}
+		*dst = parsed
+		return nil
+	}
+
 	switch key {
 	case "kafka_broker_list":
 		k.BrokerList = &val
@@ -1406,37 +1474,38 @@ func applyKafkaSetting(k *EngineKafka, key, val string) {
 	case "kafka_compression_codec":
 		k.CompressionCodec = &val
 	case "kafka_num_consumers":
-		k.NumConsumers = parseInt64Ptr(val)
+		return setInt(&k.NumConsumers)
 	case "kafka_max_block_size":
-		k.MaxBlockSize = parseInt64Ptr(val)
+		return setInt(&k.MaxBlockSize)
 	case "kafka_skip_broken_messages":
-		k.SkipBrokenMessages = parseInt64Ptr(val)
+		return setInt(&k.SkipBrokenMessages)
 	case "kafka_poll_timeout_ms":
-		k.PollTimeoutMs = parseInt64Ptr(val)
+		return setInt(&k.PollTimeoutMs)
 	case "kafka_poll_max_batch_size":
-		k.PollMaxBatchSize = parseInt64Ptr(val)
+		return setInt(&k.PollMaxBatchSize)
 	case "kafka_flush_interval_ms":
-		k.FlushIntervalMs = parseInt64Ptr(val)
+		return setInt(&k.FlushIntervalMs)
 	case "kafka_consumer_reschedule_ms":
-		k.ConsumerRescheduleMs = parseInt64Ptr(val)
+		return setInt(&k.ConsumerRescheduleMs)
 	case "kafka_max_rows_per_message":
-		k.MaxRowsPerMessage = parseInt64Ptr(val)
+		return setInt(&k.MaxRowsPerMessage)
 	case "kafka_compression_level":
-		k.CompressionLevel = parseInt64Ptr(val)
+		return setInt(&k.CompressionLevel)
 	case "kafka_commit_every_batch":
-		k.CommitEveryBatch = parseBoolPtr(val)
+		return setBool(&k.CommitEveryBatch)
 	case "kafka_thread_per_consumer":
-		k.ThreadPerConsumer = parseBoolPtr(val)
+		return setBool(&k.ThreadPerConsumer)
 	case "kafka_commit_on_select":
-		k.CommitOnSelect = parseBoolPtr(val)
+		return setBool(&k.CommitOnSelect)
 	case "kafka_autodetect_client_rack":
-		k.AutodetectClientRack = parseBoolPtr(val)
+		return setBool(&k.AutodetectClientRack)
 	default:
 		if k.Extra == nil {
 			k.Extra = map[string]string{}
 		}
 		k.Extra[key] = val
 	}
+	return nil
 }
 
 func parseInt64Ptr(s string) *int64 {

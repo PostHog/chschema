@@ -1430,12 +1430,18 @@ and validatable at parse time.
 
 ### Kafka engine with named collections
 
-`engine "kafka" { ... }` accepts either a `collection` reference or a complete inline set of `kafka_*` settings — never both. The inline form is the canonical preferred shape, modeling every documented `kafka_*` setting as a typed HCL attribute (numbers, booleans, strings) with an `extra` escape map for settings ClickHouse adds in versions hclexp doesn't yet model:
+`engine "kafka" { ... }` accepts either a `collection` reference, optionally
+with per-table overrides, or a complete inline set of `kafka_*` settings. The
+typed HCL attributes model numbers, booleans, and strings; the `extra` escape
+map preserves settings ClickHouse adds in versions hclexp does not yet model:
 
 ```hcl
 engine "kafka" {
-  // option A: named collection reference (no other field allowed)
-  collection = "my_kafka"
+  // option A: named collection, with optional per-table overrides
+  collection          = "my_kafka"
+  topic_list          = "events_override"
+  num_consumers       = 4
+  thread_per_consumer = true
 }
 
 engine "kafka" {
@@ -1458,7 +1464,10 @@ engine "kafka" {
 }
 ```
 
-Field names drop the `kafka_` prefix (implicit inside `engine "kafka"`). The `extra` map carries any setting that doesn't have a typed field; its keys must include the `kafka_` prefix.
+Field names drop the `kafka_` prefix (implicit inside `engine "kafka"`). The
+`extra` map carries any setting that doesn't have a typed field; its keys must
+include the `kafka_` prefix. Collection overrides generate the canonical
+`Kafka(<collection>) SETTINGS kafka_* = ...` form.
 
 ## Layering & inheritance
 

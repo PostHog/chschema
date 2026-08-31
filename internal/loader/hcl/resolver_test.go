@@ -340,7 +340,7 @@ func TestResolve_DictionarySourceCollectionMustBeDeclared(t *testing.T) {
 	})
 }
 
-func TestResolve_KafkaEngine_XOR(t *testing.T) {
+func TestResolve_KafkaEngine_CollectionOrInline(t *testing.T) {
 	mkTblWithKafka := func(eng EngineKafka) *Schema {
 		return &Schema{Databases: []DatabaseSpec{{
 			Name: "db",
@@ -367,15 +367,13 @@ func TestResolve_KafkaEngine_XOR(t *testing.T) {
 			errSubs: "requires either",
 		},
 		{
-			name:    "collection AND inline broker_list",
+			name:    "collection with broker_list override",
 			eng:     EngineKafka{Collection: ptr("nc1"), BrokerList: ptr("k:9092")},
-			errSubs: "mutually exclusive",
 			setupNC: true,
 		},
 		{
-			name:    "collection AND extra",
+			name:    "collection with extra override",
 			eng:     EngineKafka{Collection: ptr("nc1"), Extra: map[string]string{"kafka_x": "y"}},
-			errSubs: "mutually exclusive",
 			setupNC: true,
 		},
 		{

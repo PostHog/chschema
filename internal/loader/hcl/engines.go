@@ -201,11 +201,12 @@ type EngineBuffer struct {
 func (EngineBuffer) Kind() string { return "buffer" }
 
 type EngineKafka struct {
-	// Collection is the named-collection reference. Mutually exclusive
-	// with every other field; when set, no inline setting may be set.
+	// Collection is the named-collection reference. The remaining fields are
+	// optional per-table overrides when Collection is set.
 	Collection *string `hcl:"collection,optional"`
 
-	// Required when Collection is nil.
+	// BrokerList, TopicList, GroupName, and Format are required only when
+	// Collection is nil.
 	BrokerList *string `hcl:"broker_list,optional"`
 	TopicList  *string `hcl:"topic_list,optional"`
 	GroupName  *string `hcl:"group_name,optional"`
