@@ -190,7 +190,7 @@ func sourceSQL(s DictionarySource) string {
 			{"CREDENTIALS_PASSWORD", strVal(v.CredentialsPassword)},
 		}) + ")"
 	case SourceFile:
-		return fmt.Sprintf("FILE(PATH '%s' FORMAT '%s')", v.Path, v.Format)
+		return fmt.Sprintf("FILE(PATH %s FORMAT %s)", quoteString(v.Path), quoteString(v.Format))
 	case SourceExecutable:
 		return "EXECUTABLE(" + joinSourceArgs([]sourceArg{
 			{"COMMAND", strVal(&v.Command)},
