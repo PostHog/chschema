@@ -289,6 +289,12 @@ hclexp diff -left ./schema/posthog.hcl \
   and definition while ignoring declaration order. By default physical column
   order is significant because it affects `SELECT *`, positional inserts, and
   dump convergence.
+- `-exclude <file>` — apply the same HCL exclude config to both sides. For a
+  live side, matching objects are skipped before their `CREATE` DDL is parsed,
+  so transient or unsupported objects cannot abort the diff.
+- `-allow-raw` — on live sides, capture an object whose `CREATE` DDL cannot be
+  parsed or modeled as an opaque `raw {}` block and continue. Strict failure
+  remains the default; HCL sides already load declared raw blocks normally.
 - `-sql` — emit the migration DDL (`CREATE` / `ALTER` / `DROP`) that turns
   the left side into the right side, instead of the change summary.
   Changes ClickHouse can't apply in place (engine swap, `ORDER BY`,
