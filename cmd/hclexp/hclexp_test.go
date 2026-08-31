@@ -139,6 +139,53 @@ database "posthog" {
 	require.Equal(t, "events", schema.Databases[0].Tables[0].Name)
 }
 
+func TestLoadSide_BufferOptionalTailCannotDisappear(t *testing.T) {
+	bufferHCL := func(tail string) string {
+		return `database "audit" {
+  table "buf" {
+    column "id" { type = "UInt64" }
+    engine "buffer" {
+      database   = "audit"
+      table      = "destination"
+      num_layers = 1
+      min_time   = 1
+      max_time   = 10
+      min_rows   = 1
+      max_rows   = 100
+      min_bytes  = 1
+      max_bytes  = 1000
+` + tail + `
+    }
+  }
+}`
+	}
+
+	valid := []struct {
+		name string
+		tail string
+		want string
+	}{
+		{name: "9 arguments", want: "Buffer('audit', 'destination', 1, 1, 10, 1, 100, 1, 1000)"},
+		{name: "10 arguments", tail: "      flush_time = 30", want: "Buffer('audit', 'destination', 1, 1, 10, 1, 100, 1, 1000, 30)"},
+		{name: "11 arguments", tail: "      flush_time = 30\n      flush_rows = 200", want: "Buffer('audit', 'destination', 1, 1, 10, 1, 100, 1, 1000, 30, 200)"},
+		{name: "12 arguments", tail: "      flush_time = 30\n      flush_rows = 200\n      flush_bytes = 50000", want: "Buffer('audit', 'destination', 1, 1, 10, 1, 100, 1, 1000, 30, 200, 50000)"},
+	}
+	for _, tc := range valid {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTemp(t, "buffer.hcl", bufferHCL(tc.tail))
+			schema, err := loadSide(path)
+			require.NoError(t, err)
+			generated := hclload.GenerateSQL(hclload.Diff(nil, schema))
+			require.Len(t, generated.Statements, 1)
+			require.Contains(t, generated.Statements[0], tc.want)
+		})
+	}
+
+	path := writeTemp(t, "buffer-gap.hcl", bufferHCL("      flush_rows = 77"))
+	_, err := loadSide(path)
+	require.ErrorContains(t, err, "flush_rows requires flush_time")
+}
+
 func TestRunDiff_RenderChangeSet(t *testing.T) {
 	left := writeTemp(t, "left.hcl", `
 database "posthog" {
