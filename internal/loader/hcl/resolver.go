@@ -190,9 +190,50 @@ func validateNamedCollections(s *Schema) error {
 	return nil
 }
 
-// validateKafkaEngines requires the complete connection tuple for inline
-// engines and verifies named-collection references. A collection-backed
-// engine may carry any typed field as a per-table override.
+func settingRepresentationConflict(dbName, tableName, key, leftPath, rightPath string) error {
+	return fmt.Errorf("%s.%s: setting %q has conflicting HCL representations at %s and %s",
+		dbName, tableName, key, leftPath, rightPath)
+}
+
+func kafkaTypedSettingPaths(k EngineKafka) map[string]string {
+	paths := map[string]string{}
+	add := func(key, attr string, present bool) {
+		if present {
+			paths[key] = `engine "kafka".` + attr
+		}
+	}
+
+	add("kafka_broker_list", "broker_list", k.BrokerList != nil)
+	add("kafka_topic_list", "topic_list", k.TopicList != nil)
+	add("kafka_group_name", "group_name", k.GroupName != nil)
+	add("kafka_format", "format", k.Format != nil)
+	add("kafka_security_protocol", "security_protocol", k.SecurityProtocol != nil)
+	add("kafka_sasl_mechanism", "sasl_mechanism", k.SaslMechanism != nil)
+	add("kafka_sasl_username", "sasl_username", k.SaslUsername != nil)
+	add("kafka_sasl_password", "sasl_password", k.SaslPassword != nil)
+	add("kafka_client_id", "client_id", k.ClientID != nil)
+	add("kafka_schema", "schema", k.Schema != nil)
+	add("kafka_handle_error_mode", "handle_error_mode", k.HandleErrorMode != nil)
+	add("kafka_compression_codec", "compression_codec", k.CompressionCodec != nil)
+	add("kafka_autodetect_client_rack", "autodetect_client_rack", k.AutodetectClientRack != nil)
+	add("kafka_num_consumers", "num_consumers", k.NumConsumers != nil)
+	add("kafka_max_block_size", "max_block_size", k.MaxBlockSize != nil)
+	add("kafka_skip_broken_messages", "skip_broken_messages", k.SkipBrokenMessages != nil)
+	add("kafka_poll_timeout_ms", "poll_timeout_ms", k.PollTimeoutMs != nil)
+	add("kafka_poll_max_batch_size", "poll_max_batch_size", k.PollMaxBatchSize != nil)
+	add("kafka_flush_interval_ms", "flush_interval_ms", k.FlushIntervalMs != nil)
+	add("kafka_consumer_reschedule_ms", "consumer_reschedule_ms", k.ConsumerRescheduleMs != nil)
+	add("kafka_max_rows_per_message", "max_rows_per_message", k.MaxRowsPerMessage != nil)
+	add("kafka_compression_level", "compression_level", k.CompressionLevel != nil)
+	add("kafka_commit_every_batch", "commit_every_batch", k.CommitEveryBatch != nil)
+	add("kafka_thread_per_consumer", "thread_per_consumer", k.ThreadPerConsumer != nil)
+	add("kafka_commit_on_select", "commit_on_select", k.CommitOnSelect != nil)
+	return paths
+}
+
+// validateKafkaEngines requires one HCL representation per setting, the
+// complete connection tuple for inline engines, and declared collection
+// references. A collection-backed engine may carry typed per-table overrides.
 func validateKafkaEngines(s *Schema) error {
 	ncDeclared := map[string]bool{}
 	for _, nc := range s.NamedCollections {
@@ -207,6 +248,28 @@ func validateKafkaEngines(s *Schema) error {
 			if !ok {
 				continue
 			}
+
+			typedSettingPaths := kafkaTypedSettingPaths(k)
+			for _, key := range sortedKeys(k.Extra) {
+				if typedPath, ok := typedSettingPaths[key]; ok {
+					return settingRepresentationConflict(db.Name, t.Name, key, typedPath,
+						fmt.Sprintf(`engine "kafka".extra[%q]`, key))
+				}
+			}
+			for _, key := range sortedKeys(t.Settings) {
+				if !strings.HasPrefix(key, "kafka_") {
+					continue
+				}
+				tablePath := fmt.Sprintf(`table.settings[%q]`, key)
+				if typedPath, ok := typedSettingPaths[key]; ok {
+					return settingRepresentationConflict(db.Name, t.Name, key, typedPath, tablePath)
+				}
+				if _, ok := k.Extra[key]; ok {
+					return settingRepresentationConflict(db.Name, t.Name, key,
+						fmt.Sprintf(`engine "kafka".extra[%q]`, key), tablePath)
+				}
+			}
+
 			hasInline := k.BrokerList != nil || k.TopicList != nil || k.GroupName != nil || k.Format != nil ||
 				k.SecurityProtocol != nil || k.SaslMechanism != nil || k.SaslUsername != nil || k.SaslPassword != nil ||
 				k.ClientID != nil || k.Schema != nil || k.HandleErrorMode != nil || k.CompressionCodec != nil ||
@@ -631,7 +694,7 @@ func resolveDatabase(db *DatabaseSpec) error {
 			return fmt.Errorf("%s.%s: non-abstract table requires an engine", db.Name, t.Name)
 		}
 		if ts, ok := t.Engine.Decoded.(EngineTimeSeries); ok {
-			if err := validateTimeSeriesEngine(db.Name, t.Name, ts); err != nil {
+			if err := validateTimeSeriesEngine(db.Name, t.Name, t.Settings, ts); err != nil {
 				return err
 			}
 		}
@@ -716,9 +779,27 @@ func applyMaterializedViewPatches(db *DatabaseSpec) error {
 }
 
 // validateTimeSeriesEngine enforces the engine-specific resolve rules for
-// EngineTimeSeries: each target sub-block must have exactly one of Target
-// or Inner; inner engines must be MergeTree-family kinds.
-func validateTimeSeriesEngine(dbName, tableName string, e EngineTimeSeries) error {
+// EngineTimeSeries: settings have one HCL representation, each target
+// sub-block must have exactly one of Target or Inner, and inner engines must
+// be MergeTree-family kinds.
+func validateTimeSeriesEngine(dbName, tableName string, tableSettings map[string]string, e EngineTimeSeries) error {
+	if len(e.TagsToColumns) > 0 {
+		if _, ok := e.Settings["tags_to_columns"]; ok {
+			return settingRepresentationConflict(dbName, tableName, "tags_to_columns",
+				`engine "time_series".tags_to_columns`, `engine "time_series".settings["tags_to_columns"]`)
+		}
+	}
+	for _, key := range sortedKeys(tableSettings) {
+		if _, ok := e.Settings[key]; ok {
+			return settingRepresentationConflict(dbName, tableName, key,
+				fmt.Sprintf(`engine "time_series".settings[%q]`, key), fmt.Sprintf(`table.settings[%q]`, key))
+		}
+		if key == "tags_to_columns" && len(e.TagsToColumns) > 0 {
+			return settingRepresentationConflict(dbName, tableName, key,
+				`engine "time_series".tags_to_columns`, `table.settings["tags_to_columns"]`)
+		}
+	}
+
 	for _, kv := range []struct {
 		kind string
 		t    *TimeSeriesTarget
