@@ -702,7 +702,6 @@ func createTableSQL(database string, t TableSpec) string {
 	if t.Cluster != nil {
 		fmt.Fprintf(&b, " ON CLUSTER %s", *t.Cluster)
 	}
-	b.WriteString(" (\n")
 
 	var parts []string
 	for _, c := range t.Columns {
@@ -717,16 +716,24 @@ func createTableSQL(database string, t TableSpec) string {
 	for _, p := range t.Projections {
 		parts = append(parts, fmt.Sprintf("  PROJECTION %s", projectionClause(p)))
 	}
-	b.WriteString(strings.Join(parts, ",\n"))
-	b.WriteString("\n)")
 
-	clause, extraSettings := engineSQL(engineOf(t))
+	engine := engineOf(t)
+	_, isTimeSeries := engine.(EngineTimeSeries)
+	// A bare TimeSeries table asks ClickHouse to synthesize its standard
+	// columns. Unlike ordinary tables, it rejects an explicit empty `()`.
+	if len(parts) > 0 || !isTimeSeries {
+		b.WriteString(" (\n")
+		b.WriteString(strings.Join(parts, ",\n"))
+		b.WriteString("\n)")
+	}
+
+	clause, extraSettings := engineSQL(engine)
 	fmt.Fprintf(&b, " ENGINE = %s", clause)
 
 	// TimeSeries: emit the SAMPLES/TAGS/METRICS tail clauses between the
 	// ENGINE clause and the storage clauses (which are mostly inapplicable
 	// to TimeSeries anyway — the outer table has no ORDER BY etc.).
-	if ts, ok := engineOf(t).(EngineTimeSeries); ok {
+	if ts, ok := engine.(EngineTimeSeries); ok {
 		b.WriteString(timeSeriesTailSQL(ts))
 	}
 
@@ -1179,7 +1186,7 @@ func renderTagsToColumnsMap(m map[string]string) string {
 	sort.Strings(keys)
 	parts := make([]string, len(keys))
 	for i, k := range keys {
-		parts[i] = fmt.Sprintf("'%s':'%s'", k, m[k])
+		parts[i] = quoteString(k) + ":" + quoteString(m[k])
 	}
 	return "{" + strings.Join(parts, ", ") + "}"
 }
