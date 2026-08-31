@@ -689,19 +689,32 @@ func rejectUnexpectedEngineParams(name string, params []string) error {
 	return fmt.Errorf("engine %s has unexpected constructor arguments %v (unmodeled; refusing to drop)", name, params)
 }
 
+func rejectDeprecatedMergeTreeConstructor(name string, params []string, minArgs int) error {
+	if len(params) < minArgs {
+		return nil
+	}
+	return fmt.Errorf("engine %s uses deprecated MergeTree constructor syntax %v (unmodeled; refusing to drop)", name, params)
+}
+
 func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 	params := engineParamStrings(e.Params)
 	allSettings := engineSettingsMap(e.Settings)
 
 	switch e.Name {
 	case "MergeTree":
+		if err := rejectDeprecatedMergeTreeConstructor(e.Name, params, 3); err != nil {
+			return nil, nil, err
+		}
 		if err := rejectUnexpectedEngineParams(e.Name, params); err != nil {
 			return nil, nil, err
 		}
 		return EngineMergeTree{}, allSettings, nil
 	case "ReplicatedMergeTree":
-		if len(params) < 2 {
-			return nil, nil, fmt.Errorf("ReplicatedMergeTree needs (zoo_path, replica_name)")
+		if err := rejectDeprecatedMergeTreeConstructor(e.Name, params, 5); err != nil {
+			return nil, nil, err
+		}
+		if len(params) != 2 {
+			return nil, nil, fmt.Errorf("engine ReplicatedMergeTree needs exactly (zoo_path, replica_name); got %v", params)
 		}
 		return EngineReplicatedMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
 	case "SharedMergeTree":
@@ -751,10 +764,19 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		}
 		return ee, allSettings, nil
 	case "SummingMergeTree":
+		if err := rejectDeprecatedMergeTreeConstructor(e.Name, params, 3); err != nil {
+			return nil, nil, err
+		}
+		if len(params) > 1 {
+			return nil, nil, fmt.Errorf("engine SummingMergeTree takes at most one sum-columns argument; got %v", params)
+		}
 		return EngineSummingMergeTree{SumColumns: summingColumns(params)}, allSettings, nil
 	case "ReplicatedSummingMergeTree":
-		if len(params) < 2 {
-			return nil, nil, fmt.Errorf("ReplicatedSummingMergeTree needs at least (zoo_path, replica_name[, sum_columns...])")
+		if err := rejectDeprecatedMergeTreeConstructor(e.Name, params, 5); err != nil {
+			return nil, nil, err
+		}
+		if len(params) < 2 || len(params) > 3 {
+			return nil, nil, fmt.Errorf("engine ReplicatedSummingMergeTree needs (zoo_path, replica_name[, sum_columns]); got %v", params)
 		}
 		ee := EngineReplicatedSummingMergeTree{ZooPath: params[0], ReplicaName: params[1]}
 		if len(params) > 2 {
@@ -786,13 +808,19 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		}
 		return EngineSharedCollapsingMergeTree{ZooPath: params[0], ReplicaName: params[1], SignColumn: params[2]}, allSettings, nil
 	case "AggregatingMergeTree":
+		if err := rejectDeprecatedMergeTreeConstructor(e.Name, params, 3); err != nil {
+			return nil, nil, err
+		}
 		if err := rejectUnexpectedEngineParams(e.Name, params); err != nil {
 			return nil, nil, err
 		}
 		return EngineAggregatingMergeTree{}, allSettings, nil
 	case "ReplicatedAggregatingMergeTree":
-		if len(params) < 2 {
-			return nil, nil, fmt.Errorf("ReplicatedAggregatingMergeTree needs (zoo_path, replica_name)")
+		if err := rejectDeprecatedMergeTreeConstructor(e.Name, params, 5); err != nil {
+			return nil, nil, err
+		}
+		if len(params) != 2 {
+			return nil, nil, fmt.Errorf("engine ReplicatedAggregatingMergeTree needs exactly (zoo_path, replica_name); got %v", params)
 		}
 		return EngineReplicatedAggregatingMergeTree{ZooPath: params[0], ReplicaName: params[1]}, allSettings, nil
 	case "SharedAggregatingMergeTree":
@@ -1088,8 +1116,11 @@ func ParseEngineString(engineFull string) (Engine, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(p) < 2 {
-			return nil, fmt.Errorf("ReplicatedMergeTree needs (zoo_path, replica_name); got %v", p)
+		if err := rejectDeprecatedMergeTreeConstructor("ReplicatedMergeTree", p, 5); err != nil {
+			return nil, err
+		}
+		if len(p) != 2 {
+			return nil, fmt.Errorf("engine ReplicatedMergeTree needs exactly (zoo_path, replica_name); got %v", p)
 		}
 		return EngineReplicatedMergeTree{ZooPath: p[0], ReplicaName: p[1]}, nil
 	case strings.HasPrefix(decl, "ReplicatedReplacingMergeTree"):
@@ -1125,8 +1156,11 @@ func ParseEngineString(engineFull string) (Engine, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(p) < 2 {
-			return nil, fmt.Errorf("ReplicatedAggregatingMergeTree needs (zoo_path, replica_name); got %v", p)
+		if err := rejectDeprecatedMergeTreeConstructor("ReplicatedAggregatingMergeTree", p, 5); err != nil {
+			return nil, err
+		}
+		if len(p) != 2 {
+			return nil, fmt.Errorf("engine ReplicatedAggregatingMergeTree needs exactly (zoo_path, replica_name); got %v", p)
 		}
 		return EngineReplicatedAggregatingMergeTree{ZooPath: p[0], ReplicaName: p[1]}, nil
 	case strings.HasPrefix(decl, "ReplicatedSummingMergeTree"):
@@ -1134,12 +1168,15 @@ func ParseEngineString(engineFull string) (Engine, error) {
 		if err != nil {
 			return nil, err
 		}
-		if len(p) < 2 {
-			return nil, fmt.Errorf("ReplicatedSummingMergeTree needs at least (zoo_path, replica_name[, sum_columns...]); got %v", p)
+		if err := rejectDeprecatedMergeTreeConstructor("ReplicatedSummingMergeTree", p, 5); err != nil {
+			return nil, err
+		}
+		if len(p) < 2 || len(p) > 3 {
+			return nil, fmt.Errorf("engine ReplicatedSummingMergeTree needs (zoo_path, replica_name[, sum_columns]); got %v", p)
 		}
 		e := EngineReplicatedSummingMergeTree{ZooPath: p[0], ReplicaName: p[1]}
 		if len(p) > 2 {
-			e.SumColumns = p[2:]
+			e.SumColumns = summingColumns(p[2:])
 		}
 		return e, nil
 	case strings.HasPrefix(decl, "SharedMergeTree"):
@@ -1177,7 +1214,7 @@ func ParseEngineString(engineFull string) (Engine, error) {
 		}
 		e := EngineSharedSummingMergeTree{ZooPath: p[0], ReplicaName: p[1]}
 		if len(p) > 2 {
-			e.SumColumns = p[2:]
+			e.SumColumns = summingColumns(p[2:])
 		}
 		return e, nil
 	case strings.HasPrefix(decl, "SharedCollapsingMergeTree"):
@@ -1215,7 +1252,17 @@ func ParseEngineString(engineFull string) (Engine, error) {
 		}
 		return e, nil
 	case strings.HasPrefix(decl, "SummingMergeTree"):
-		return parseSummingMergeTreeHCL(decl)
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if err := rejectDeprecatedMergeTreeConstructor("SummingMergeTree", p, 3); err != nil {
+			return nil, err
+		}
+		if len(p) > 1 {
+			return nil, fmt.Errorf("engine SummingMergeTree takes at most one sum-columns argument; got %v", p)
+		}
+		return EngineSummingMergeTree{SumColumns: summingColumns(p)}, nil
 	case strings.HasPrefix(decl, "CollapsingMergeTree"):
 		p, err := extractEngineParams(decl)
 		if err != nil {
@@ -1230,6 +1277,9 @@ func ParseEngineString(engineFull string) (Engine, error) {
 		if err != nil {
 			return nil, err
 		}
+		if err := rejectDeprecatedMergeTreeConstructor("AggregatingMergeTree", p, 3); err != nil {
+			return nil, err
+		}
 		if err := rejectUnexpectedEngineParams("AggregatingMergeTree", p); err != nil {
 			return nil, err
 		}
@@ -1237,6 +1287,9 @@ func ParseEngineString(engineFull string) (Engine, error) {
 	case strings.HasPrefix(decl, "MergeTree"):
 		p, err := extractEngineParams(decl)
 		if err != nil {
+			return nil, err
+		}
+		if err := rejectDeprecatedMergeTreeConstructor("MergeTree", p, 3); err != nil {
 			return nil, err
 		}
 		if err := rejectUnexpectedEngineParams("MergeTree", p); err != nil {
@@ -1299,46 +1352,11 @@ func extractEngineParams(decl string) ([]string, error) {
 	if inner == "" {
 		return nil, nil
 	}
-	var parts []string
-	var b strings.Builder
-	inQuote := false
-	var quote rune
-	for _, r := range inner {
-		switch {
-		case (r == '\'' || r == '"') && !inQuote:
-			inQuote = true
-			quote = r
-			b.WriteRune(r)
-		case r == quote && inQuote:
-			inQuote = false
-			quote = 0
-			b.WriteRune(r)
-		case r == ',' && !inQuote:
-			parts = append(parts, strings.TrimSpace(b.String()))
-			b.Reset()
-		default:
-			b.WriteRune(r)
-		}
-	}
-	if b.Len() > 0 {
-		parts = append(parts, strings.TrimSpace(b.String()))
-	}
+	parts := splitTopLevelCSV(inner)
 	for i, p := range parts {
 		parts[i] = unquoteString(strings.TrimSpace(p))
 	}
 	return parts, nil
-}
-
-func parseSummingMergeTreeHCL(decl string) (Engine, error) {
-	re := regexp.MustCompile(`SummingMergeTree\(\((.*?)\)\)`)
-	m := re.FindStringSubmatch(decl)
-	e := EngineSummingMergeTree{}
-	if len(m) > 1 && strings.TrimSpace(m[1]) != "" {
-		for _, c := range strings.Split(m[1], ",") {
-			e.SumColumns = append(e.SumColumns, strings.TrimSpace(c))
-		}
-	}
-	return e, nil
 }
 
 func parseKafkaEngine(engineFull, decl string) (Engine, error) {
