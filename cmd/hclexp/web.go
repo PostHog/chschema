@@ -290,6 +290,9 @@ func (s *webServer) maybeReload() {
 		slog.Warn("reload: load failed; keeping current schema", "err", err)
 		return // keep old fp so the next interval retries
 	}
+	if s.dumpContext != nil {
+		hclload.InferExternalNamedCollections(schema)
+	}
 	if err := hclload.Resolve(schema); err != nil {
 		slog.Warn("reload: resolve failed; keeping current schema", "err", err)
 		return
