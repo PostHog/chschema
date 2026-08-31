@@ -900,6 +900,7 @@ func runDiff(args []string) {
 	asSQL := fs.Bool("sql", false, "emit migration DDL (left -> right) instead of a change summary")
 	formatFlag := fs.String("format", "text", "output format: text (default) or json (structured, dependency-ordered operations)")
 	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects matching its patterns/object_types are dropped from both sides before diffing")
+	allowRaw := fs.Bool("allow-raw", false, "capture unparseable objects on live sides as raw{} blocks instead of failing")
 	scopeFlag := fs.String("scope", "all", "object scope: all (exact), left (ignore right-only objects), or right (ignore left-only objects)")
 	ignoreColumnOrder := fs.Bool("ignore-column-order", false, "ignore table and materialized-view column declaration order")
 	_ = fs.Parse(args)
@@ -917,19 +918,24 @@ func runDiff(args []string) {
 		os.Exit(2)
 	}
 
-	left, err := loadSide(*leftFlag)
+	exclude := loadExcludeFlag(*excludeFlag)
+	loadOptions := diffSideLoadOptions{allowRaw: *allowRaw, exclude: exclude}
+	left, err := loadSideWithOptions(*leftFlag, loadOptions)
 	if err != nil {
 		slog.Error("failed to load left side", "spec", *leftFlag, "err", err)
 		os.Exit(1)
 	}
-	right, err := loadSide(*rightFlag)
+	right, err := loadSideWithOptions(*rightFlag, loadOptions)
 	if err != nil {
 		slog.Error("failed to load right side", "spec", *rightFlag, "err", err)
 		os.Exit(1)
 	}
-	if m := loadExcludeFlag(*excludeFlag); m != nil {
-		hclload.FilterSchema(left, m)
-		hclload.FilterSchema(right, m)
+	if exclude != nil {
+		// Live sides already received this matcher so excluded objects were
+		// skipped before parsing. Filtering both loaded schemas keeps the
+		// existing semantics for HCL sides and non-database objects.
+		hclload.FilterSchema(left, exclude)
+		hclload.FilterSchema(right, exclude)
 	}
 	left, right = applyDiffScope(left, right, *scopeFlag)
 
@@ -1004,8 +1010,21 @@ func loadExcludeFlag(path string) *hclload.ExcludeMatcher {
 // HCL source — a comma-separated layer stack whose entries are directories or
 // single .hcl files — and resolved.
 func loadSide(spec string) (*hclload.Schema, error) {
+	return loadSideWithOptions(spec, diffSideLoadOptions{})
+}
+
+type diffSideLoadOptions struct {
+	allowRaw bool
+	exclude  *hclload.ExcludeMatcher
+}
+
+// loadSideWithOptions is loadSide with live-introspection controls. HCL
+// operands ignore the controls here and are filtered after loading, while
+// live operands must receive exclusions before parsing so a skipped object's
+// unsupported DDL cannot abort the whole diff.
+func loadSideWithOptions(spec string, options diffSideLoadOptions) (*hclload.Schema, error) {
 	if strings.HasPrefix(spec, "clickhouse://") {
-		return loadFromClickHouse(spec)
+		return loadFromClickHouse(spec, options)
 	}
 
 	schema, err := hclload.LoadLayers(splitList(spec))
@@ -1020,7 +1039,7 @@ func loadSide(spec string) (*hclload.Schema, error) {
 
 // loadFromClickHouse connects to and introspects the databases named in a
 // clickhouse:// URI.
-func loadFromClickHouse(uri string) (*hclload.Schema, error) {
+func loadFromClickHouse(uri string, options diffSideLoadOptions) (*hclload.Schema, error) {
 	cfg, databases, err := parseClickHouseURI(uri)
 	if err != nil {
 		return nil, err
@@ -1034,10 +1053,7 @@ func loadFromClickHouse(uri string) (*hclload.Schema, error) {
 	ctx := context.Background()
 	schema := &hclload.Schema{}
 	for _, name := range databases {
-		// Diff's live side stays strict: an unparseable object surfaces as a
-		// diff error rather than being silently captured. Use `introspect
-		// -allow-raw` to materialize raw blocks into HCL first.
-		spec, err := hclload.Introspect(ctx, conn, name, false)
+		spec, err := hclload.IntrospectWithExclude(ctx, conn, name, options.allowRaw, options.exclude)
 		if err != nil {
 			return nil, fmt.Errorf("introspect %s: %w", name, err)
 		}
