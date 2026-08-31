@@ -1401,7 +1401,7 @@ func splitKafkaNamedArgument(param string) (key, value string, named bool, err e
 // tail. Named key=value tokens are never accepted as positional values.
 func buildKafkaEngine(params []string, allSettings map[string]string) (EngineKafka, error) {
 	k := EngineKafka{}
-	constructorKeys := map[string]bool{}
+	namedConstructorKeys := map[string]bool{}
 	hasNamed := false
 	for _, param := range params {
 		if strings.ContainsRune(param, '=') {
@@ -1427,13 +1427,13 @@ func buildKafkaEngine(params []string, allSettings map[string]string) (EngineKaf
 			if !named {
 				return EngineKafka{}, fmt.Errorf("Kafka(%s, ...) cannot mix named arguments with bare positional value %q", name, param)
 			}
-			if constructorKeys[key] {
+			if namedConstructorKeys[key] {
 				return EngineKafka{}, fmt.Errorf("kafka constructor repeats named argument %q", key)
 			}
 			if err := applyKafkaSetting(&k, key, val); err != nil {
 				return EngineKafka{}, err
 			}
-			constructorKeys[key] = true
+			namedConstructorKeys[key] = true
 		}
 	} else {
 		switch {
@@ -1448,7 +1448,6 @@ func buildKafkaEngine(params []string, allSettings map[string]string) (EngineKaf
 				if err := applyKafkaSetting(&k, key, val); err != nil {
 					return EngineKafka{}, fmt.Errorf("kafka positional argument %d: %w", i+1, err)
 				}
-				constructorKeys[key] = true
 			}
 		case len(params) > len(kafkaPositionalSettingKeys):
 			return EngineKafka{}, fmt.Errorf("kafka takes at most %d positional arguments; got %d", len(kafkaPositionalSettingKeys), len(params))
@@ -1461,12 +1460,9 @@ func buildKafkaEngine(params []string, allSettings map[string]string) (EngineKaf
 		if !strings.HasPrefix(key, "kafka_") {
 			continue
 		}
-		// Constructor values retain the historical precedence over duplicate
-		// SETTINGS keys; SETTINGS fill missing positional values and add
-		// collection/table overrides.
-		if constructorKeys[key] {
-			continue
-		}
+		// ClickHouse loads the collection and constructor first, then applies
+		// table SETTINGS. Apply every Kafka setting here so a duplicate keeps
+		// the effective, higher-precedence SETTINGS value (#206).
 		if err := applyKafkaSetting(&k, key, val); err != nil {
 			return EngineKafka{}, err
 		}

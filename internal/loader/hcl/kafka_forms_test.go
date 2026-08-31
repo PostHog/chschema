@@ -1,6 +1,7 @@
 package hcl
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -139,6 +140,86 @@ func TestKafkaEngineIntrospection_RejectsAmbiguousOrLossyForms(t *testing.T) {
 			assert.Contains(t, err.Error(), tc.want)
 		})
 	}
+}
+
+func TestKafkaEngineSettingsOverrideConstructor(t *testing.T) {
+	const collection = "kafka_audit"
+	tests := []struct {
+		name           string
+		constructorArg string
+		settings       map[string]string
+		want           EngineKafka
+	}{
+		{
+			name:           "string",
+			constructorArg: "kafka_topic_list = 'constructor'",
+			settings:       map[string]string{"kafka_topic_list": "settings"},
+			want:           EngineKafka{Collection: ptr(collection), TopicList: ptr("settings")},
+		},
+		{
+			name:           "integer",
+			constructorArg: "kafka_num_consumers = 2",
+			settings:       map[string]string{"kafka_num_consumers": "4"},
+			want:           EngineKafka{Collection: ptr(collection), NumConsumers: ptr(int64(4))},
+		},
+		{
+			name:           "boolean",
+			constructorArg: "kafka_commit_on_select = 0",
+			settings:       map[string]string{"kafka_commit_on_select": "1"},
+			want:           EngineKafka{Collection: ptr(collection), CommitOnSelect: ptr(true)},
+		},
+		{
+			name:           "unknown kafka setting",
+			constructorArg: "kafka_future_setting = 'constructor'",
+			settings:       map[string]string{"kafka_future_setting": "settings"},
+			want: EngineKafka{
+				Collection: ptr(collection),
+				Extra:      map[string]string{"kafka_future_setting": "settings"},
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := buildKafkaEngine([]string{collection, tc.constructorArg}, tc.settings)
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+func TestKafkaEngineSettingsOverrideConstructor_HCLSQLRoundTrip(t *testing.T) {
+	const createSQL = `CREATE TABLE db.kafka_precedence (x UInt8)
+		ENGINE = Kafka(kafka_audit, kafka_topic_list = 'constructor')
+		SETTINGS kafka_topic_list = 'settings'`
+
+	table, err := buildTableFromCreateSQL(createSQL)
+	require.NoError(t, err)
+	table.Name = "kafka_precedence"
+	parsed := table.Engine.Decoded.(EngineKafka)
+	assert.Equal(t, ptr("settings"), parsed.TopicList)
+
+	schema := &Schema{
+		NamedCollections: []NamedCollectionSpec{{Name: "kafka_audit", External: true}},
+		Databases:        []DatabaseSpec{{Name: "db", Tables: []TableSpec{table}}},
+	}
+	require.NoError(t, Resolve(schema))
+	var dumped bytes.Buffer
+	require.NoError(t, Write(&dumped, schema))
+	assert.Contains(t, dumped.String(), `topic_list = "settings"`)
+	assert.NotContains(t, dumped.String(), "constructor")
+
+	path := filepath.Join(t.TempDir(), "schema.hcl")
+	require.NoError(t, os.WriteFile(path, dumped.Bytes(), 0o600))
+	reloaded, err := ParseFile(path)
+	require.NoError(t, err, "re-parse failed; dump output:\n%s", dumped.String())
+	require.NoError(t, Resolve(reloaded))
+
+	generated := GenerateSQL(Diff(nil, reloaded))
+	require.Len(t, generated.Statements, 1)
+	assert.Contains(t, generated.Statements[0], "ENGINE = Kafka(kafka_audit)")
+	assert.Contains(t, generated.Statements[0], "kafka_topic_list = 'settings'")
+	assert.NotContains(t, generated.Statements[0], "constructor")
 }
 
 func TestKafkaEngineLegacyStringParser_PreservesConstructorAndSettings(t *testing.T) {

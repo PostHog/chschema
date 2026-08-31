@@ -132,6 +132,38 @@ func TestCHLive_Kafka_RawNamedCollectionOverrides(t *testing.T) {
 	}, gotKafka)
 }
 
+// TestCHLive_Kafka_SettingsOverrideConstructor starts from raw SQL containing
+// both representations of the same key. ClickHouse applies table SETTINGS
+// after the named-collection constructor override, so introspection must retain
+// the SETTINGS value as the effective state.
+func TestCHLive_Kafka_SettingsOverrideConstructor(t *testing.T) {
+	if !*clickhouseLive {
+		t.Skip("pass -clickhouse to run against a live ClickHouse")
+	}
+	conn := testhelpers.RequireClickHouse(t)
+	dbName := testhelpers.CreateTestDatabase(t, conn)
+	ctx := context.Background()
+	ncName := fmt.Sprintf("kafka_precedence_%d", time.Now().UnixNano())
+	t.Cleanup(func() { _ = conn.Exec(ctx, "DROP NAMED COLLECTION IF EXISTS "+ncName) })
+
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(`CREATE NAMED COLLECTION %s AS
+		kafka_broker_list = 'localhost:9092',
+		kafka_topic_list = 'base' OVERRIDABLE,
+		kafka_group_name = 'group' OVERRIDABLE,
+		kafka_format = 'JSONEachRow' OVERRIDABLE`, ncName)))
+
+	require.NoError(t, conn.Exec(ctx, fmt.Sprintf(`CREATE TABLE %s.kafka_precedence (x UInt8)
+		ENGINE = Kafka(%s, kafka_topic_list = 'constructor')
+		SETTINGS kafka_topic_list = 'settings'`, dbName, ncName)))
+
+	dbIntrospected, err := Introspect(ctx, conn, dbName, false)
+	require.NoError(t, err)
+	require.Len(t, dbIntrospected.Tables, 1)
+	gotKafka, ok := dbIntrospected.Tables[0].Engine.Decoded.(EngineKafka)
+	require.True(t, ok)
+	assert.Equal(t, ptr("settings"), gotKafka.TopicList)
+}
+
 // TestCHLive_Kafka_AllSettingsForm exercises the canonical Kafka() +
 // SETTINGS form with mixed typed settings (numeric, bool, string) to
 // confirm introspection captures every type.
