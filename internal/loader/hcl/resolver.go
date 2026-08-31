@@ -51,6 +51,9 @@ func Resolve(s *Schema) error {
 	if err := validateDistributedEngines(s); err != nil {
 		return err
 	}
+	if err := validateBufferEngines(s); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -130,6 +133,33 @@ func validateDistributedEngines(s *Schema) error {
 			}
 			if e.PolicyName != nil && e.ShardingKey == nil {
 				return fmt.Errorf("%s.%s: distributed engine: policy_name requires sharding_key (positional engine parameters)",
+					db.Name, t.Name)
+			}
+		}
+	}
+	return nil
+}
+
+// validateBufferEngines enforces ClickHouse's positional optional tail:
+// flush_time [, flush_rows [, flush_bytes]]. A later value cannot be emitted
+// without every preceding slot, so rejecting gaps prevents authored values
+// from being silently omitted by SQL generation.
+func validateBufferEngines(s *Schema) error {
+	for _, db := range s.Databases {
+		for _, t := range db.Tables {
+			if t.Engine == nil || t.Engine.Decoded == nil {
+				continue
+			}
+			e, ok := t.Engine.Decoded.(EngineBuffer)
+			if !ok {
+				continue
+			}
+			if e.FlushRows != nil && e.FlushTime == nil {
+				return fmt.Errorf("%s.%s: buffer engine: flush_rows requires flush_time (positional engine parameters)",
+					db.Name, t.Name)
+			}
+			if e.FlushBytes != nil && (e.FlushTime == nil || e.FlushRows == nil) {
+				return fmt.Errorf("%s.%s: buffer engine: flush_bytes requires flush_time and flush_rows (positional engine parameters)",
 					db.Name, t.Name)
 			}
 		}

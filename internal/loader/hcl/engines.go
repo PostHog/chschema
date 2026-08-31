@@ -181,7 +181,9 @@ func (EngineMerge) Kind() string { return "merge" }
 //	Buffer(database, table, num_layers, min_time, max_time, min_rows, max_rows, min_bytes, max_bytes [, flush_time [, flush_rows [, flush_bytes]]])
 //
 // The optional flush_* triplet is captured as pointers; nil = not set
-// (CH defaults apply).
+// (CH defaults apply). Because these are positional parameters, configured
+// values must form a contiguous prefix: flush_rows requires flush_time, and
+// flush_bytes requires both preceding fields.
 type EngineBuffer struct {
 	Database  string `hcl:"database"`
 	Table     string `hcl:"table"`

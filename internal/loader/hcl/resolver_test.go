@@ -594,6 +594,57 @@ func TestResolve_KafkaCollectionReference(t *testing.T) {
 	assert.Contains(t, err.Error(), "not declared")
 }
 
+func TestResolve_BufferFlushFieldsRequireContiguousPrefix(t *testing.T) {
+	bufferSchema := func(e EngineBuffer) *Schema {
+		return &Schema{Databases: []DatabaseSpec{{
+			Name: "db",
+			Tables: []TableSpec{{
+				Name:    "buf",
+				Columns: []ColumnSpec{{Name: "id", Type: "UInt64"}},
+				Engine:  &EngineSpec{Kind: "buffer", Decoded: e},
+			}},
+		}}}
+	}
+	base := EngineBuffer{
+		Database: "db", Table: "dest", NumLayers: 1,
+		MinTime: 1, MaxTime: 10, MinRows: 1, MaxRows: 100,
+		MinBytes: 1, MaxBytes: 1000,
+	}
+
+	tests := []struct {
+		name      string
+		flushTime *int64
+		flushRows *int64
+		flushByte *int64
+		wantErr   string
+	}{
+		{name: "9 arguments"},
+		{name: "10 arguments", flushTime: ptr(int64(30))},
+		{name: "11 arguments", flushTime: ptr(int64(30)), flushRows: ptr(int64(200))},
+		{name: "12 arguments", flushTime: ptr(int64(30)), flushRows: ptr(int64(200)), flushByte: ptr(int64(50000))},
+		{name: "flush_rows without flush_time", flushRows: ptr(int64(200)), wantErr: "flush_rows requires flush_time"},
+		{name: "flush_bytes alone", flushByte: ptr(int64(50000)), wantErr: "flush_bytes requires flush_time and flush_rows"},
+		{name: "flush_rows and flush_bytes without flush_time", flushRows: ptr(int64(200)), flushByte: ptr(int64(50000)), wantErr: "flush_rows requires flush_time"},
+		{name: "flush_bytes without flush_rows", flushTime: ptr(int64(30)), flushByte: ptr(int64(50000)), wantErr: "flush_bytes requires flush_time and flush_rows"},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			e := base
+			e.FlushTime = tc.flushTime
+			e.FlushRows = tc.flushRows
+			e.FlushBytes = tc.flushByte
+			err := Resolve(bufferSchema(e))
+			if tc.wantErr == "" {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorContains(t, err, "db.buf: buffer engine")
+			require.ErrorContains(t, err, tc.wantErr)
+		})
+	}
+}
+
 func TestResolve_TimeSeries_BothExternalAndInnerOnSameTarget_Rejected(t *testing.T) {
 	tgt := "db.x"
 	e := EngineTimeSeries{Samples: &TimeSeriesTarget{
