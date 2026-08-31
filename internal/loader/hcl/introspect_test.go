@@ -180,6 +180,18 @@ func TestParseEngineString_UnknownErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "unsupported")
 }
 
+func TestParseEngineString_ZeroArgumentEnginesRejectConstructorArgs(t *testing.T) {
+	for _, engine := range []string{"MergeTree", "AggregatingMergeTree", "Log"} {
+		t.Run(engine, func(t *testing.T) {
+			_, err := ParseEngineString(engine + "('future_option')")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), engine)
+			assert.Contains(t, err.Error(), "future_option")
+			assert.Contains(t, err.Error(), "refusing to drop")
+		})
+	}
+}
+
 func TestSplitKeyList(t *testing.T) {
 	cases := []struct {
 		in   string
@@ -262,6 +274,26 @@ SETTINGS index_granularity = 8192, ttl_only_drop_parts = 1`
 	assert.Equal(t, "c1", got.Constraints[0].Name)
 	if assert.NotNil(t, got.Constraints[0].Check) {
 		assert.Contains(t, *got.Constraints[0].Check, "id")
+	}
+}
+
+func TestBuildTableFromCreateSQL_ZeroArgumentEngines(t *testing.T) {
+	engines := []string{"MergeTree", "AggregatingMergeTree", "Log", "Null", "Memory", "TimeSeries"}
+	for _, engine := range engines {
+		t.Run(engine+"_valid", func(t *testing.T) {
+			src := "CREATE TABLE db.t (`id` UInt64) ENGINE = " + engine + "()"
+			_, err := buildTableFromCreateSQL(src)
+			require.NoError(t, err)
+		})
+
+		t.Run(engine+"_unexpected_argument", func(t *testing.T) {
+			src := "CREATE TABLE db.t (`id` UInt64) ENGINE = " + engine + "('future_option')"
+			_, err := buildTableFromCreateSQL(src)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), engine)
+			assert.Contains(t, err.Error(), "future_option")
+			assert.Contains(t, err.Error(), "refusing to drop")
+		})
 	}
 }
 
@@ -699,6 +731,27 @@ func TestProcessIntrospectRows_RawFallback_StrictErrorsWithFlagHint(t *testing.T
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "-allow-raw")
 	assert.Empty(t, db.Raws, "strict mode captures nothing")
+}
+
+func TestProcessIntrospectRows_RawFallback_PreservesRejectedEngineArgs(t *testing.T) {
+	const sql = "CREATE TABLE db.future (`id` UInt64) ENGINE = Memory('future_option')"
+
+	strictDB := &DatabaseSpec{Name: "db"}
+	strictRows := &fakeRows{rows: []fakeRow{{name: "future", sql: sql, engine: "Memory"}}}
+	err := processIntrospectRowsOpt(strictDB, "db", strictRows, false, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Memory")
+	assert.Contains(t, err.Error(), "future_option")
+	assert.Contains(t, err.Error(), "-allow-raw")
+	assert.Empty(t, strictDB.Raws)
+
+	rawDB := &DatabaseSpec{Name: "db"}
+	rawRows := &fakeRows{rows: []fakeRow{{name: "future", sql: sql, engine: "Memory"}}}
+	require.NoError(t, processIntrospectRowsOpt(rawDB, "db", rawRows, true, nil))
+	require.Len(t, rawDB.Raws, 1)
+	assert.Equal(t, "table", rawDB.Raws[0].Kind)
+	assert.Equal(t, "future", rawDB.Raws[0].Name)
+	assert.Equal(t, sql+"\n", rawDB.Raws[0].SQL)
 }
 
 // TestProcessIntrospectRows_ExcludeSkipsBeforeParse: an excluded object is
