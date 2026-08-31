@@ -958,7 +958,9 @@ func effectiveType(c ColumnSpec) string {
 }
 
 func quoteString(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "\\'") + "'"
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "'", "\\'")
+	return "'" + s + "'"
 }
 
 func indexClause(idx IndexSpec) string {
@@ -987,9 +989,9 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 	case EngineMergeTree:
 		return "MergeTree()", nil
 	case EngineReplicatedMergeTree:
-		return fmt.Sprintf("ReplicatedMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+		return fmt.Sprintf("ReplicatedMergeTree(%s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName)), nil
 	case EngineSharedMergeTree:
-		return fmt.Sprintf("SharedMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+		return fmt.Sprintf("SharedMergeTree(%s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName)), nil
 	case EngineReplacingMergeTree:
 		if v.VersionColumn != nil && v.IsDeletedColumn != nil {
 			return fmt.Sprintf("ReplacingMergeTree(%s, %s)", *v.VersionColumn, *v.IsDeletedColumn), nil
@@ -1000,20 +1002,20 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 		return "ReplacingMergeTree()", nil
 	case EngineReplicatedReplacingMergeTree:
 		if v.VersionColumn != nil && v.IsDeletedColumn != nil {
-			return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s', %s, %s)", v.ZooPath, v.ReplicaName, *v.VersionColumn, *v.IsDeletedColumn), nil
+			return fmt.Sprintf("ReplicatedReplacingMergeTree(%s, %s, %s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName), *v.VersionColumn, *v.IsDeletedColumn), nil
 		}
 		if v.VersionColumn != nil {
-			return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s', %s)", v.ZooPath, v.ReplicaName, *v.VersionColumn), nil
+			return fmt.Sprintf("ReplicatedReplacingMergeTree(%s, %s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName), *v.VersionColumn), nil
 		}
-		return fmt.Sprintf("ReplicatedReplacingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+		return fmt.Sprintf("ReplicatedReplacingMergeTree(%s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName)), nil
 	case EngineSharedReplacingMergeTree:
 		if v.VersionColumn != nil && v.IsDeletedColumn != nil {
-			return fmt.Sprintf("SharedReplacingMergeTree('%s', '%s', %s, %s)", v.ZooPath, v.ReplicaName, *v.VersionColumn, *v.IsDeletedColumn), nil
+			return fmt.Sprintf("SharedReplacingMergeTree(%s, %s, %s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName), *v.VersionColumn, *v.IsDeletedColumn), nil
 		}
 		if v.VersionColumn != nil {
-			return fmt.Sprintf("SharedReplacingMergeTree('%s', '%s', %s)", v.ZooPath, v.ReplicaName, *v.VersionColumn), nil
+			return fmt.Sprintf("SharedReplacingMergeTree(%s, %s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName), *v.VersionColumn), nil
 		}
-		return fmt.Sprintf("SharedReplacingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+		return fmt.Sprintf("SharedReplacingMergeTree(%s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName)), nil
 	case EngineSummingMergeTree:
 		if len(v.SumColumns) > 0 {
 			return fmt.Sprintf("SummingMergeTree((%s))", strings.Join(v.SumColumns, ", ")), nil
@@ -1021,37 +1023,40 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 		return "SummingMergeTree()", nil
 	case EngineReplicatedSummingMergeTree:
 		if len(v.SumColumns) > 0 {
-			return fmt.Sprintf("ReplicatedSummingMergeTree('%s', '%s', (%s))", v.ZooPath, v.ReplicaName, strings.Join(v.SumColumns, ", ")), nil
+			return fmt.Sprintf("ReplicatedSummingMergeTree(%s, %s, (%s))", quoteString(v.ZooPath), quoteString(v.ReplicaName), strings.Join(v.SumColumns, ", ")), nil
 		}
-		return fmt.Sprintf("ReplicatedSummingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+		return fmt.Sprintf("ReplicatedSummingMergeTree(%s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName)), nil
 	case EngineSharedSummingMergeTree:
 		if len(v.SumColumns) > 0 {
-			return fmt.Sprintf("SharedSummingMergeTree('%s', '%s', (%s))", v.ZooPath, v.ReplicaName, strings.Join(v.SumColumns, ", ")), nil
+			return fmt.Sprintf("SharedSummingMergeTree(%s, %s, (%s))", quoteString(v.ZooPath), quoteString(v.ReplicaName), strings.Join(v.SumColumns, ", ")), nil
 		}
-		return fmt.Sprintf("SharedSummingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+		return fmt.Sprintf("SharedSummingMergeTree(%s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName)), nil
 	case EngineCollapsingMergeTree:
 		return fmt.Sprintf("CollapsingMergeTree(%s)", v.SignColumn), nil
 	case EngineReplicatedCollapsingMergeTree:
-		return fmt.Sprintf("ReplicatedCollapsingMergeTree('%s', '%s', %s)", v.ZooPath, v.ReplicaName, v.SignColumn), nil
+		return fmt.Sprintf("ReplicatedCollapsingMergeTree(%s, %s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName), v.SignColumn), nil
 	case EngineSharedCollapsingMergeTree:
-		return fmt.Sprintf("SharedCollapsingMergeTree('%s', '%s', %s)", v.ZooPath, v.ReplicaName, v.SignColumn), nil
+		return fmt.Sprintf("SharedCollapsingMergeTree(%s, %s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName), v.SignColumn), nil
 	case EngineAggregatingMergeTree:
 		return "AggregatingMergeTree()", nil
 	case EngineReplicatedAggregatingMergeTree:
-		return fmt.Sprintf("ReplicatedAggregatingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+		return fmt.Sprintf("ReplicatedAggregatingMergeTree(%s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName)), nil
 	case EngineSharedAggregatingMergeTree:
-		return fmt.Sprintf("SharedAggregatingMergeTree('%s', '%s')", v.ZooPath, v.ReplicaName), nil
+		return fmt.Sprintf("SharedAggregatingMergeTree(%s, %s)", quoteString(v.ZooPath), quoteString(v.ReplicaName)), nil
 	case EngineDistributed:
+		cluster := quoteString(v.ClusterName)
+		database := quoteString(v.RemoteDatabase)
+		table := quoteString(v.RemoteTable)
 		if v.ShardingKey != nil {
 			if v.PolicyName != nil {
 				// policy_name is a string literal in DDL; sharding_key stays a
 				// bare expression. PolicyName without ShardingKey cannot reach
 				// here — the resolver rejects it (positional signature).
-				return fmt.Sprintf("Distributed('%s', '%s', '%s', %s, '%s')", v.ClusterName, v.RemoteDatabase, v.RemoteTable, *v.ShardingKey, *v.PolicyName), nil
+				return fmt.Sprintf("Distributed(%s, %s, %s, %s, %s)", cluster, database, table, *v.ShardingKey, quoteString(*v.PolicyName)), nil
 			}
-			return fmt.Sprintf("Distributed('%s', '%s', '%s', %s)", v.ClusterName, v.RemoteDatabase, v.RemoteTable, *v.ShardingKey), nil
+			return fmt.Sprintf("Distributed(%s, %s, %s, %s)", cluster, database, table, *v.ShardingKey), nil
 		}
-		return fmt.Sprintf("Distributed('%s', '%s', '%s')", v.ClusterName, v.RemoteDatabase, v.RemoteTable), nil
+		return fmt.Sprintf("Distributed(%s, %s, %s)", cluster, database, table), nil
 	case EngineLog:
 		return "Log()", nil
 	case EngineJoin:
@@ -1064,18 +1069,14 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 	case EngineMemory:
 		return "Memory()", nil
 	case EngineMerge:
-		return fmt.Sprintf("Merge('%s', '%s')", v.DBRegex, v.TableRegex), nil
+		return fmt.Sprintf("Merge(%s, %s)", quoteString(v.DBRegex), quoteString(v.TableRegex)), nil
 	case EngineBuffer:
 		// Buffer(db, table, num_layers, min_time, max_time, min_rows,
 		//        max_rows, min_bytes, max_bytes [, flush_time [, flush_rows [, flush_bytes]]]).
 		// The database arg uses currentDatabase() when empty (CH convention).
-		dbArg := "''"
-		if v.Database != "" {
-			dbArg = fmt.Sprintf("'%s'", v.Database)
-		}
 		args := []string{
-			dbArg,
-			fmt.Sprintf("'%s'", v.Table),
+			quoteString(v.Database),
+			quoteString(v.Table),
 			fmt.Sprintf("%d", v.NumLayers),
 			fmt.Sprintf("%d", v.MinTime),
 			fmt.Sprintf("%d", v.MaxTime),
@@ -1276,7 +1277,7 @@ func formatSettingValue(v string) string {
 	if len(v) >= 2 && ((v[0] == '{' && v[len(v)-1] == '}') || (v[0] == '[' && v[len(v)-1] == ']')) {
 		return v
 	}
-	return "'" + strings.ReplaceAll(v, "'", "\\'") + "'"
+	return quoteString(v)
 }
 
 func unsafeReasons(database string, td TableDiff) []UnsafeChange {

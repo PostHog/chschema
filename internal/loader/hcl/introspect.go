@@ -1091,9 +1091,20 @@ func unquoteString(s string) string {
 		last := s[len(s)-1]
 		if (first == '\'' || first == '"' || first == '`') && first == last {
 			inner := s[1 : len(s)-1]
-			inner = strings.ReplaceAll(inner, "\\'", "'")
-			inner = strings.ReplaceAll(inner, "\\\"", "\"")
-			return inner
+			var decoded strings.Builder
+			decoded.Grow(len(inner))
+			for i := 0; i < len(inner); i++ {
+				if inner[i] == '\\' && i+1 < len(inner) {
+					next := inner[i+1]
+					if next == '\\' || next == '\'' || next == '"' || next == '`' {
+						decoded.WriteByte(next)
+						i++
+						continue
+					}
+				}
+				decoded.WriteByte(inner[i])
+			}
+			return decoded.String()
 		}
 	}
 	return s
