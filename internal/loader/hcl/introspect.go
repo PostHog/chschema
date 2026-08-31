@@ -682,12 +682,22 @@ func summingColumns(params []string) []string {
 	return columns
 }
 
+func rejectUnexpectedEngineParams(name string, params []string) error {
+	if len(params) == 0 {
+		return nil
+	}
+	return fmt.Errorf("engine %s has unexpected constructor arguments %v (unmodeled; refusing to drop)", name, params)
+}
+
 func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 	params := engineParamStrings(e.Params)
 	allSettings := engineSettingsMap(e.Settings)
 
 	switch e.Name {
 	case "MergeTree":
+		if err := rejectUnexpectedEngineParams(e.Name, params); err != nil {
+			return nil, nil, err
+		}
 		return EngineMergeTree{}, allSettings, nil
 	case "ReplicatedMergeTree":
 		if len(params) < 2 {
@@ -776,6 +786,9 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		}
 		return EngineSharedCollapsingMergeTree{ZooPath: params[0], ReplicaName: params[1], SignColumn: params[2]}, allSettings, nil
 	case "AggregatingMergeTree":
+		if err := rejectUnexpectedEngineParams(e.Name, params); err != nil {
+			return nil, nil, err
+		}
 		return EngineAggregatingMergeTree{}, allSettings, nil
 	case "ReplicatedAggregatingMergeTree":
 		if len(params) < 2 {
@@ -804,6 +817,9 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		}
 		return ee, allSettings, nil
 	case "Log":
+		if err := rejectUnexpectedEngineParams(e.Name, params); err != nil {
+			return nil, nil, err
+		}
 		return EngineLog{}, allSettings, nil
 	case "Join":
 		if len(params) < 3 {
@@ -815,8 +831,14 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 			Keys:       params[2:],
 		}, allSettings, nil
 	case "Null":
+		if err := rejectUnexpectedEngineParams(e.Name, params); err != nil {
+			return nil, nil, err
+		}
 		return EngineNull{}, allSettings, nil
 	case "Memory":
+		if err := rejectUnexpectedEngineParams(e.Name, params); err != nil {
+			return nil, nil, err
+		}
 		return EngineMemory{}, allSettings, nil
 	case "Merge":
 		if len(params) != 2 {
@@ -883,6 +905,9 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		}
 		return k, stripped, nil
 	case "TimeSeries":
+		if err := rejectUnexpectedEngineParams(e.Name, params); err != nil {
+			return nil, nil, err
+		}
 		// All SETTINGS on a TimeSeries engine belong to the engine itself,
 		// not to the table — promote tags_to_columns to a typed field,
 		// keep the rest in Settings.
@@ -1201,8 +1226,22 @@ func ParseEngineString(engineFull string) (Engine, error) {
 		}
 		return EngineCollapsingMergeTree{SignColumn: p[0]}, nil
 	case strings.HasPrefix(decl, "AggregatingMergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if err := rejectUnexpectedEngineParams("AggregatingMergeTree", p); err != nil {
+			return nil, err
+		}
 		return EngineAggregatingMergeTree{}, nil
 	case strings.HasPrefix(decl, "MergeTree"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if err := rejectUnexpectedEngineParams("MergeTree", p); err != nil {
+			return nil, err
+		}
 		return EngineMergeTree{}, nil
 	case strings.HasPrefix(decl, "Distributed"):
 		p, err := extractEngineParams(decl)
@@ -1225,6 +1264,13 @@ func ParseEngineString(engineFull string) (Engine, error) {
 		}
 		return e, nil
 	case strings.HasPrefix(decl, "Log"):
+		p, err := extractEngineParams(decl)
+		if err != nil {
+			return nil, err
+		}
+		if err := rejectUnexpectedEngineParams("Log", p); err != nil {
+			return nil, err
+		}
 		return EngineLog{}, nil
 	case strings.HasPrefix(decl, "Kafka"):
 		return parseKafkaEngine(engineFull, decl)
