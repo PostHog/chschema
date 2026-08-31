@@ -1341,10 +1341,10 @@ func splitKafkaNamedArgument(param string) (key, value string, named bool, err e
 	key = strings.TrimSpace(param[:eq])
 	value = strings.TrimSpace(param[eq+1:])
 	if !strings.HasPrefix(key, "kafka_") || strings.ContainsAny(key, " \t\r\n") {
-		return "", "", true, fmt.Errorf("Kafka constructor has invalid named argument %q", param)
+		return "", "", true, fmt.Errorf("kafka constructor has invalid named argument %q", param)
 	}
 	if value == "" {
-		return "", "", true, fmt.Errorf("Kafka constructor named argument %q has no value", key)
+		return "", "", true, fmt.Errorf("kafka constructor named argument %q has no value", key)
 	}
 	return key, unquoteString(value), true, nil
 }
@@ -1366,10 +1366,10 @@ func buildKafkaEngine(params []string, allSettings map[string]string) (EngineKaf
 
 	if hasNamed {
 		if len(params) == 0 || strings.ContainsRune(params[0], '=') {
-			return EngineKafka{}, fmt.Errorf("Kafka constructor named arguments require a collection as the first argument")
+			return EngineKafka{}, fmt.Errorf("kafka constructor named arguments require a collection as the first argument")
 		}
 		if !kafkaCollectionName(params[0]) {
-			return EngineKafka{}, fmt.Errorf("Kafka constructor named arguments require a collection as the first argument; got %q", params[0])
+			return EngineKafka{}, fmt.Errorf("kafka constructor named arguments require a collection as the first argument; got %q", params[0])
 		}
 		name := params[0]
 		k.Collection = &name
@@ -1382,7 +1382,7 @@ func buildKafkaEngine(params []string, allSettings map[string]string) (EngineKaf
 				return EngineKafka{}, fmt.Errorf("Kafka(%s, ...) cannot mix named arguments with bare positional value %q", name, param)
 			}
 			if constructorKeys[key] {
-				return EngineKafka{}, fmt.Errorf("Kafka constructor repeats named argument %q", key)
+				return EngineKafka{}, fmt.Errorf("kafka constructor repeats named argument %q", key)
 			}
 			if err := applyKafkaSetting(&k, key, val); err != nil {
 				return EngineKafka{}, err
@@ -1400,12 +1400,12 @@ func buildKafkaEngine(params []string, allSettings map[string]string) (EngineKaf
 			for i, val := range params {
 				key := kafkaPositionalSettingKeys[i]
 				if err := applyKafkaSetting(&k, key, val); err != nil {
-					return EngineKafka{}, fmt.Errorf("Kafka positional argument %d: %w", i+1, err)
+					return EngineKafka{}, fmt.Errorf("kafka positional argument %d: %w", i+1, err)
 				}
 				constructorKeys[key] = true
 			}
 		case len(params) > len(kafkaPositionalSettingKeys):
-			return EngineKafka{}, fmt.Errorf("Kafka takes at most %d positional arguments; got %d", len(kafkaPositionalSettingKeys), len(params))
+			return EngineKafka{}, fmt.Errorf("kafka takes at most %d positional arguments; got %d", len(kafkaPositionalSettingKeys), len(params))
 		default:
 			return EngineKafka{}, fmt.Errorf("Kafka() unexpected positional args: %v", params)
 		}

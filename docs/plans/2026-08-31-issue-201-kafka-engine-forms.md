@@ -26,12 +26,15 @@ values.
       suite; record any live-test limitation.
 - [x] Commit the verified fix on a clean branch from `main`, push it, and open
       the issue-closing pull request.
+- [x] Resolve CI staticcheck feedback, rerun verification, and push the
+      correction to the pull request.
 
 ## Verification
 
 - `go test ./...` — 1,189 passed.
 - `go test -race ./internal/loader/hcl` — 873 passed.
 - `go vet ./...` — passed.
+- `go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.12.2 run` — 0 issues.
 - `go test ./internal/loader/hcl -run '^TestCHLive_Kafka_RawNamedCollectionOverrides$' -v -clickhouse` — passed against ClickHouse 26.3.
 - `go test ./test -v -clickhouse` — 10 passed.
 
