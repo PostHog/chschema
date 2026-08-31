@@ -729,6 +729,11 @@ func introspectSchema(ctx context.Context, conn driver.Conn, databases []string,
 	}
 	schema.NamedCollections = ncs
 	slog.Info("introspected named collections", "count", len(schema.NamedCollections))
+	if inferred := hclload.InferExternalNamedCollections(schema); len(inferred) > 0 {
+		slog.Warn("referenced named collections were not visible; recording them as external",
+			"collections", inferred,
+			"hint", "grant SHOW NAMED COLLECTIONS to capture their definitions")
+	}
 
 	node, err := hclload.IntrospectNode(ctx, conn, nodeName)
 	if err != nil {

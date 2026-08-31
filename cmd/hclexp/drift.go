@@ -202,7 +202,7 @@ func loadDriftNodes(dir, glob string) ([]driftNode, error) {
 			continue
 		}
 		path := filepath.Join(dir, e.Name())
-		schema, err := loadSide(path)
+		schema, err := loadDumpSchema(path)
 		if err != nil {
 			return nil, fmt.Errorf("load %s: %w", path, err)
 		}
@@ -222,6 +222,21 @@ func loadDriftNodes(dir, glob string) ([]driftNode, error) {
 		nodes = append(nodes, n)
 	}
 	return nodes, nil
+}
+
+// loadDumpSchema accepts snapshots captured by users that can use a
+// config-backed named collection but cannot enumerate it. Authored schemas
+// remain strict because ordinary loadSide/Resolve calls do not infer anything.
+func loadDumpSchema(path string) (*hclload.Schema, error) {
+	schema, err := hclload.LoadLayers([]string{path})
+	if err != nil {
+		return nil, err
+	}
+	hclload.InferExternalNamedCollections(schema)
+	if err := hclload.Resolve(schema); err != nil {
+		return nil, fmt.Errorf("resolve: %w", err)
+	}
+	return schema, nil
 }
 
 // normalizeZKPaths rewrites every table's ReplicatedMergeTree zoo_path in
