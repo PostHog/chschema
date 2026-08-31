@@ -1127,6 +1127,7 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 		setStr("kafka_schema", v.Schema)
 		setStr("kafka_handle_error_mode", v.HandleErrorMode)
 		setStr("kafka_compression_codec", v.CompressionCodec)
+		setStr("kafka_autodetect_client_rack", v.AutodetectClientRack)
 		setInt("kafka_num_consumers", v.NumConsumers)
 		setInt("kafka_max_block_size", v.MaxBlockSize)
 		setInt("kafka_skip_broken_messages", v.SkipBrokenMessages)
@@ -1139,7 +1140,6 @@ func engineSQL(e Engine) (clause string, extraSettings map[string]string) {
 		setBool("kafka_commit_every_batch", v.CommitEveryBatch)
 		setBool("kafka_thread_per_consumer", v.ThreadPerConsumer)
 		setBool("kafka_commit_on_select", v.CommitOnSelect)
-		setBool("kafka_autodetect_client_rack", v.AutodetectClientRack)
 		for k, val := range v.Extra {
 			settings[k] = val
 		}

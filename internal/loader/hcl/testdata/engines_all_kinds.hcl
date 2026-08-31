@@ -134,6 +134,7 @@ database "posthog" {
       topic_list  = "events"
       group_name  = "ingest"
       format      = "JSONEachRow"
+      autodetect_client_rack = "CLICKHOUSE"
     }
   }
 

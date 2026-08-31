@@ -173,16 +173,16 @@ type EngineKafka struct {
 	CompressionLevel     *int64 `hcl:"compression_level,optional"`
 
 	// Optional booleans (introspected as 0/1, presented as bool in HCL).
-	CommitEveryBatch     *bool `hcl:"commit_every_batch,optional"`
-	ThreadPerConsumer    *bool `hcl:"thread_per_consumer,optional"`
-	CommitOnSelect       *bool `hcl:"commit_on_select,optional"`
-	AutodetectClientRack *bool `hcl:"autodetect_client_rack,optional"`
+	CommitEveryBatch  *bool `hcl:"commit_every_batch,optional"`
+	ThreadPerConsumer *bool `hcl:"thread_per_consumer,optional"`
+	CommitOnSelect    *bool `hcl:"commit_on_select,optional"`
 
 	// Optional strings.
-	ClientID         *string `hcl:"client_id,optional"`
-	Schema           *string `hcl:"schema,optional"`
-	HandleErrorMode  *string `hcl:"handle_error_mode,optional"`
-	CompressionCodec *string `hcl:"compression_codec,optional"`
+	ClientID             *string `hcl:"client_id,optional"`
+	Schema               *string `hcl:"schema,optional"`
+	HandleErrorMode      *string `hcl:"handle_error_mode,optional"`
+	CompressionCodec     *string `hcl:"compression_codec,optional"`
+	AutodetectClientRack *string `hcl:"autodetect_client_rack,optional"`
 
 	// Extra is the escape valve for kafka_* settings ClickHouse adds in
 	// versions we don't yet model. Keys are passed through verbatim and
@@ -337,7 +337,7 @@ func applyKafkaSetting(k *EngineKafka, key, val string) {
 	case "kafka_commit_on_select":
 		k.CommitOnSelect = parseBoolPtr(val)
 	case "kafka_autodetect_client_rack":
-		k.AutodetectClientRack = parseBoolPtr(val)
+		k.AutodetectClientRack = &val
 	default:
 		if k.Extra == nil {
 			k.Extra = map[string]string{}
@@ -441,6 +441,7 @@ case EngineKafka:
 	addStrSetting("kafka_schema", v.Schema)
 	addStrSetting("kafka_handle_error_mode", v.HandleErrorMode)
 	addStrSetting("kafka_compression_codec", v.CompressionCodec)
+	addStrSetting("kafka_autodetect_client_rack", v.AutodetectClientRack)
 	addIntSetting("kafka_num_consumers", v.NumConsumers)
 	addIntSetting("kafka_max_block_size", v.MaxBlockSize)
 	addIntSetting("kafka_skip_broken_messages", v.SkipBrokenMessages)
@@ -453,7 +454,6 @@ case EngineKafka:
 	addBoolSetting("kafka_commit_every_batch", v.CommitEveryBatch)
 	addBoolSetting("kafka_thread_per_consumer", v.ThreadPerConsumer)
 	addBoolSetting("kafka_commit_on_select", v.CommitOnSelect)
-	addBoolSetting("kafka_autodetect_client_rack", v.AutodetectClientRack)
 	for k, val := range v.Extra {
 		settings[k] = val
 	}
@@ -505,6 +505,7 @@ case EngineKafka:
 	setStr("schema", v.Schema)
 	setStr("handle_error_mode", v.HandleErrorMode)
 	setStr("compression_codec", v.CompressionCodec)
+	setStr("autodetect_client_rack", v.AutodetectClientRack)
 	setInt("num_consumers", v.NumConsumers)
 	setInt("max_block_size", v.MaxBlockSize)
 	setInt("skip_broken_messages", v.SkipBrokenMessages)
@@ -517,7 +518,6 @@ case EngineKafka:
 	setBool("commit_every_batch", v.CommitEveryBatch)
 	setBool("thread_per_consumer", v.ThreadPerConsumer)
 	setBool("commit_on_select", v.CommitOnSelect)
-	setBool("autodetect_client_rack", v.AutodetectClientRack)
 	if len(v.Extra) > 0 {
 		b.SetAttributeValue("extra", stringMap(v.Extra))
 	}

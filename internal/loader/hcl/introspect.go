@@ -1498,7 +1498,7 @@ func applyKafkaSetting(k *EngineKafka, key, val string) error {
 	case "kafka_commit_on_select":
 		return setBool(&k.CommitOnSelect)
 	case "kafka_autodetect_client_rack":
-		return setBool(&k.AutodetectClientRack)
+		k.AutodetectClientRack = &val
 	default:
 		if k.Extra == nil {
 			k.Extra = map[string]string{}
