@@ -210,12 +210,9 @@ func TestLive_HCLIntrospect_TimeSeries(t *testing.T) {
 			`TAGS ` + dbName + `.prom_tags ` +
 			`METRICS ` + dbName + `.prom_metrics_meta` + tsSetting,
 
-		// NOTE: the bare `ENGINE = TimeSeries` form (no targets) is
-		// intentionally NOT exercised here. CH's SHOW CREATE TABLE for
-		// such a table emits a shorthand the chparser fork doesn't
-		// recognise yet — `DATA ENGINE = MergeTree ORDER BY (...)` (no
-		// INNER keyword between DATA and ENGINE). To be filed as a
-		// follow-up chparser issue.
+		// The bare form is covered by the raw-SQL-first regression for #211.
+		// ClickHouse emits engine-only default-target shorthand for it; the
+		// introspector collapses that exact suffix back to nil targets.
 	}
 	for _, s := range stmts {
 		require.NoError(t, conn.Exec(ctx, s), "create failed: %s", s)

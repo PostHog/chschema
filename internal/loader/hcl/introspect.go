@@ -227,12 +227,45 @@ func upsertView(db *DatabaseSpec, v ViewSpec) {
 func parseCreateStatement(createSQL string) (chparser.Expr, error) {
 	stmts, err := safeParseStmts(createSQL)
 	if err != nil {
+		normalized := stripDefaultTimeSeriesTargetShorthand(createSQL)
+		if normalized != createSQL {
+			stmts, err = safeParseStmts(normalized)
+		}
+	}
+	if err != nil {
 		return nil, fmt.Errorf("parser: %w", err)
 	}
 	if len(stmts) == 0 {
 		return nil, errors.New("no statement found in create_table_query")
 	}
 	return stmts[0], nil
+}
+
+var defaultTimeSeriesTargetShorthandRE = regexp.MustCompile(
+	`(?s)\s+DATA\s+ENGINE\s*=\s*MergeTree\s+ORDER\s+BY\s+\(\s*id\s*,\s*timestamp\s*\)` +
+		`\s+TAGS\s+ENGINE\s*=\s*AggregatingMergeTree\s+PRIMARY\s+KEY\s+metric_name` +
+		`\s+ORDER\s+BY\s+tuple\(\s*metric_name\s*,\s*id\s*\)` +
+		`\s+METRICS\s+ENGINE\s*=\s*ReplacingMergeTree\s+ORDER\s+BY\s+metric_family_name\s*$`,
+)
+
+// stripDefaultTimeSeriesTargetShorthand collapses the engine-only target
+// suffix ClickHouse 26.3 adds to SHOW CREATE for an otherwise bare TimeSeries
+// table. The schema model already represents these exact auto-generated
+// targets as nil, so retaining the suffix would create a permanent diff.
+//
+// The SQL parser supports the documented INNER COLUMNS / INNER ENGINE form,
+// but not this newer server spelling (orian/clickhouse-sql-parser#24). The
+// matcher is suffix-anchored and requires every default clause, so custom
+// target definitions are never discarded.
+func stripDefaultTimeSeriesTargetShorthand(createSQL string) string {
+	if !strings.Contains(createSQL, "ENGINE = TimeSeries") {
+		return createSQL
+	}
+	loc := defaultTimeSeriesTargetShorthandRE.FindStringIndex(createSQL)
+	if loc == nil {
+		return createSQL
+	}
+	return createSQL[:loc[0]]
 }
 
 // buildTableFromCreateSQL turns a CREATE TABLE statement into a TableSpec by
@@ -940,9 +973,13 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 		// not to the table — promote tags_to_columns to a typed field,
 		// keep the rest in Settings.
 		ts := EngineTimeSeries{}
-		for k, v := range allSettings {
+		if e.Settings == nil {
+			return ts, nil, nil
+		}
+		for _, setting := range e.Settings.Items {
+			k := setting.Name.Name
 			if k == "tags_to_columns" {
-				m, err := parseTagsToColumnsMap(v)
+				m, err := parseTagsToColumnsMap(setting.Expr)
 				if err != nil {
 					return nil, nil, fmt.Errorf("tags_to_columns: %w", err)
 				}
@@ -952,7 +989,7 @@ func engineFromAST(e *chparser.EngineExpr) (Engine, map[string]string, error) {
 			if ts.Settings == nil {
 				ts.Settings = map[string]string{}
 			}
-			ts.Settings[k] = v
+			ts.Settings[k] = unquoteString(formatNode(setting.Expr))
 		}
 		return ts, nil, nil
 	}
@@ -1714,51 +1751,23 @@ func buildTimeSeriesTarget(tc *chparser.TimeSeriesTargetClause) (*TimeSeriesTarg
 	return &TimeSeriesTarget{Inner: inner}, nil
 }
 
-// parseTagsToColumnsMap parses the `{'tag1':'col1','tag2':'col2',...}` map
-// literal CH emits in SETTINGS for the TimeSeries tags_to_columns setting.
-func parseTagsToColumnsMap(s string) (map[string]string, error) {
-	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "{") || !strings.HasSuffix(s, "}") {
-		return nil, fmt.Errorf("expected map literal, got %q", s)
+// parseTagsToColumnsMap decodes the map AST directly. Going through formatted
+// SQL and splitting it again would have to duplicate ClickHouse's quote and
+// backslash rules, which is exactly where escaped tag names used to break.
+func parseTagsToColumnsMap(expr chparser.Expr) (map[string]string, error) {
+	literal, ok := expr.(*chparser.MapLiteral)
+	if !ok {
+		return nil, fmt.Errorf("expected map literal, got %q", formatNode(expr))
 	}
-	inner := strings.TrimSpace(s[1 : len(s)-1])
-	if inner == "" {
-		return map[string]string{}, nil
-	}
-	out := map[string]string{}
-	for _, pair := range splitTopLevel(inner, ',') {
-		kv := splitTopLevel(strings.TrimSpace(pair), ':')
-		if len(kv) != 2 {
-			return nil, fmt.Errorf("expected `key:value`, got %q", pair)
+	out := make(map[string]string, len(literal.KeyValues))
+	for _, item := range literal.KeyValues {
+		value, ok := item.Value.(*chparser.StringLiteral)
+		if !ok {
+			return nil, fmt.Errorf("expected string value for key %q, got %q",
+				unquoteString(formatNode(&item.Key)), formatNode(item.Value))
 		}
-		k := unquoteString(strings.TrimSpace(kv[0]))
-		v := unquoteString(strings.TrimSpace(kv[1]))
-		out[k] = v
+		key := unquoteString(formatNode(&item.Key))
+		out[key] = unquoteString(formatNode(value))
 	}
 	return out, nil
-}
-
-// splitTopLevel splits s on sep, respecting single-quoted strings. The
-// TimeSeries map literal values are flat strings, so quote awareness is
-// enough — no nested brackets or commas inside values.
-func splitTopLevel(s string, sep byte) []string {
-	var parts []string
-	var current strings.Builder
-	inSingle := false
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c == '\'' && (i == 0 || s[i-1] != '\\') {
-			inSingle = !inSingle
-		}
-		if c == sep && !inSingle {
-			parts = append(parts, current.String())
-			current.Reset()
-			continue
-		}
-		current.WriteByte(c)
-	}
-	if current.Len() > 0 {
-		parts = append(parts, current.String())
-	}
-	return parts
 }
