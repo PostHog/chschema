@@ -51,6 +51,70 @@ func TestBuildDecomposition_AdditiveTablePatchIsAnchoredAndRoundTrips(t *testing
 		"a true tail addition must remain an append")
 }
 
+func TestTablePatch_IdenticalTableReturnsEmptyPatch(t *testing.T) {
+	schema := decomposeTable(hclload.ColumnSpec{Name: "id", Type: "UInt64"})
+	patch, err := tablePatch(schema, schema, decomposeObject{
+		Role: "logs", Database: "analytics", Kind: hclload.KindTable, Name: "events",
+	})
+	require.NoError(t, err)
+	assert.True(t, patchTableEmpty(patch))
+}
+
+func TestDecompose_ThreeEnvironmentsWithOneDivergence_EndToEnd(t *testing.T) {
+	dumpRoot := t.TempDir()
+	writeDump := func(env string, divergent bool) {
+		t.Helper()
+		settings := ""
+		if divergent {
+			settings = `
+    settings = { ttl_only_drop_parts = "1" }`
+		}
+		body := `node "` + env + `-logs" {
+  macros = { hostClusterRole = "logs" }
+}
+database "analytics" {
+  table "log_attributes2" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}` + settings + `
+  }
+}`
+		dir := filepath.Join(dumpRoot, env)
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, env+"-logs.hcl"), []byte(body), 0o600))
+	}
+	writeDump("dev", false)
+	writeDump("prod-eu", true)
+	writeDump("prod-us", false)
+
+	snapshots, envs, drift, err := loadDecomposeSnapshots(
+		dumpRoot, []string{"dev", "prod-eu", "prod-us"}, "*-logs.hcl", "keep", nil,
+	)
+	require.NoError(t, err)
+	require.Empty(t, drift)
+
+	generated, err := buildDecomposition(snapshots, envs, decomposeAssignment{
+		Version: 1, BaselineEnv: "dev", Objects: map[string]decomposeObjectAssignment{},
+	})
+	require.NoError(t, err)
+	out := t.TempDir()
+	require.NoError(t, writeDecomposition(out, generated.Files))
+
+	shared, err := os.ReadFile(filepath.Join(out, sharedLayerPath("logs")))
+	require.NoError(t, err)
+	assert.Contains(t, string(shared), `table "log_attributes2"`)
+
+	prodEU, err := os.ReadFile(filepath.Join(out, envLayerPath("prod-eu", "logs")))
+	require.NoError(t, err)
+	assert.Contains(t, string(prodEU), `patch_table "log_attributes2"`)
+	assert.Contains(t, string(prodEU), `ttl_only_drop_parts = "1"`)
+
+	for _, env := range []string{"dev", "prod-us"} {
+		_, err := os.Stat(filepath.Join(out, envLayerPath(env, "logs")))
+		assert.ErrorIs(t, err, os.ErrNotExist, "%s matches the baseline and must not get an env layer", env)
+	}
+}
+
 func stringsIndex(t *testing.T, value, needle string) int {
 	t.Helper()
 	index := -1
