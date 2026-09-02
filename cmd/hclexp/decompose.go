@@ -327,12 +327,28 @@ func buildDecomposition(snapshots []decomposeSnapshot, envs []string, assignment
 				return generatedDecomposition{}, fmt.Errorf("assignment %q requests group %q in environments [%s], but object is present in [%s]",
 					object.key(), group.Name, strings.Join(group.Envs, ", "), strings.Join(present, ", "))
 			}
-			if !uniform {
+			if !uniform && (object.Kind != hclload.KindTable || !tableObjectUniformIgnoringSettings(object, group.Envs, byEnvRole)) {
 				return generatedDecomposition{}, fmt.Errorf("assignment %q requests group %q, but object differs between member environments: %s",
 					object.key(), group.Name, strings.Join(group.Envs, ", "))
 			}
 			baseObject := objectSchema(byEnvRole[group.Envs[0]][object.Role], object)
+			patches := map[string]func(*hclload.Schema){}
+			if object.Kind == hclload.KindTable {
+				setTableSettingsIntersection(baseObject, object, group.Envs, byEnvRole)
+				for _, env := range group.Envs {
+					apply, err := objectPatch(baseObject, objectSchema(byEnvRole[env][object.Role], object), object)
+					if err != nil {
+						return generatedDecomposition{}, fmt.Errorf("assignment %q cannot synthesize group %q table settings base: %w", object.key(), group.Name, err)
+					}
+					patches[env] = apply
+				}
+			}
 			addObjectToSchema(layer(layers, groupLayerPath(group.Name, object.Role)), baseObject, object)
+			for env, apply := range patches {
+				if apply != nil {
+					apply(layer(layers, envLayerPath(env, object.Role)))
+				}
+			}
 			continue
 		}
 		roleEnvs := environmentsForRole(object.Role, envs, byEnvRole)
@@ -349,6 +365,9 @@ func buildDecomposition(snapshots []decomposeSnapshot, envs []string, assignment
 
 		baseline := chooseBaseline(assignment.BaselineEnv, present)
 		baseObject := objectSchema(byEnvRole[baseline][object.Role], object)
+		if object.Kind == hclload.KindTable {
+			setTableSettingsIntersection(baseObject, object, present, byEnvRole)
+		}
 		if uniform {
 			addObjectToSchema(layer(layers, sharedLayerPath(object.Role)), baseObject, object)
 			continue
@@ -357,7 +376,7 @@ func buildDecomposition(snapshots []decomposeSnapshot, envs []string, assignment
 		patchable := true
 		var patchErr error
 		for _, env := range present {
-			if env == baseline {
+			if env == baseline && object.Kind != hclload.KindTable {
 				continue
 			}
 			apply, err := objectPatch(baseObject, objectSchema(byEnvRole[env][object.Role], object), object)
@@ -1063,6 +1082,44 @@ func objectUniform(object decomposeObject, envs []string, schemas map[string]map
 		}
 	}
 	return true
+}
+
+func tableObjectUniformIgnoringSettings(object decomposeObject, envs []string, schemas map[string]map[string]*hclload.Schema) bool {
+	if len(envs) < 2 {
+		return true
+	}
+	withoutSettings := func(env string) *hclload.Schema {
+		isolated := objectSchema(schemas[env][object.Role], object)
+		onlyTable(isolated).Settings = nil
+		return isolated
+	}
+	first := withoutSettings(envs[0])
+	for _, env := range envs[1:] {
+		equal, err := canonicalSchemasEqual(first, withoutSettings(env))
+		if err != nil || !equal {
+			return false
+		}
+	}
+	return true
+}
+
+func setTableSettingsIntersection(base *hclload.Schema, object decomposeObject, envs []string, schemas map[string]map[string]*hclload.Schema) {
+	intersection := map[string]string{}
+	for key, value := range onlyTable(objectSchema(schemas[envs[0]][object.Role], object)).Settings {
+		intersection[key] = value
+	}
+	for _, env := range envs[1:] {
+		settings := onlyTable(objectSchema(schemas[env][object.Role], object)).Settings
+		for key, value := range intersection {
+			if candidate, ok := settings[key]; !ok || candidate != value {
+				delete(intersection, key)
+			}
+		}
+	}
+	if len(intersection) == 0 {
+		intersection = nil
+	}
+	onlyTable(base).Settings = intersection
 }
 
 func canonicalSchemasEqual(a, b *hclload.Schema) (bool, error) {
