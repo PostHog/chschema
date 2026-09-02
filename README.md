@@ -642,6 +642,12 @@ be represented without loss. Added columns carry `first` / `after` anchors
 computed from the target physical order. Unsupported shared splits fall back
 to complete per-environment declarations in automatic mode.
 
+Assignment-driven environment groups add a middle layer for objects shared by
+an exact subset of environments. A group declaration is written once under
+`layers/group/<name>/<role>` and inserted between the shared and environment
+layers in every member's manifest stack. Group members must contain identical
+copies of the object; presence or content drift fails closed.
+
 Engine block differences that `patch_table` can represent are emitted as
 replacement engine patches. Layer placement describes the desired schema;
 `plan` and SQL generation independently keep engine changes classified as
@@ -671,19 +677,28 @@ human decisions live in an optional, versioned JSON assignment file:
   "baseline_env": "prod-eu",
   "objects": {
     "ops/posthog/table/events_recent": { "mode": "environment" },
+    "ops/posthog/table/events_main": {
+      "mode": "group",
+      "envs": ["prod-eu", "prod-us"]
+    },
     "ops/posthog/table/temporary_table": { "mode": "exclude" }
   }
 }
 ```
 
-Object modes are `auto`, `shared`, `environment`, and `exclude`. `shared` is a
-strict assertion: if an object is absent or its delta cannot be expressed by
-the patch vocabulary (for example, existing columns appear in a new order),
-decomposition fails with the object and conflicting columns instead of
-silently reordering them. Assignment keys are validated so stale or mistyped
-decisions cannot be ignored. `-exclude` applies the standard HCL exclude rules
-before inventory and decomposition. ReplicatedMergeTree UUIDs are masked by
-default; use `-zk-paths keep|mask-uuid|ignore` to select another policy.
+Object modes are `auto`, `shared`, `group`, `environment`, and `exclude`.
+`group` requires at least two `envs`, and that list must exactly match where
+the object is present. Its optional `name` selects the output directory; by
+default decompose uses the environments' common hyphen-delimited prefix
+(`prod-eu` plus `prod-us` becomes `prod`). Set `name` explicitly when subsets
+would derive the same name. `shared` is a strict assertion: if an object is
+absent or its delta cannot be expressed by the patch vocabulary (for example,
+existing columns appear in a new order), decomposition fails with the object
+and conflicting columns instead of silently reordering them. Assignment keys
+and group members are validated so stale or mistyped decisions cannot be
+ignored. `-exclude` applies the standard HCL exclude rules before inventory
+and decomposition. ReplicatedMergeTree UUIDs are masked by default; use
+`-zk-paths keep|mask-uuid|ignore` to select another policy.
 
 ## Cross-role planning
 

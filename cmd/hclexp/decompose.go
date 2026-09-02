@@ -29,7 +29,14 @@ type decomposeAssignment struct {
 }
 
 type decomposeObjectAssignment struct {
-	Mode string `json:"mode"` // auto | shared | environment | exclude
+	Mode string   `json:"mode"` // auto | shared | group | environment | exclude
+	Envs []string `json:"envs,omitempty"`
+	Name string   `json:"name,omitempty"`
+}
+
+type decomposeGroup struct {
+	Name string
+	Envs []string
 }
 
 type decomposeInventory struct {
@@ -82,7 +89,7 @@ func runDecompose(args []string) {
 	envs := fs.String("env", "", "comma-separated environment directory names (default: every direct child containing HCL files)")
 	glob := fs.String("glob", "*", "comma-separated dump filename globs within each environment")
 	exclude := fs.String("exclude", "", "HCL exclude config applied to every dump before inventory and emission")
-	assignmentPath := fs.String("assignment", "", "optional JSON assignment file; object modes are auto, shared, environment, or exclude")
+	assignmentPath := fs.String("assignment", "", "optional JSON assignment file; object modes are auto, shared, group, environment, or exclude")
 	out := fs.String("out", "", "output directory for layers, manifest, and composed goldens")
 	list := fs.Bool("list", false, "print the cross-environment inventory as JSON without writing layers")
 	zkPaths := fs.String("zk-paths", "mask-uuid", "ReplicatedMergeTree zoo_path handling: keep | mask-uuid | ignore")
@@ -154,10 +161,8 @@ func readDecomposeAssignment(path string) (decomposeAssignment, error) {
 		return assignment, fmt.Errorf("assignment %q: unsupported version %d (want 1)", path, assignment.Version)
 	}
 	for key, object := range assignment.Objects {
-		switch object.Mode {
-		case "", "auto", "shared", "environment", "exclude":
-		default:
-			return assignment, fmt.Errorf("assignment %q: object %q has invalid mode %q", path, key, object.Mode)
+		if err := validateDecomposeObjectAssignment(key, object); err != nil {
+			return assignment, fmt.Errorf("assignment %q: %w", path, err)
 		}
 	}
 	return assignment, nil
@@ -276,6 +281,10 @@ func buildDecomposition(snapshots []decomposeSnapshot, envs []string, assignment
 			return generatedDecomposition{}, fmt.Errorf("assignment references unknown object %q", key)
 		}
 	}
+	groupsByObject, groups, err := resolveDecomposeGroups(assignment.Objects, envs)
+	if err != nil {
+		return generatedDecomposition{}, err
+	}
 	if assignment.BaselineEnv != "" {
 		knownEnv := false
 		for _, env := range envs {
@@ -301,7 +310,8 @@ func buildDecomposition(snapshots []decomposeSnapshot, envs []string, assignment
 			Key: object.key(), Role: object.Role, Database: object.Database, Kind: object.Kind,
 			Name: object.Name, Present: present, Uniform: uniform,
 		})
-		mode := assignment.Objects[object.key()].Mode
+		objectAssignment := assignment.Objects[object.key()]
+		mode := objectAssignment.Mode
 		if mode == "" {
 			mode = "auto"
 		}
@@ -310,6 +320,20 @@ func buildDecomposition(snapshots []decomposeSnapshot, envs []string, assignment
 		}
 		for _, env := range present {
 			addObjectToSchema(targets[env][object.Role], byEnvRole[env][object.Role], object)
+		}
+		if mode == "group" {
+			group := groupsByObject[object.key()]
+			if !sameStringSet(present, group.Envs) {
+				return generatedDecomposition{}, fmt.Errorf("assignment %q requests group %q in environments [%s], but object is present in [%s]",
+					object.key(), group.Name, strings.Join(group.Envs, ", "), strings.Join(present, ", "))
+			}
+			if !uniform {
+				return generatedDecomposition{}, fmt.Errorf("assignment %q requests group %q, but object differs between member environments: %s",
+					object.key(), group.Name, strings.Join(group.Envs, ", "))
+			}
+			baseObject := objectSchema(byEnvRole[group.Envs[0]][object.Role], object)
+			addObjectToSchema(layer(layers, groupLayerPath(group.Name, object.Role)), baseObject, object)
+			continue
 		}
 		roleEnvs := environmentsForRole(object.Role, envs, byEnvRole)
 		allPresent := slicesEqual(present, roleEnvs)
@@ -368,7 +392,7 @@ func buildDecomposition(snapshots []decomposeSnapshot, envs []string, assignment
 		}
 		files[path] = body.Bytes()
 	}
-	files["manifest.hcl"] = renderDecomposeManifest(envs, roles, byEnvRole, layers)
+	files["manifest.hcl"] = renderDecomposeManifest(envs, roles, byEnvRole, layers, groups)
 	for _, env := range envs {
 		for _, role := range roles {
 			target := targets[env][role]
@@ -382,7 +406,7 @@ func buildDecomposition(snapshots []decomposeSnapshot, envs []string, assignment
 			files[filepath.ToSlash(filepath.Join("goldens", env, role+".hcl"))] = body.Bytes()
 		}
 	}
-	if err := verifyGeneratedDecomposition(files, envs, roles, targets); err != nil {
+	if err := verifyGeneratedDecomposition(files, envs, roles, targets, groups); err != nil {
 		return generatedDecomposition{}, err
 	}
 	return generatedDecomposition{Files: files, Inventory: inventory}, nil
@@ -842,7 +866,7 @@ func patchTableEmpty(p hclload.PatchTableSpec) bool {
 		p.OrderBy == nil && p.PartitionBy == nil && p.SampleBy == nil && p.TTL == nil && len(p.Settings) == 0 && p.Engine == nil
 }
 
-func verifyGeneratedDecomposition(files map[string][]byte, envs, roles []string, targets map[string]map[string]*hclload.Schema) error {
+func verifyGeneratedDecomposition(files map[string][]byte, envs, roles []string, targets map[string]map[string]*hclload.Schema, groups []decomposeGroup) error {
 	root, err := os.MkdirTemp("", "hclexp-decompose-verify-")
 	if err != nil {
 		return err
@@ -866,11 +890,12 @@ func verifyGeneratedDecomposition(files map[string][]byte, envs, roles []string,
 			if target == nil {
 				continue
 			}
-			paths := []string{filepath.Join(root, sharedLayerPath(role)), filepath.Join(root, envLayerPath(env, role))}
+			paths := decomposeLayerPaths(env, role, groups)
 			var existing []string
 			for _, path := range paths {
-				if _, err := os.Stat(path); err == nil {
-					existing = append(existing, path)
+				full := filepath.Join(root, filepath.FromSlash(path))
+				if _, err := os.Stat(full); err == nil {
+					existing = append(existing, full)
 				}
 			}
 			loaded, err := hclload.LoadLayers(existing)
@@ -1158,8 +1183,21 @@ func layer(layers map[string]*hclload.Schema, path string) *hclload.Schema {
 func sharedLayerPath(role string) string {
 	return filepath.ToSlash(filepath.Join("layers", "shared", role, "tables.hcl"))
 }
+func groupLayerPath(group, role string) string {
+	return filepath.ToSlash(filepath.Join("layers", "group", group, role, "tables.hcl"))
+}
 func envLayerPath(env, role string) string {
 	return filepath.ToSlash(filepath.Join("layers", "env", env, role, "patches.hcl"))
+}
+
+func decomposeLayerPaths(env, role string, groups []decomposeGroup) []string {
+	paths := []string{sharedLayerPath(role)}
+	for _, group := range groups {
+		if containsString(group.Envs, env) {
+			paths = append(paths, groupLayerPath(group.Name, role))
+		}
+	}
+	return append(paths, envLayerPath(env, role))
 }
 
 func environmentsForRole(role string, envs []string, schemas map[string]map[string]*hclload.Schema) []string {
@@ -1181,7 +1219,127 @@ func chooseBaseline(preferred string, present []string) string {
 	return present[0]
 }
 
-func renderDecomposeManifest(envs, roles []string, schemas map[string]map[string]*hclload.Schema, layers map[string]*hclload.Schema) []byte {
+func validateDecomposeObjectAssignment(key string, object decomposeObjectAssignment) error {
+	switch object.Mode {
+	case "", "auto", "shared", "group", "environment", "exclude":
+	default:
+		return fmt.Errorf("object %q has invalid mode %q", key, object.Mode)
+	}
+	if object.Mode != "group" {
+		if len(object.Envs) > 0 || object.Name != "" {
+			return fmt.Errorf("object %q sets group envs/name with mode %q", key, object.Mode)
+		}
+		return nil
+	}
+	if len(object.Envs) < 2 {
+		return fmt.Errorf("object %q group mode requires at least two environments", key)
+	}
+	seen := map[string]bool{}
+	for _, env := range object.Envs {
+		if env == "" {
+			return fmt.Errorf("object %q group contains an empty environment", key)
+		}
+		if seen[env] {
+			return fmt.Errorf("object %q group contains environment %q more than once", key, env)
+		}
+		seen[env] = true
+	}
+	if object.Name != "" && !validDecomposeGroupName(object.Name) {
+		return fmt.Errorf("object %q group name %q is invalid (use letters, digits, dot, dash, or underscore)", key, object.Name)
+	}
+	return nil
+}
+
+func resolveDecomposeGroups(objects map[string]decomposeObjectAssignment, envs []string) (map[string]decomposeGroup, []decomposeGroup, error) {
+	available := map[string]bool{}
+	for _, env := range envs {
+		available[env] = true
+	}
+	byObject := map[string]decomposeGroup{}
+	byName := map[string]decomposeGroup{}
+	for _, key := range sortedKeysLocal(objects) {
+		object := objects[key]
+		if err := validateDecomposeObjectAssignment(key, object); err != nil {
+			return nil, nil, err
+		}
+		if object.Mode != "group" {
+			continue
+		}
+		members := append([]string(nil), object.Envs...)
+		sort.Strings(members)
+		for _, env := range members {
+			if !available[env] {
+				return nil, nil, fmt.Errorf("object %q group references unknown environment %q (available: %s)", key, env, strings.Join(envs, ", "))
+			}
+		}
+		name := object.Name
+		if name == "" {
+			name = deriveDecomposeGroupName(members)
+		}
+		if !validDecomposeGroupName(name) {
+			return nil, nil, fmt.Errorf("object %q cannot derive a safe group name from environments [%s]; set name explicitly", key, strings.Join(members, ", "))
+		}
+		group := decomposeGroup{Name: name, Envs: members}
+		if existing, ok := byName[name]; ok && !sameStringSet(existing.Envs, members) {
+			return nil, nil, fmt.Errorf("group name %q maps to conflicting environment sets [%s] and [%s]; set distinct names",
+				name, strings.Join(existing.Envs, ", "), strings.Join(members, ", "))
+		}
+		byName[name] = group
+		byObject[key] = group
+	}
+	names := sortedKeysLocal(byName)
+	groups := make([]decomposeGroup, 0, len(names))
+	for _, name := range names {
+		groups = append(groups, byName[name])
+	}
+	return byObject, groups, nil
+}
+
+func deriveDecomposeGroupName(envs []string) string {
+	common := strings.Split(envs[0], "-")
+	for _, env := range envs[1:] {
+		parts := strings.Split(env, "-")
+		limit := len(common)
+		if len(parts) < limit {
+			limit = len(parts)
+		}
+		i := 0
+		for i < limit && common[i] == parts[i] {
+			i++
+		}
+		common = common[:i]
+	}
+	if len(common) > 0 {
+		return strings.Join(common, "-")
+	}
+	return strings.Join(envs, "--")
+}
+
+func validDecomposeGroupName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') || (char >= 'A' && char <= 'Z') ||
+			(char >= '0' && char <= '9') || char == '.' || char == '-' || char == '_' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func sameStringSet(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	left, right := append([]string(nil), a...), append([]string(nil), b...)
+	sort.Strings(left)
+	sort.Strings(right)
+	return slicesEqual(left, right)
+}
+
+func renderDecomposeManifest(envs, roles []string, schemas map[string]map[string]*hclload.Schema, layers map[string]*hclload.Schema, groups []decomposeGroup) []byte {
 	var body strings.Builder
 	for _, role := range roles {
 		fmt.Fprintf(&body, "role %q {\n", role)
@@ -1190,11 +1348,10 @@ func renderDecomposeManifest(envs, roles []string, schemas map[string]map[string
 				continue
 			}
 			paths := []string{}
-			if layers[sharedLayerPath(role)] != nil {
-				paths = append(paths, filepath.ToSlash(filepath.Dir(sharedLayerPath(role))))
-			}
-			if layers[envLayerPath(env, role)] != nil {
-				paths = append(paths, filepath.ToSlash(filepath.Dir(envLayerPath(env, role))))
+			for _, path := range decomposeLayerPaths(env, role, groups) {
+				if layers[path] != nil {
+					paths = append(paths, filepath.ToSlash(filepath.Dir(path)))
+				}
 			}
 			fmt.Fprintf(&body, "  env %q { layers = [", env)
 			for i, path := range paths {
