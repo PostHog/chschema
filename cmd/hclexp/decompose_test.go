@@ -231,19 +231,7 @@ database "posthog" {
   }
 }`), 0o600))
 	out := t.TempDir()
-	cmd := exec.Command(os.Args[0], "-test.run=^TestDecomposeCLIProcess$", "--",
-		"-dump-root", dumpRoot,
-		"-env", "dev,prod-eu,prod-us",
-		"-glob", "*-ops.hcl",
-		"-zk-paths", "keep",
-		"-assignment", assignmentPath,
-		"-out", out,
-	)
-	cmd.Env = append(os.Environ(), "HCLEXP_DECOMPOSE_HELPER=1")
-	output, err := cmd.CombinedOutput()
-	require.NoError(t, err, string(output))
-	assert.Contains(t, string(output), "decomposed 3 environments")
-	assert.Contains(t, string(output), "round-trip verified")
+	runDecomposeCLIForTest(t, dumpRoot, "*-ops.hcl", assignmentPath, out)
 
 	sharedBody, err := os.ReadFile(filepath.Join(out, sharedLayerPath("ops")))
 	require.NoError(t, err)
@@ -270,6 +258,123 @@ database "posthog" {
 	assert.Contains(t, manifest, `env "prod-us" { layers = ["layers/shared/ops", "layers/group/prod/ops"] }`)
 }
 
+func TestDecompose_SettingsIntersection_EndToEnd(t *testing.T) {
+	dumpRoot := t.TempDir()
+	writeDump := func(env string) {
+		t.Helper()
+		residue := `
+      replica_variant = "west"
+      storage_policy   = "s3_tiered"`
+		if env == "prod-eu" {
+			residue = `
+      max_replicated_merges_in_queue          = "6"
+      parts_to_delay_insert                    = "1000"
+      parts_to_throw_insert                    = "3000"
+      prefer_fetch_merged_part_size_threshold = "1"
+      prefer_fetch_merged_part_time_threshold = "60"
+      replica_variant                         = "eu"`
+		}
+		settings := `
+      index_granularity                        = "8192"
+      object_serialization_version             = "v3"
+      object_shared_data_serialization_version = "map_with_buckets"` + residue
+		table := func(name string) string {
+			return `
+  table "` + name + `" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+    settings = {` + settings + `
+    }
+  }`
+		}
+		body := `node "` + env + `-ops" {
+  macros = { hostClusterRole = "ops" }
+}
+database "posthog" {` + table("sharded_query_log_archive")
+		if env != "dev" {
+			body += table("prod_query_log_archive")
+		}
+		body += "\n}"
+		dir := filepath.Join(dumpRoot, env)
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, env+"-ops.hcl"), []byte(body), 0o600))
+	}
+	writeDump("dev")
+	writeDump("prod-eu")
+	writeDump("prod-us")
+
+	for _, mode := range []string{"auto", "shared"} {
+		t.Run(mode, func(t *testing.T) {
+			sharedAssignment := ""
+			if mode == "shared" {
+				sharedAssignment = `
+    "ops/posthog/table/sharded_query_log_archive": { "mode": "shared" },`
+			}
+			assignmentPath := filepath.Join(t.TempDir(), "assignment.json")
+			require.NoError(t, os.WriteFile(assignmentPath, []byte(`{
+  "version": 1,
+  "objects": {`+sharedAssignment+`
+    "ops/posthog/table/prod_query_log_archive": {
+      "mode": "group",
+      "envs": ["prod-eu", "prod-us"]
+    }
+  }
+}`), 0o600))
+			out := t.TempDir()
+			runDecomposeCLIForTest(t, dumpRoot, "*-ops.hcl", assignmentPath, out)
+
+			read := func(path string) string {
+				t.Helper()
+				body, err := os.ReadFile(filepath.Join(out, path))
+				require.NoError(t, err)
+				return string(body)
+			}
+			shared := read(sharedLayerPath("ops"))
+			assert.Contains(t, shared, `table "sharded_query_log_archive"`)
+			assert.Contains(t, shared, `index_granularity                        = "8192"`)
+			assert.Contains(t, shared, `object_serialization_version             = "v3"`)
+			assert.Contains(t, shared, `object_shared_data_serialization_version = "map_with_buckets"`)
+			assert.NotContains(t, shared, "storage_policy")
+			assert.NotContains(t, shared, "max_replicated_merges_in_queue")
+			assert.NotContains(t, shared, "replica_variant")
+
+			group := read(groupLayerPath("prod", "ops"))
+			assert.Contains(t, group, `table "prod_query_log_archive"`)
+			assert.Contains(t, group, `index_granularity                        = "8192"`)
+			assert.NotContains(t, group, "storage_policy")
+			assert.NotContains(t, group, "max_replicated_merges_in_queue")
+			assert.NotContains(t, group, "replica_variant")
+
+			dev := read(envLayerPath("dev", "ops"))
+			assert.Contains(t, dev, `patch_table "sharded_query_log_archive"`)
+			assert.Contains(t, dev, `replica_variant = "west"`)
+			assert.Contains(t, dev, "storage_policy")
+			assert.Contains(t, dev, `"s3_tiered"`)
+			assert.NotContains(t, dev, `patch_table "prod_query_log_archive"`)
+
+			prodUS := read(envLayerPath("prod-us", "ops"))
+			assert.Contains(t, prodUS, `patch_table "sharded_query_log_archive"`)
+			assert.Contains(t, prodUS, `patch_table "prod_query_log_archive"`)
+			assert.Contains(t, prodUS, `replica_variant = "west"`)
+			assert.Contains(t, prodUS, "storage_policy")
+			assert.Contains(t, prodUS, `"s3_tiered"`)
+
+			prodEU := read(envLayerPath("prod-eu", "ops"))
+			assert.Contains(t, prodEU, `patch_table "sharded_query_log_archive"`)
+			assert.Contains(t, prodEU, `patch_table "prod_query_log_archive"`)
+			assert.Contains(t, prodEU, `replica_variant                         = "eu"`)
+			assert.Contains(t, prodEU, `max_replicated_merges_in_queue          = "6"`)
+			assert.NotContains(t, prodEU, "storage_policy")
+
+			manifest := read("manifest.hcl")
+			assert.Contains(t, manifest, `env "dev" { layers = ["layers/shared/ops", "layers/env/dev/ops"] }`)
+			assert.Contains(t, manifest, `env "prod-eu" { layers = ["layers/shared/ops", "layers/group/prod/ops", "layers/env/prod-eu/ops"] }`)
+			assert.Contains(t, manifest, `env "prod-us" { layers = ["layers/shared/ops", "layers/group/prod/ops", "layers/env/prod-us/ops"] }`)
+		})
+	}
+}
+
 func TestDecomposeCLIProcess(t *testing.T) {
 	if os.Getenv("HCLEXP_DECOMPOSE_HELPER") != "1" {
 		return
@@ -281,6 +386,23 @@ func TestDecomposeCLIProcess(t *testing.T) {
 		}
 	}
 	t.Fatal("missing decompose CLI arguments")
+}
+
+func runDecomposeCLIForTest(t *testing.T, dumpRoot, glob, assignmentPath, out string) {
+	t.Helper()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDecomposeCLIProcess$", "--",
+		"-dump-root", dumpRoot,
+		"-env", "dev,prod-eu,prod-us",
+		"-glob", glob,
+		"-zk-paths", "keep",
+		"-assignment", assignmentPath,
+		"-out", out,
+	)
+	cmd.Env = append(os.Environ(), "HCLEXP_DECOMPOSE_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+	assert.Contains(t, string(output), "decomposed 3 environments")
+	assert.Contains(t, string(output), "round-trip verified")
 }
 
 func TestBuildDecomposition_GroupAssignmentFailsClosed(t *testing.T) {

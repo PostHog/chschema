@@ -646,7 +646,14 @@ Assignment-driven environment groups add a middle layer for objects shared by
 an exact subset of environments. A group declaration is written once under
 `layers/group/<name>/<role>` and inserted between the shared and environment
 layers in every member's manifest stack. Group members must contain identical
-copies of the object; presence or content drift fails closed.
+copies of non-table objects. Tables may differ in settings only; other content
+or presence drift fails closed.
+
+For tables in shared or group placement, decompose synthesizes the base
+settings as the key-and-value intersection across the placement's member
+environments. Settings outside that intersection become additive environment
+patches, including keys present everywhere with different values. This avoids
+subtractive settings patches while preserving each environment exactly.
 
 Engine block differences that `patch_table` can represent are emitted as
 replacement engine patches. Layer placement describes the desired schema;
