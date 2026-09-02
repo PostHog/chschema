@@ -438,6 +438,9 @@ func objectPatch(from, to *hclload.Schema, object decomposeObject) (func(*hclloa
 
 func tablePatch(from, to *hclload.Schema, object decomposeObject) (hclload.PatchTableSpec, error) {
 	diff := hclload.Diff(from, to)
+	if diff.IsEmpty() {
+		return hclload.PatchTableSpec{}, nil
+	}
 	if len(diff.Databases) != 1 || len(diff.Databases[0].AlterTables) != 1 {
 		return hclload.PatchTableSpec{}, fmt.Errorf("%s: expected one table delta", object.key())
 	}
