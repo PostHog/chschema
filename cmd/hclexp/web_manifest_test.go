@@ -386,6 +386,45 @@ func TestWebDump_ObjectDiffSummary(t *testing.T) {
 		"the summary uses reloaded peer signatures without visiting that node first")
 }
 
+func TestWebDump_ReloadInfersInvisibleExternalNamedCollection(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "node-a.hcl")
+	dump := func(topic string) string {
+		return `node "node-a" { macros = { cluster = "events" } }
+database "posthog" {
+  table "kafka_logs" {
+    column "body" { type = "String" }
+    engine "kafka" {
+      collection = "warpstream_logs"
+      topic_list = "` + topic + `"
+      group_name = "clickhouse-logs"
+      format = "Avro"
+    }
+  }
+}
+`
+	}
+	writeFileT(t, path, dump("logs-v1"))
+
+	ms, err := buildDumpMultiServer(root, "*", time.Second)
+	require.NoError(t, err)
+	objectPath := "/n/node-a/db/posthog/table/kafka_logs?view=html"
+	code, body := getMulti(t, ms, objectPath)
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "logs-v1")
+
+	writeFileT(t, path, dump("logs-v2"))
+	srv := ms.servers[nodeBasePath("node-a")]
+	future := srv.lastCheck.Add(time.Hour)
+	srv.now = func() time.Time { return future }
+	require.NoError(t, os.Chtimes(path, future, future))
+
+	code, body = getMulti(t, ms, objectPath)
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "logs-v2")
+	assert.NotContains(t, body, "logs-v1")
+}
+
 func TestWebDump_SemanticDiffAndSessionColumnOrder(t *testing.T) {
 	root := t.TempDir()
 	writeFileT(t, filepath.Join(root, "node-a.hcl"), `node "node-a" {

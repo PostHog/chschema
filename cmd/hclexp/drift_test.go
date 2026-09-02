@@ -100,6 +100,32 @@ func TestLoadDriftNodes_Glob(t *testing.T) {
 	assert.Error(t, err, "an invalid pattern in the list should error")
 }
 
+func TestLoadDriftNodes_InfersInvisibleExternalNamedCollection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "prod-us-iad-ch-1a-events.hcl")
+	require.NoError(t, os.WriteFile(path, []byte(`node "prod-us-iad-ch-1a-events" {
+  macros = { cluster = "events" }
+}
+database "posthog" {
+  table "kafka_logs" {
+    column "body" { type = "String" }
+    engine "kafka" {
+      collection = "warpstream_logs"
+      topic_list = "clickhouse_logs"
+      group_name = "clickhouse-logs"
+      format = "Avro"
+    }
+  }
+}
+`), 0o600))
+
+	nodes, err := loadDriftNodes(dir, "*")
+	require.NoError(t, err)
+	require.Len(t, nodes, 1)
+	assert.Equal(t, []hclload.NamedCollectionSpec{{Name: "warpstream_logs", External: true}},
+		nodes[0].Schema.NamedCollections)
+}
+
 func TestNormalizeZKPaths(t *testing.T) {
 	schemaWithZK := func(path string) *hclload.Schema {
 		return &hclload.Schema{Databases: []hclload.DatabaseSpec{{
