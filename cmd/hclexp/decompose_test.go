@@ -2,6 +2,7 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -175,6 +176,189 @@ database "posthog" {
 				assert.NotContains(t, generated.Files, envLayerPath(env, "ops"),
 					"%s matches the baseline and must not get an env layer", env)
 			}
+		})
+	}
+}
+
+func TestDecompose_EnvironmentGroup_EndToEnd(t *testing.T) {
+	dumpRoot := t.TempDir()
+	writeDump := func(env string, includeProdTables bool) {
+		t.Helper()
+		prodTables := ""
+		if includeProdTables {
+			prodTables = `
+  table "events_main" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+  }
+  table "query_team_daily_stats" {
+    order_by = ["team_id"]
+    column "team_id" { type = "UInt64" }
+    engine "merge_tree" {}
+  }`
+		}
+		body := `node "` + env + `-ops" {
+  macros = { hostClusterRole = "ops" }
+}
+database "posthog" {
+  table "all_environments" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "merge_tree" {}
+  }` + prodTables + `
+}`
+		dir := filepath.Join(dumpRoot, env)
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, env+"-ops.hcl"), []byte(body), 0o600))
+	}
+	writeDump("dev", false)
+	writeDump("prod-eu", true)
+	writeDump("prod-us", true)
+
+	assignmentPath := filepath.Join(t.TempDir(), "assignment.json")
+	require.NoError(t, os.WriteFile(assignmentPath, []byte(`{
+  "version": 1,
+  "objects": {
+    "ops/posthog/table/events_main": {
+      "mode": "group",
+      "envs": ["prod-us", "prod-eu"]
+    },
+    "ops/posthog/table/query_team_daily_stats": {
+      "mode": "group",
+      "envs": ["prod-eu", "prod-us"]
+    }
+  }
+}`), 0o600))
+	out := t.TempDir()
+	cmd := exec.Command(os.Args[0], "-test.run=^TestDecomposeCLIProcess$", "--",
+		"-dump-root", dumpRoot,
+		"-env", "dev,prod-eu,prod-us",
+		"-glob", "*-ops.hcl",
+		"-zk-paths", "keep",
+		"-assignment", assignmentPath,
+		"-out", out,
+	)
+	cmd.Env = append(os.Environ(), "HCLEXP_DECOMPOSE_HELPER=1")
+	output, err := cmd.CombinedOutput()
+	require.NoError(t, err, string(output))
+	assert.Contains(t, string(output), "decomposed 3 environments")
+	assert.Contains(t, string(output), "round-trip verified")
+
+	sharedBody, err := os.ReadFile(filepath.Join(out, sharedLayerPath("ops")))
+	require.NoError(t, err)
+	shared := string(sharedBody)
+	assert.Contains(t, shared, `table "all_environments"`)
+	assert.NotContains(t, shared, `table "events_main"`)
+
+	groupPath := groupLayerPath("prod", "ops")
+	groupBody, err := os.ReadFile(filepath.Join(out, groupPath))
+	require.NoError(t, err)
+	group := string(groupBody)
+	assert.Contains(t, group, `table "events_main"`)
+	assert.Contains(t, group, `table "query_team_daily_stats"`)
+	for _, env := range []string{"dev", "prod-eu", "prod-us"} {
+		_, err := os.Stat(filepath.Join(out, envLayerPath(env, "ops")))
+		assert.ErrorIs(t, err, os.ErrNotExist, "grouped declarations must not be duplicated into %s", env)
+	}
+
+	manifestBody, err := os.ReadFile(filepath.Join(out, "manifest.hcl"))
+	require.NoError(t, err)
+	manifest := string(manifestBody)
+	assert.Contains(t, manifest, `env "dev" { layers = ["layers/shared/ops"] }`)
+	assert.Contains(t, manifest, `env "prod-eu" { layers = ["layers/shared/ops", "layers/group/prod/ops"] }`)
+	assert.Contains(t, manifest, `env "prod-us" { layers = ["layers/shared/ops", "layers/group/prod/ops"] }`)
+}
+
+func TestDecomposeCLIProcess(t *testing.T) {
+	if os.Getenv("HCLEXP_DECOMPOSE_HELPER") != "1" {
+		return
+	}
+	for i, arg := range os.Args {
+		if arg == "--" {
+			runDecompose(os.Args[i+1:])
+			return
+		}
+	}
+	t.Fatal("missing decompose CLI arguments")
+}
+
+func TestBuildDecomposition_GroupAssignmentFailsClosed(t *testing.T) {
+	base := decomposeTable(hclload.ColumnSpec{Name: "id", Type: "UInt64"})
+	different := decomposeTable(
+		hclload.ColumnSpec{Name: "id", Type: "UInt64"},
+		hclload.ColumnSpec{Name: "extra", Type: "String"},
+	)
+	key := "ops/analytics/table/events"
+
+	t.Run("presence differs from members", func(t *testing.T) {
+		_, err := buildDecomposition([]decomposeSnapshot{
+			{Env: "dev", Role: "ops", Schema: base},
+			{Env: "prod-eu", Role: "ops", Schema: base},
+			{Env: "prod-us", Role: "ops", Schema: base},
+		}, []string{"dev", "prod-eu", "prod-us"}, decomposeAssignment{
+			Version: 1, Objects: map[string]decomposeObjectAssignment{
+				key: {Mode: "group", Envs: []string{"prod-eu", "prod-us"}},
+			},
+		})
+		require.ErrorContains(t, err, `requests group "prod"`)
+		require.ErrorContains(t, err, "object is present in [dev, prod-eu, prod-us]")
+	})
+
+	t.Run("members differ", func(t *testing.T) {
+		_, err := buildDecomposition([]decomposeSnapshot{
+			{Env: "dev", Role: "ops", Schema: &hclload.Schema{}},
+			{Env: "prod-eu", Role: "ops", Schema: base},
+			{Env: "prod-us", Role: "ops", Schema: different},
+		}, []string{"dev", "prod-eu", "prod-us"}, decomposeAssignment{
+			Version: 1, Objects: map[string]decomposeObjectAssignment{
+				key: {Mode: "group", Envs: []string{"prod-eu", "prod-us"}},
+			},
+		})
+		require.ErrorContains(t, err, `requests group "prod"`)
+		require.ErrorContains(t, err, "object differs between member environments")
+	})
+
+	t.Run("unknown member", func(t *testing.T) {
+		_, err := buildDecomposition([]decomposeSnapshot{
+			{Env: "prod-eu", Role: "ops", Schema: base},
+			{Env: "prod-us", Role: "ops", Schema: base},
+		}, []string{"prod-eu", "prod-us"}, decomposeAssignment{
+			Version: 1, Objects: map[string]decomposeObjectAssignment{
+				key: {Mode: "group", Envs: []string{"prod-eu", "prod-ap"}},
+			},
+		})
+		require.ErrorContains(t, err, `references unknown environment "prod-ap"`)
+	})
+}
+
+func TestResolveDecomposeGroups_NamingAndValidation(t *testing.T) {
+	byObject, groups, err := resolveDecomposeGroups(map[string]decomposeObjectAssignment{
+		"explicit": {Mode: "group", Envs: []string{"prod-us", "prod-eu"}, Name: "production"},
+	}, []string{"prod-eu", "prod-us"})
+	require.NoError(t, err)
+	assert.Equal(t, "production", byObject["explicit"].Name)
+	assert.Equal(t, []decomposeGroup{{Name: "production", Envs: []string{"prod-eu", "prod-us"}}}, groups)
+
+	_, _, err = resolveDecomposeGroups(map[string]decomposeObjectAssignment{
+		"a": {Mode: "group", Envs: []string{"prod-eu", "prod-us"}},
+		"b": {Mode: "group", Envs: []string{"prod-ap", "prod-ca"}},
+	}, []string{"prod-ap", "prod-ca", "prod-eu", "prod-us"})
+	require.ErrorContains(t, err, `group name "prod" maps to conflicting environment sets`)
+
+	for _, tc := range []struct {
+		name       string
+		assignment decomposeObjectAssignment
+		want       string
+	}{
+		{name: "one member", assignment: decomposeObjectAssignment{Mode: "group", Envs: []string{"prod-eu"}}, want: "requires at least two environments"},
+		{name: "duplicate member", assignment: decomposeObjectAssignment{Mode: "group", Envs: []string{"prod-eu", "prod-eu"}}, want: `contains environment "prod-eu" more than once`},
+		{name: "unsafe name", assignment: decomposeObjectAssignment{Mode: "group", Envs: []string{"prod-eu", "prod-us"}, Name: "../prod"}, want: "group name"},
+		{name: "group fields on another mode", assignment: decomposeObjectAssignment{Mode: "auto", Envs: []string{"prod-eu", "prod-us"}}, want: "sets group envs/name"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, err := resolveDecomposeGroups(map[string]decomposeObjectAssignment{"invalid": tc.assignment}, []string{"prod-eu", "prod-us"})
+			require.ErrorContains(t, err, tc.want)
 		})
 	}
 }
