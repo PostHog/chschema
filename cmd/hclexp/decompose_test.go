@@ -115,6 +115,70 @@ database "analytics" {
 	}
 }
 
+func TestDecompose_EngineOnlyDivergence_EndToEnd(t *testing.T) {
+	dumpRoot := t.TempDir()
+	writeDump := func(env, zooPath string) {
+		t.Helper()
+		body := `node "` + env + `-ops" {
+  macros = { hostClusterRole = "ops" }
+}
+database "posthog" {
+  table "sharded_tophog" {
+    order_by = ["id"]
+    column "id" { type = "UInt64" }
+    engine "replicated_merge_tree" {
+      zoo_path     = "` + zooPath + `"
+      replica_name = "{replica}"
+    }
+  }
+}`
+		dir := filepath.Join(dumpRoot, env)
+		require.NoError(t, os.MkdirAll(dir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(dir, env+"-ops.hcl"), []byte(body), 0o600))
+	}
+	basePath := "/clickhouse/tables/ops/{shard}/posthog.tophog"
+	writeDump("dev", basePath)
+	writeDump("prod-eu", basePath)
+	writeDump("prod-us", "/clickhouse/tables/ops/{shard}/posthog.tophog_new")
+
+	snapshots, envs, drift, err := loadDecomposeSnapshots(
+		dumpRoot, []string{"dev", "prod-eu", "prod-us"}, "*-ops.hcl", "mask-uuid", nil,
+	)
+	require.NoError(t, err)
+	require.Empty(t, drift)
+
+	key := "ops/posthog/table/sharded_tophog"
+	for _, tc := range []struct {
+		name    string
+		objects map[string]decomposeObjectAssignment
+	}{
+		{name: "auto", objects: map[string]decomposeObjectAssignment{}},
+		{name: "forced shared", objects: map[string]decomposeObjectAssignment{key: {Mode: "shared"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			generated, err := buildDecomposition(snapshots, envs, decomposeAssignment{
+				Version: 1, BaselineEnv: "dev", Objects: tc.objects,
+			})
+			require.NoError(t, err)
+
+			shared := string(generated.Files[sharedLayerPath("ops")])
+			assert.Contains(t, shared, `table "sharded_tophog"`)
+			assert.Contains(t, shared, `zoo_path     = "`+basePath+`"`)
+
+			prodUS := string(generated.Files[envLayerPath("prod-us", "ops")])
+			assert.Contains(t, prodUS, `patch_table "sharded_tophog"`)
+			assert.Contains(t, prodUS, `engine "replicated_merge_tree"`)
+			assert.Contains(t, prodUS, `zoo_path     = "/clickhouse/tables/ops/{shard}/posthog.tophog_new"`)
+			assert.NotContains(t, prodUS, `column "id"`, "an engine-only patch must not duplicate the table body")
+
+			for _, env := range []string{"dev", "prod-eu"} {
+				assert.NotContains(t, generated.Files, envLayerPath(env, "ops"),
+					"%s matches the baseline and must not get an env layer", env)
+			}
+		})
+	}
+}
+
 func stringsIndex(t *testing.T, value, needle string) int {
 	t.Helper()
 	index := -1
