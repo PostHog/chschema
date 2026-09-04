@@ -1522,9 +1522,10 @@ environment patches, but the desired schema is always reduced to one flat
 table by the same rule:
 
 Before resolving inheritance, hclexp merges the selected layers in their
-declared order. A later `override = true` replaces the earlier declaration;
-patch blocks are collected rather than applied during that merge. The resolver
-then evaluates the table graph below.
+declared order. A later `override = true` replaces the earlier declaration for
+any managed object kind (`table`, `materialized_view`, `view`, `dictionary`,
+`raw`, or `named_collection`); patch blocks are collected rather than applied
+during that merge. The resolver then evaluates the table graph below.
 
 ```text
 resolved(table) =
@@ -1665,8 +1666,9 @@ The resolver enforces several safety invariants around this model:
   one **replaces it wholesale** (a one-key `settings` map loses every
   inherited key). `primary_key`, `comment`, `cluster`, constraints, and
   projections never flow through `extend`.
-- `override = true` — required for a later layer to replace a table or
-  materialized view that an earlier layer already defined
+- `override = true` — required for a later layer to replace a table,
+  materialized view, view, dictionary, raw object, or named collection that an
+  earlier layer already defined
 
 Rule of thumb: `extend` is for *different tables sharing a shape*
 (`events_local` / `events_distributed`); `patch_table` (below) is for *the

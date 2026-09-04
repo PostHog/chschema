@@ -85,6 +85,40 @@ named_collection "kafka_creds" {
 	assert.Equal(t, want, decls)
 }
 
+func TestScanDeclarationsRecognizesOverrideOnEveryManagedObjectKind(t *testing.T) {
+	dir := t.TempDir()
+	path := writeHCL(t, dir, "overrides.hcl", `
+database "posthog" {
+  table "events" {
+    override = true
+  }
+  materialized_view "events_mv" {
+    override = true
+  }
+  view "events_view" {
+    override = true
+  }
+  dictionary "geo" {
+    override = true
+  }
+  raw "view" "legacy" {
+    override = true
+    sql      = "CREATE VIEW posthog.legacy AS SELECT 1"
+  }
+}
+named_collection "credentials" {
+  override = true
+}
+`)
+
+	decls, err := ScanDeclarations([]string{path})
+	require.NoError(t, err)
+	require.Len(t, decls, 6)
+	for _, declaration := range decls {
+		assert.True(t, declaration.Override, "%s %s", declaration.ObjectType, declaration.Name)
+	}
+}
+
 func TestScanDeclarationsParseError(t *testing.T) {
 	dir := t.TempDir()
 	path := writeHCL(t, dir, "broken.hcl", `database "posthog" {`)

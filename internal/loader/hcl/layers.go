@@ -10,9 +10,9 @@ import (
 // LoadLayers parses the .hcl files each layer path contributes, in the given
 // order, and merges them into a combined raw spec set. A layer path is either
 // a directory (every *.hcl inside it, in lexical filename order) or a single
-// .hcl file. Across layers (and across files), a duplicate table or
-// materialized-view name is an error unless the later declaration sets
-// override = true. Patch blocks always accumulate.
+// .hcl file. Across layers (and across files), duplicate managed-object names
+// are errors unless the later declaration sets override = true. Raw objects
+// are keyed by (kind, name). Patch blocks always accumulate.
 //
 // LoadLayers does NOT call Resolve; callers run that explicitly so they can
 // inspect the merged-but-unresolved input first.
@@ -151,43 +151,56 @@ func mergeIntoDatabase(target *DatabaseSpec, incoming DatabaseSpec) error {
 		}
 	}
 
-	viewByName := make(map[string]bool, len(target.Views))
-	for _, v := range target.Views {
-		viewByName[v.Name] = true
+	viewByName := make(map[string]int, len(target.Views))
+	for i := range target.Views {
+		viewByName[target.Views[i].Name] = i
 	}
 	for _, v := range incoming.Views {
-		if viewByName[v.Name] {
-			return fmt.Errorf("view %q redeclared across layers", v.Name)
+		if idx, ok := viewByName[v.Name]; ok {
+			if !v.Override {
+				return fmt.Errorf("view %q redeclared without override = true", v.Name)
+			}
+			target.Views[idx] = v
+		} else {
+			target.Views = append(target.Views, v)
+			viewByName[v.Name] = len(target.Views) - 1
 		}
-		viewByName[v.Name] = true
-		target.Views = append(target.Views, v)
 	}
 
-	dictByName := make(map[string]bool, len(target.Dictionaries))
-	for _, d := range target.Dictionaries {
-		dictByName[d.Name] = true
+	dictByName := make(map[string]int, len(target.Dictionaries))
+	for i := range target.Dictionaries {
+		dictByName[target.Dictionaries[i].Name] = i
 	}
 	for _, d := range incoming.Dictionaries {
-		if dictByName[d.Name] {
-			return fmt.Errorf("dictionary %q redeclared across layers", d.Name)
+		if idx, ok := dictByName[d.Name]; ok {
+			if !d.Override {
+				return fmt.Errorf("dictionary %q redeclared without override = true", d.Name)
+			}
+			target.Dictionaries[idx] = d
+		} else {
+			target.Dictionaries = append(target.Dictionaries, d)
+			dictByName[d.Name] = len(target.Dictionaries) - 1
 		}
-		dictByName[d.Name] = true
-		target.Dictionaries = append(target.Dictionaries, d)
 	}
 
 	// A raw object's identity is (kind, name), consistent with indexRaws in
 	// diff.go — two kinds may legitimately share a name.
 	rawKey := func(r RawSpec) string { return r.Kind + "\x00" + r.Name }
-	rawSeen := make(map[string]bool, len(target.Raws))
-	for _, r := range target.Raws {
-		rawSeen[rawKey(r)] = true
+	rawByKey := make(map[string]int, len(target.Raws))
+	for i := range target.Raws {
+		rawByKey[rawKey(target.Raws[i])] = i
 	}
 	for _, r := range incoming.Raws {
-		if rawSeen[rawKey(r)] {
-			return fmt.Errorf("raw %q (%s) redeclared across layers", r.Name, r.Kind)
+		key := rawKey(r)
+		if idx, ok := rawByKey[key]; ok {
+			if !r.Override {
+				return fmt.Errorf("raw %q (%s) redeclared without override = true", r.Name, r.Kind)
+			}
+			target.Raws[idx] = r
+		} else {
+			target.Raws = append(target.Raws, r)
+			rawByKey[key] = len(target.Raws) - 1
 		}
-		rawSeen[rawKey(r)] = true
-		target.Raws = append(target.Raws, r)
 	}
 	return nil
 }

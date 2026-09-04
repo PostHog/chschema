@@ -239,9 +239,11 @@ it, put a `patch_table` in each. If the column is present in every
 environment, just add it to the base `table`. Don't try to be clever — the
 local-knowledge wins over global indirection.
 
-## How do I replace a table entirely in one environment?
+## How do I replace an object entirely in one environment?
 
-Declare the table in the environment layer with `override = true`.
+Redeclare it in the environment layer with `override = true`. The same rule
+applies to tables, materialized views, views, dictionaries, raw objects, and
+named collections.
 
 ```hcl
 # envs/dev/events.hcl
@@ -255,7 +257,8 @@ database "posthog" {
 ```
 
 Without `override = true`, the cross-layer collision is an error. With it,
-the dev-layer definition wins.
+the dev-layer definition wins. Raw objects collide by `(kind, name)`; the
+other database objects and named collections collide by name.
 
 ## What's the difference between `extend` and `patch_table`?
 

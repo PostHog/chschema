@@ -51,9 +51,10 @@ type DatabaseSpec struct {
 // Kind drives the DROP form on a recreate, Name is the object name, and SQL
 // is emitted verbatim on apply.
 type RawSpec struct {
-	Kind string `hcl:"kind,label"` // table | materialized_view | view | dictionary
-	Name string `hcl:"name,label"`
-	SQL  string `hcl:"sql"`
+	Kind     string `hcl:"kind,label"` // table | materialized_view | view | dictionary
+	Name     string `hcl:"name,label"`
+	Override bool   `hcl:"override,optional" diff:"-"`
+	SQL      string `hcl:"sql"`
 }
 
 // rawKinds is the set of kinds a RawSpec label may take.
@@ -120,6 +121,7 @@ type PatchMaterializedViewSpec struct {
 // named user. The literal "current_user" is accepted unquoted.
 type ViewSpec struct {
 	Name          string   `hcl:"name,label"`
+	Override      bool     `hcl:"override,optional" diff:"-"`
 	Query         string   `hcl:"query"`
 	ColumnAliases []string `hcl:"column_aliases,optional"`
 	SQLSecurity   *string  `hcl:"sql_security,optional"`
@@ -339,6 +341,7 @@ type EngineSpec struct {
 // the same pattern engines use.
 type DictionarySpec struct {
 	Name       string                `hcl:"name,label"`
+	Override   bool                  `hcl:"override,optional" diff:"-"`
 	PrimaryKey []string              `hcl:"primary_key"`
 	Attributes []DictionaryAttribute `hcl:"attribute,block"`
 	Source     *DictionarySourceSpec `hcl:"source,block"`
