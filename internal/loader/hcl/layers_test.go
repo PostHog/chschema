@@ -116,7 +116,65 @@ func TestLoadLayers_ViewRedeclareAcrossLayers(t *testing.T) {
 		layerPath("view_redeclare", "env_dev"),
 	})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `view "v" redeclared across layers`)
+	assert.Contains(t, err.Error(), `view "v" redeclared without override = true`)
+}
+
+func TestLoadLayers_OverrideViewDictionaryAndRawAcrossLayers(t *testing.T) {
+	root := t.TempDir()
+	base := writePatchLayer(t, root, "base/schema.hcl", `
+database "posthog" {
+  view "environment" {
+    query = "SELECT 'production' AS name"
+  }
+
+  dictionary "labels" {
+    primary_key = ["id"]
+    attribute "id"    { type = "UInt64" }
+    attribute "label" { type = "String" }
+    source "null" {}
+    layout "flat" {}
+  }
+
+  raw "view" "legacy_environment" {
+    sql = "CREATE VIEW posthog.legacy_environment AS SELECT 'production'"
+  }
+}`)
+	override := writePatchLayer(t, root, "dev/schema.hcl", `
+database "posthog" {
+  view "environment" {
+    override = true
+    query    = "SELECT 'development' AS name"
+  }
+
+  dictionary "labels" {
+    override    = true
+    primary_key = ["key"]
+    attribute "key"   { type = "String" }
+    attribute "label" { type = "String" }
+    source "null" {}
+    layout "flat" {}
+  }
+
+  raw "view" "legacy_environment" {
+    override = true
+    sql      = "CREATE VIEW posthog.legacy_environment AS SELECT 'development'"
+  }
+}`)
+
+	schema, err := LoadLayers([]string{base, override})
+	require.NoError(t, err)
+	require.NoError(t, Resolve(schema))
+	require.Len(t, schema.Databases, 1)
+	db := schema.Databases[0]
+	require.Len(t, db.Views, 1)
+	require.Len(t, db.Dictionaries, 1)
+	require.Len(t, db.Raws, 1)
+	assert.Contains(t, db.Views[0].Query, "development")
+	assert.Equal(t, []string{"key"}, db.Dictionaries[0].PrimaryKey)
+	assert.Contains(t, db.Raws[0].SQL, "development")
+	assert.False(t, db.Views[0].Override)
+	assert.False(t, db.Dictionaries[0].Override)
+	assert.False(t, db.Raws[0].Override)
 }
 
 func TestLoadLayers_PatchPropagatesThroughExtend(t *testing.T) {
@@ -377,7 +435,7 @@ func TestLoadLayers_DictionaryLaterLayer(t *testing.T) {
 }
 
 // TestLoadLayers_DictionaryRedeclareAcrossLayers asserts the redeclare guard:
-// the same dictionary name in two layers is an error (mirrors views/MVs).
+// the same dictionary name requires an explicit override.
 func TestLoadLayers_DictionaryRedeclareAcrossLayers(t *testing.T) {
 	const dictLayer = `database "posthog" {
   dictionary "d" {
@@ -395,11 +453,11 @@ func TestLoadLayers_DictionaryRedeclareAcrossLayers(t *testing.T) {
 
 	_, err := LoadLayers([]string{a, b})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `dictionary "d" redeclared across layers`)
+	assert.Contains(t, err.Error(), `dictionary "d" redeclared without override = true`)
 }
 
-// TestLoadLayers_RawRedeclareAcrossLayers asserts the redeclare guard for raw
-// blocks, keyed by (kind, name) like the diff engine.
+// TestLoadLayers_RawRedeclareAcrossLayers asserts the explicit-override guard
+// for raw blocks, keyed by (kind, name) like the diff engine.
 func TestLoadLayers_RawRedeclareAcrossLayers(t *testing.T) {
 	const rawLayer = `database "posthog" {
   raw "dictionary" "r" {
@@ -414,7 +472,7 @@ func TestLoadLayers_RawRedeclareAcrossLayers(t *testing.T) {
 
 	_, err := LoadLayers([]string{a, b})
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), `raw "r" (dictionary) redeclared across layers`)
+	assert.Contains(t, err.Error(), `raw "r" (dictionary) redeclared without override = true`)
 }
 
 func TestResolve_PatchUnknownTarget(t *testing.T) {

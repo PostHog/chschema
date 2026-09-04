@@ -98,8 +98,10 @@ below. `patch_column` is valid only when the table sets `extend`.
 - `abstract = true` — declares this table as inheritable-only; it is not
   emitted as a real ClickHouse table.
 - `override = true` — declares that this block replaces an earlier-layer
-  `table` of the same name. Without it, a cross-layer name collision is an
-  error.
+  object of the same identity. It is supported uniformly by `table`,
+  `materialized_view`, `view`, `dictionary`, `raw`, and `named_collection`;
+  without it, a cross-layer collision is an error. A raw object's identity is
+  its `(kind, name)` label pair.
 
 ## `column`
 
@@ -636,9 +638,10 @@ A later layer may fully replace an MV by redeclaring it with
 When the loader processes a layered set, this pipeline runs:
 
 1. **Parse** every `.hcl` file in every layer (ordered).
-2. **Merge** databases by name. Tables and materialized views collide on name
-   unless the later declaration sets `override = true`. Patch blocks
-   accumulate.
+2. **Merge** databases by name. Every managed object (`table`,
+   `materialized_view`, `view`, `dictionary`, `raw`, and `named_collection`)
+   collides on identity unless the later declaration sets `override = true`.
+   Patch blocks accumulate.
 3. **Apply view/dictionary patches.** Table patches remain attached to their
    named targets while the inheritance graph resolves.
 4. **Resolve each table parent-first**: inherit the resolved parent, apply
@@ -661,8 +664,9 @@ which question you are asking:
 - **`patch_table`**: *"this is the **same table**, and one layer wants to
   adjust it."* The table stays declared exactly **once**; the env layer
   contributes a modification, not a declaration.
-- **`override = true`**: *"in this environment the table is genuinely
-  different."* A full replacement declaration, sanctioned by the flag.
+- **`override = true`**: *"in this environment the object is genuinely
+  different."* A full replacement declaration, sanctioned by the flag. It
+  follows the same rule for every managed object kind.
 
 The declaration count is not cosmetic: `hclexp locate -duplicates` (the
 once-only CI guard) counts definition sites, while treating patch,
@@ -690,6 +694,8 @@ existing table, which stays authoritative except where patched.
 | A table differing beyond the patchable fields (`primary_key`, constraints, …) | `override = true` |
 | Replace a table entirely in one environment       | `override = true` |
 | Replace a materialized view entirely in one environment | `override = true` |
+| Replace a view or dictionary entirely in one environment | `override = true` |
+| Replace a raw object or named collection entirely in one environment | `override = true` |
 
 ## Dependency validation — `hclexp validate`
 
@@ -1334,6 +1340,7 @@ database "posthog" {
 
 | Attribute        | Required | Meaning |
 |------------------|----------|---------|
+| `override`       | no       | Set `true` to replace the same view from an earlier layer. |
 | `query`          | yes      | the `AS SELECT ...` body (verbatim text) |
 | `column_aliases` | no       | `CREATE VIEW v (a, b, ...) AS ...` |
 | `sql_security`   | no       | `SQL SECURITY` clause: `definer`, `invoker`, or `none` (canonical lowercase; case-insensitive on parse) |
@@ -1375,6 +1382,7 @@ SQL
 |--------|---------|
 | `kind` (1st label) | `table`, `materialized_view`, `view`, or `dictionary`. Drives the `DROP` form on a recreate. |
 | `name` (2nd label) | The object name. |
+| `override` | Set `true` to replace an earlier raw block with the same `(kind, name)`. |
 | `sql`  | The original `CREATE` statement, emitted verbatim on apply. |
 
 **Semantics.** Raw objects are opaque:

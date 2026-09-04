@@ -8,6 +8,9 @@ import (
 // writeDictionary emits a `dictionary` block body. Sub-blocks (lifetime,
 // range, attribute, source, layout) are emitted in a consistent order.
 func writeDictionary(body *hclwrite.Body, d DictionarySpec) {
+	if d.Override {
+		body.SetAttributeValue("override", cty.True)
+	}
 	body.SetAttributeValue("primary_key", stringList(d.PrimaryKey))
 	if len(d.Settings) > 0 {
 		body.SetAttributeValue("settings", stringMap(d.Settings))

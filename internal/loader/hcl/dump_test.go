@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -176,6 +177,24 @@ func TestDumpSchema_RendersNodeBlock(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, reparsed.Nodes, 1)
 	assert.Equal(t, want, reparsed.Nodes[0])
+}
+
+func TestWriteLayerPreservesOverrideForEveryManagedObjectKind(t *testing.T) {
+	schema := &Schema{
+		NamedCollections: []NamedCollectionSpec{{Name: "credentials", Override: true}},
+		Databases: []DatabaseSpec{{
+			Name:              "posthog",
+			Tables:            []TableSpec{{Name: "events", Override: true}},
+			MaterializedViews: []MaterializedViewSpec{{Name: "events_mv", Override: true}},
+			Views:             []ViewSpec{{Name: "events_view", Override: true, Query: "SELECT 1"}},
+			Dictionaries:      []DictionarySpec{{Name: "geo", Override: true}},
+			Raws:              []RawSpec{{Kind: "view", Name: "legacy", Override: true, SQL: "CREATE VIEW posthog.legacy AS SELECT 1\n"}},
+		}},
+	}
+
+	var buf bytes.Buffer
+	require.NoError(t, WriteLayer(&buf, schema))
+	assert.Equal(t, 6, strings.Count(buf.String(), "= true"), buf.String())
 }
 
 func TestDumpSchema_RendersViewBlocks(t *testing.T) {

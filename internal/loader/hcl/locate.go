@@ -124,6 +124,7 @@ func objectDeclaration(blk *hclsyntax.Block, database, path string) (Declaration
 		d.ObjectType = KindRaw
 		d.RawKind = blk.Labels[0]
 		d.Name = blk.Labels[1]
+		d.Override = boolAttr(blk.Body, "override")
 		return d, true
 	default:
 		return Declaration{}, false

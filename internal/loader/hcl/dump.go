@@ -299,6 +299,9 @@ func writeDatabase(body *hclwrite.Body, db DatabaseSpec) {
 // as a quoted string otherwise. Heredoc emission is exact: the re-parsed value
 // equals the stored SQL.
 func writeRaw(body *hclwrite.Body, r RawSpec) {
+	if r.Override {
+		body.SetAttributeValue("override", cty.True)
+	}
 	setSQLAttribute(body, "sql", r.SQL)
 }
 
@@ -333,6 +336,9 @@ func setQueryAttribute(body *hclwrite.Body, query string) {
 }
 
 func writeView(body *hclwrite.Body, v ViewSpec) {
+	if v.Override {
+		body.SetAttributeValue("override", cty.True)
+	}
 	setQueryAttribute(body, v.Query)
 	if len(v.ColumnAliases) > 0 {
 		body.SetAttributeValue("column_aliases", stringList(v.ColumnAliases))
@@ -352,6 +358,9 @@ func writeView(body *hclwrite.Body, v ViewSpec) {
 }
 
 func writeMaterializedView(body *hclwrite.Body, mv MaterializedViewSpec) {
+	if mv.Override {
+		body.SetAttributeValue("override", cty.True)
+	}
 	body.SetAttributeValue("to_table", cty.StringVal(mv.ToTable))
 	setQueryAttribute(body, mv.Query)
 	if mv.Cluster != nil {
@@ -366,6 +375,9 @@ func writeMaterializedView(body *hclwrite.Body, mv MaterializedViewSpec) {
 }
 
 func writeTable(body *hclwrite.Body, t TableSpec) {
+	if t.Override {
+		body.SetAttributeValue("override", cty.True)
+	}
 	if t.Comment != nil {
 		body.SetAttributeValue("comment", cty.StringVal(*t.Comment))
 	}
