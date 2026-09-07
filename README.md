@@ -778,6 +778,11 @@ hclexp locate -manifest manifest.hcl -layer-root ./schema 'events*' person
 # Also report which per-node dump files declare it
 hclexp locate -manifest manifest.hcl -layer-root ./schema -dump prod/eu events
 
+# Find selected columns within selected tables across every dump snapshot
+hclexp locate -dump prod/eu \
+  -tables 'flag_evaluations,sharded_flag_evaluations' \
+  -columns 'person_properties,group*_properties' -format json
+
 # Ad-hoc layer dirs or files, before a manifest exists (no placement info)
 hclexp locate -layer roles/shared,roles/ops/prod events
 
@@ -805,6 +810,14 @@ or a `[raw <kind>]` block. An object extended by others lists its children
 (`extended by: ...`), and each dump site names its node (from the dump's
 `node {}` block, else the filename).
 
+Column lookup is a separate selector mode: provide both `-tables` and
+`-columns` as comma-separated exact names or globs, with no positional object
+patterns. It reports authored `column`, `patch_column`, and `modify_column`
+blocks, grouped by database, table, and column; dump sites include the snapshot
+node. It remains syntax-only, so raw SQL, `drop_columns`, and inherited columns
+not written on the selected table are not invented. A valid query with no
+matches succeeds and JSON includes `"columns": []`.
+
 **Flags:**
 
 - `-manifest` — the same role manifest `plan`/`validate`/`load` consume.
@@ -819,20 +832,25 @@ or a `[raw <kind>]` block. An object extended by others lists its children
 - `-dump` — directory of per-node `.hcl` dumps (as written by
   `introspect`/`dump-cluster`); reports which node files also declare
   each matching object
+- `-tables` / `-columns` — enter column-selector mode; both are required and
+  accept comma-separated exact names or globs. Table patterns match bare or
+  `database.table`; column patterns match bare, `table.column`, or
+  `database.table.column`.
 - `-format` — `text` (default) or `json` (a `{"patterns": [...],
   "objects": [...]}` / `{"duplicates": [...]}` document with per-site
-  file/line/layer/markers/placements)
+  file/line/layer/markers/placements, or a column-selector document containing
+  `table_patterns`, `column_patterns`, and `columns`)
 - `-duplicates` — takes no name argument and requires `-manifest` or
-  `-layer` (mutually exclusive with `-dump`); lists every object defined
+  `-layer` (mutually exclusive with `-dump` and column selectors); lists every object defined
   at more than one site and exits non-zero when any is found. Patch sites,
   `override = true` redeclarations, and declarations carrying `extend` are
   refinements rather than definitions and do not count. Abstract declarations
   do count: copying the same abstract schema is still duplication. Reported
   groups retain every site, including refinements.
 
-Exit codes: `0` on success, `1` when any pattern matches nothing (a
-scriptable existence check) or `-duplicates` finds any, `2` on usage
-errors.
+Exit codes: `0` on success (including an empty column query), `1` when any
+positional object pattern matches nothing, `-duplicates` finds any, or an
+input cannot be read/parsed; `2` on usage errors.
 
 ## Browse the schema in a web UI
 

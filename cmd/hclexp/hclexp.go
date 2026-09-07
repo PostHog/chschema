@@ -105,8 +105,8 @@ Commands:
                (-format json for structured output)
   decompose    turn per-environment node dumps into shared and env HCL layers,
                with an exact compose-against-dump round-trip gate
-  locate       find every declaration site of an object across manifest
-               layers and dump directories (-duplicates audits the once-only rule)
+  locate       find object or table-column declaration sites across manifest
+               layers and dumps (-duplicates audits the object once-only rule)
   sql2hcl      apply SQL DDL edits (CREATE/ALTER/DROP/RENAME) to an HCL schema
   load         parse and resolve an HCL config, layer stack, or manifest role
                (default when flags are given)
