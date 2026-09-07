@@ -2,7 +2,9 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
 
@@ -96,20 +98,27 @@ func TestLocateFlagsError(t *testing.T) {
 	one := []string{"events"}
 	several := []string{"events", "person_*"}
 
-	assert.NoError(t, locateFlagsError("m.hcl", "", "", "text", false, one))
-	assert.NoError(t, locateFlagsError("", "", "dumps", "json", false, one))
-	assert.NoError(t, locateFlagsError("", "a,b", "", "text", false, one), "-layer alone is a source")
-	assert.NoError(t, locateFlagsError("m.hcl", "", "", "text", false, several), "several patterns")
-	assert.NoError(t, locateFlagsError("m.hcl", "", "", "text", true, nil))
-	assert.NoError(t, locateFlagsError("", "a", "", "text", true, nil), "-duplicates audits -layer too")
+	assert.NoError(t, locateFlagsError("m.hcl", "", "", "text", false, one, nil, nil))
+	assert.NoError(t, locateFlagsError("", "", "dumps", "json", false, one, nil, nil))
+	assert.NoError(t, locateFlagsError("", "a,b", "", "text", false, one, nil, nil), "-layer alone is a source")
+	assert.NoError(t, locateFlagsError("m.hcl", "", "", "text", false, several, nil, nil), "several patterns")
+	assert.NoError(t, locateFlagsError("m.hcl", "", "", "text", true, nil, nil, nil))
+	assert.NoError(t, locateFlagsError("", "a", "", "text", true, nil, nil, nil), "-duplicates audits -layer too")
+	assert.NoError(t, locateFlagsError("", "", "dumps", "json", false, nil, []string{"events"}, []string{"id"}), "column mode")
 
-	assert.Error(t, locateFlagsError("", "", "", "text", false, one), "needs a source")
-	assert.Error(t, locateFlagsError("m.hcl", "", "", "yaml", false, one), "bad format")
-	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", false, nil), "missing name")
-	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", false, []string{"a", "[bad"}), "invalid glob among several")
-	assert.Error(t, locateFlagsError("", "", "dumps", "text", true, nil), "-duplicates without authored layers")
-	assert.Error(t, locateFlagsError("m.hcl", "", "dumps", "text", true, nil), "-duplicates with -dump")
-	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", true, one), "-duplicates with name")
+	assert.Error(t, locateFlagsError("", "", "", "text", false, one, nil, nil), "needs a source")
+	assert.Error(t, locateFlagsError("m.hcl", "", "", "yaml", false, one, nil, nil), "bad format")
+	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", false, nil, nil, nil), "missing name")
+	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", false, []string{"a", "[bad"}, nil, nil), "invalid glob among several")
+	assert.Error(t, locateFlagsError("", "", "dumps", "text", true, nil, nil, nil), "-duplicates without authored layers")
+	assert.Error(t, locateFlagsError("m.hcl", "", "dumps", "text", true, nil, nil, nil), "-duplicates with -dump")
+	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", true, one, nil, nil), "-duplicates with name")
+	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", false, one, []string{"events"}, []string{"id"}), "columns with positional name")
+	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", false, nil, nil, []string{"id"}), "columns require tables")
+	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", false, nil, []string{"events"}, nil), "tables require columns")
+	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", true, nil, []string{"events"}, []string{"id"}), "duplicates with columns")
+	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", false, nil, []string{"[bad"}, []string{"id"}), "bad table glob")
+	assert.Error(t, locateFlagsError("m.hcl", "", "", "text", false, nil, []string{"events"}, []string{"[bad"}), "bad column glob")
 }
 
 func TestParseManifestAllEnvs(t *testing.T) {
@@ -212,6 +221,54 @@ func TestBuildLocateDocMultiplePatterns(t *testing.T) {
 		"only_live matches via the dump side only")
 	assert.Equal(t, []string{"nosuch*"}, unmatched)
 	assert.Equal(t, []string{"person", "only_*", "nosuch*"}, doc.Patterns)
+}
+
+func TestBuildLocateColumnDocFindsLayerAndDumpSites(t *testing.T) {
+	root := locateTree(t)
+	stacks, err := parseManifestAllEnvs(filepath.Join(root, "manifest.hcl"))
+	require.NoError(t, err)
+
+	doc, err := buildLocateColumnDoc(stacks, root, nil, filepath.Join(root, "dumps"),
+		[]string{"events*"}, []string{"uuid"})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"events*"}, doc.TablePatterns)
+	assert.Equal(t, []string{"uuid"}, doc.ColumnPatterns)
+	require.Len(t, doc.Columns, 2)
+
+	events := doc.Columns[0]
+	assert.Equal(t, "posthog", events.Database)
+	assert.Equal(t, "events", events.Table)
+	assert.Equal(t, "uuid", events.Name)
+	assert.Empty(t, events.Declarations, "inherited columns are not invented by syntax-only locate")
+	assert.Equal(t, []locateColumnDump{{
+		File: filepath.Join(root, "dumps", "node1.hcl"), Line: 7, Node: "node1", Type: "column",
+	}}, events.Dumps)
+
+	base := doc.Columns[1]
+	assert.Equal(t, "events_base", base.Table)
+	require.Len(t, base.Declarations, 1)
+	assert.Equal(t, filepath.Join(root, "shared", "base.hcl"), base.Declarations[0].File)
+	assert.Equal(t, []locatePlacement{
+		{Role: "ingestion", Env: "prod-us"},
+		{Role: "ingestion", Env: "prod-eu"},
+		{Role: "aux", Env: "prod-us"},
+	}, base.Declarations[0].Placements)
+}
+
+func TestBuildLocateColumnDocNoMatchIsEmpty(t *testing.T) {
+	root := locateTree(t)
+	doc, err := buildLocateColumnDoc(nil, root, nil, filepath.Join(root, "dumps"),
+		[]string{"flag_evaluations"}, []string{"person_properties"})
+	require.NoError(t, err)
+	assert.Empty(t, doc.Columns)
+
+	body, err := json.Marshal(doc)
+	require.NoError(t, err)
+	assert.JSONEq(t, `{
+  "table_patterns": ["flag_evaluations"],
+  "column_patterns": ["person_properties"],
+  "columns": []
+}`, string(body))
 }
 
 // A dump file without a node{} block falls back to the filename stem, the
@@ -329,4 +386,118 @@ func TestRenderLocateText(t *testing.T) {
 	renderDuplicatesText(&dupBuf, dupDoc)
 	assert.Contains(t, dupBuf.String(), "duplicate table posthog.person")
 	assert.Contains(t, dupBuf.String(), "base.hcl:7")
+}
+
+func TestRenderLocateColumnText(t *testing.T) {
+	doc := locateColumnDoc{Columns: []locateColumn{{
+		Database: "posthog",
+		Table:    "flag_evaluations",
+		Name:     "person_properties",
+		Declarations: []locateColumnSite{{
+			File: "schema/flags.hcl", Line: 12, Type: "modify_column",
+			Placements: []locatePlacement{{Role: "ingestion", Env: "prod-us"}},
+		}},
+		Dumps: []locateColumnDump{{File: "prod-us/node1.hcl", Line: 20, Node: "node1", Type: "column"}},
+	}}}
+
+	var buf bytes.Buffer
+	renderLocateColumnText(&buf, doc)
+	out := buf.String()
+	assert.Contains(t, out, "column posthog.flag_evaluations.person_properties")
+	assert.Contains(t, out, "schema/flags.hcl:12  [modify_column]")
+	assert.Contains(t, out, "(ingestion, prod-us)")
+	assert.Contains(t, out, "dump: prod-us/node1.hcl:20  (node node1)")
+}
+
+func TestLocateColumnsCLIProcess(t *testing.T) {
+	if os.Getenv("HCLEXP_LOCATE_COLUMNS_HELPER") != "1" {
+		return
+	}
+	for i, arg := range os.Args {
+		if arg == "--" {
+			runLocate(os.Args[i+1:])
+			os.Exit(0)
+			return
+		}
+	}
+	t.Fatal("missing locate CLI arguments")
+}
+
+func TestLocateColumnsCLIEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	dumps := filepath.Join(root, "prod-us")
+	require.NoError(t, os.MkdirAll(dumps, 0o755))
+	write := func(name, body string) {
+		t.Helper()
+		require.NoError(t, os.WriteFile(filepath.Join(dumps, name), []byte(body), 0o600))
+	}
+	write("node-a.hcl", `
+node "node-a" {}
+database "posthog" {
+  table "flag_evaluations" {
+    column "person_properties" { type = "String" }
+    column "group0_properties" { type = "String" }
+  }
+  table "sharded_flag_evaluations" {
+    column "group4_properties" { type = "String" }
+  }
+  table "not_selected" {
+    column "person_properties" { type = "String" }
+  }
+}
+`)
+	write("node-b.hcl", `
+node "node-b" {}
+database "posthog" {
+  table "flag_evaluations" {
+    column "person_properties" { type = "String" }
+  }
+  table "writable_flag_evaluations" {
+    column "group2_properties" { type = "String" }
+  }
+  table "kafka_flag_evaluations" {
+    column "group3_properties" { type = "String" }
+    column "event" { type = "String" }
+  }
+}
+`)
+
+	tables := "flag_evaluations,sharded_flag_evaluations,writable_flag_evaluations,kafka_flag_evaluations"
+	columns := "person_properties,group0_properties,group1_properties,group2_properties,group3_properties,group4_properties"
+	output, err := runLocateColumnsCLI(t, "-dump", dumps, "-tables", tables, "-columns", columns, "-format", "json")
+	require.NoError(t, err, string(output))
+	var doc locateColumnDoc
+	require.NoError(t, json.Unmarshal(output, &doc), string(output))
+	require.Len(t, doc.Columns, 5)
+	assert.Equal(t, "flag_evaluations", doc.Columns[0].Table)
+	assert.Equal(t, "group0_properties", doc.Columns[0].Name)
+	assert.Equal(t, "person_properties", doc.Columns[1].Name)
+	assert.Equal(t, []string{"node-a", "node-b"}, []string{doc.Columns[1].Dumps[0].Node, doc.Columns[1].Dumps[1].Node})
+	assert.Equal(t, "kafka_flag_evaluations", doc.Columns[2].Table)
+	assert.Equal(t, "sharded_flag_evaluations", doc.Columns[3].Table)
+	assert.Equal(t, "writable_flag_evaluations", doc.Columns[4].Table)
+
+	empty, err := runLocateColumnsCLI(t, "-dump", dumps, "-tables", tables, "-columns", "removed_column", "-format", "json")
+	require.NoError(t, err, string(empty))
+	var emptyDoc locateColumnDoc
+	require.NoError(t, json.Unmarshal(empty, &emptyDoc), string(empty))
+	assert.Empty(t, emptyDoc.Columns)
+	assert.Contains(t, string(empty), `"columns": []`)
+
+	broken := filepath.Join(root, "broken")
+	require.NoError(t, os.MkdirAll(broken, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(broken, "bad.hcl"), []byte(`database "posthog" {`), 0o600))
+	failed, err := runLocateColumnsCLI(t, "-dump", broken, "-tables", tables, "-columns", columns, "-format", "json")
+	require.Error(t, err, string(failed))
+	exitErr, ok := err.(*exec.ExitError)
+	require.True(t, ok)
+	assert.Equal(t, 1, exitErr.ExitCode(), string(failed))
+}
+
+func runLocateColumnsCLI(t *testing.T, args ...string) ([]byte, error) {
+	t.Helper()
+	commandArgs := append([]string{"-test.run=^TestLocateColumnsCLIProcess$", "--"}, args...)
+	cmd := exec.Command(os.Args[0], commandArgs...)
+	cmd.Env = append(os.Environ(), "HCLEXP_LOCATE_COLUMNS_HELPER=1")
+	return cmd.CombinedOutput()
 }

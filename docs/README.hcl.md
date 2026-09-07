@@ -1066,6 +1066,12 @@ hclexp locate -manifest manifest.hcl -layer-root ./schema 'posthog.person_*' eve
 # Also search per-node dumps (introspect / dump-cluster output)
 hclexp locate -manifest manifest.hcl -layer-root ./schema -dump ./dumps events
 
+# Search several table/column names in every per-node snapshot at once
+hclexp locate -dump ./prod-us \
+  -tables 'flag_evaluations,sharded_flag_evaluations,writable_flag_evaluations,kafka_flag_evaluations' \
+  -columns 'person_properties,group0_properties,group1_properties,group2_properties,group3_properties,group4_properties' \
+  -format json
+
 # Ad-hoc layer dirs or .hcl files, no manifest required (no placements)
 hclexp locate -layer ./schema/shared,./schema/ingestion events
 
@@ -1089,6 +1095,22 @@ object are listed too, each attributed to its node (the dump's `node {}`
 block, else the filename stem — the same identity `drift` uses).
 `-format json` emits the same document structurally, with the queried
 `patterns` echoed back.
+
+Column lookup uses both `-tables` and `-columns`; each flag is a comma-separated
+list of exact names or globs. Table selectors accept bare names and
+`database.table`; column selectors accept bare names, `table.column`, and
+`database.table.column`. Results are grouped by database/table/column and list
+every authored layer site plus every matching dump file and node. Ordinary
+`column`, child-local `patch_column`, and cross-layer `modify_column` blocks are
+reported. The scan deliberately does not resolve inheritance or interpret raw
+SQL/drop lists, preserving `locate`'s source-site semantics.
+
+Selector mode cannot be combined with positional object patterns or
+`-duplicates`, and both selector flags are required. A valid query with no
+matches is not an error: text output is empty, JSON returns
+`{"table_patterns":[...],"column_patterns":[...],"columns":[]}`, and the exit
+status is `0`. Missing/unparseable inputs still exit `1`; invalid flag
+combinations exit `2`.
 
 Objects are grouped by `(database, name)` — the namespace ClickHouse
 object types share — so a stray `view "events"` next to a `table
