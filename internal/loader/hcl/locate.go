@@ -29,19 +29,6 @@ type Declaration struct {
 	RawKind  string // raw blocks only: the kind label
 }
 
-// ColumnDeclaration is one authored column site within a table or patch_table
-// block. Type is column, patch_column, or modify_column. Drop lists are not
-// declarations and raw SQL remains opaque, matching locate's syntax-only
-// object discovery.
-type ColumnDeclaration struct {
-	Database string
-	Table    string
-	Name     string
-	File     string
-	Line     int
-	Type     string
-}
-
 // ScanDeclarations records every object declaration site in the given files,
 // in file order. Files must be native HCL syntax, same as the loader; a
 // parse error aborts the scan.
@@ -102,70 +89,6 @@ func ScanFileDeclarations(path string) ([]Declaration, string, error) {
 		}
 	}
 	return out, node, nil
-}
-
-// ScanFileColumnDeclarations returns every authored table-column site in one
-// native HCL file and the first node{} label for dump attribution. It does not
-// resolve extend chains or patches: callers see the source sites as written.
-func ScanFileColumnDeclarations(path string) ([]ColumnDeclaration, string, error) {
-	parser := hclparse.NewParser()
-	f, diags := parser.ParseHCLFile(path)
-	if diags.HasErrors() {
-		return nil, "", formatDiagnostics(parser, diags)
-	}
-	body, ok := f.Body.(*hclsyntax.Body)
-	if !ok {
-		return nil, "", fmt.Errorf("%s: not native HCL syntax", path)
-	}
-
-	var out []ColumnDeclaration
-	node := ""
-	for _, blk := range body.Blocks {
-		switch blk.Type {
-		case "database":
-			if len(blk.Labels) != 1 {
-				continue
-			}
-			for _, table := range blk.Body.Blocks {
-				out = append(out, columnDeclarations(table, blk.Labels[0], path)...)
-			}
-		case "node":
-			if node == "" && len(blk.Labels) == 1 {
-				node = blk.Labels[0]
-			}
-		}
-	}
-	return out, node, nil
-}
-
-func columnDeclarations(table *hclsyntax.Block, database, path string) []ColumnDeclaration {
-	if len(table.Labels) != 1 || (table.Type != "table" && table.Type != "patch_table") {
-		return nil
-	}
-	var out []ColumnDeclaration
-	for _, child := range table.Body.Blocks {
-		if len(child.Labels) != 1 {
-			continue
-		}
-		valid := child.Type == "column"
-		if table.Type == "table" {
-			valid = valid || child.Type == "patch_column"
-		} else {
-			valid = valid || child.Type == "modify_column"
-		}
-		if !valid {
-			continue
-		}
-		out = append(out, ColumnDeclaration{
-			Database: database,
-			Table:    table.Labels[0],
-			Name:     child.Labels[0],
-			File:     path,
-			Line:     child.DefRange().Start.Line,
-			Type:     child.Type,
-		})
-	}
-	return out
 }
 
 // objectDeclaration converts one block nested in a database{} into a

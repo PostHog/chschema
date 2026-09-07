@@ -1049,7 +1049,7 @@ A proposed table name that already exists live as an unmanaged object is a
 collision, not an implicit adoption: the exact CREATE should fail until the
 ownership conflict is resolved explicitly.
 
-## Locating declarations — `hclexp locate`
+## Locating declarations and resolved columns — `hclexp locate`
 
 `locate` answers two questions the layer tree makes hard to grep for:
 *where is object X declared?* and *is X declared more than once?* It is
@@ -1066,7 +1066,7 @@ hclexp locate -manifest manifest.hcl -layer-root ./schema 'posthog.person_*' eve
 # Also search per-node dumps (introspect / dump-cluster output)
 hclexp locate -manifest manifest.hcl -layer-root ./schema -dump ./dumps events
 
-# Search several table/column names in every per-node snapshot at once
+# Resolve every per-node snapshot, then search its final table columns
 hclexp locate -dump ./prod-us \
   -tables 'flag_evaluations,sharded_flag_evaluations,writable_flag_evaluations,kafka_flag_evaluations' \
   -columns 'person_properties,group0_properties,group1_properties,group2_properties,group3_properties,group4_properties' \
@@ -1099,11 +1099,22 @@ block, else the filename stem — the same identity `drift` uses).
 Column lookup uses both `-tables` and `-columns`; each flag is a comma-separated
 list of exact names or globs. Table selectors accept bare names and
 `database.table`; column selectors accept bare names, `table.column`, and
-`database.table.column`. Results are grouped by database/table/column and list
-every authored layer site plus every matching dump file and node. Ordinary
-`column`, child-local `patch_column`, and cross-layer `modify_column` blocks are
-reported. The scan deliberately does not resolve inheritance or interpret raw
-SQL/drop lists, preserving `locate`'s source-site semantics.
+`database.table.column`.
+
+Selector mode is model-first. It loads and resolves each manifest `(role, env)`
+stack, loads the entire comma-separated `-layer` list in declared order as one
+model, and loads every `.hcl` file under `-dump` as an independent node model.
+These independent models are loaded concurrently through a bounded pool of up
+to 32 workers: a 30-node dump can start all 30 loads in parallel without making
+larger clusters create an unbounded number of goroutines. Results retain stable
+source order regardless of completion order.
+
+Only after loading does locate search each resolved model's final tables and
+columns. Inherited columns and the effects of `patch_table`, `patch_column`,
+`modify_column`, `override`, and drop operations are therefore included in the
+result instead of being reconstructed from syntax. Raw objects are not tables
+in the resolved model. Results are grouped by database/table/column; each entry
+lists the matching manifest model, ordered layer model, or dump file and node.
 
 Selector mode cannot be combined with positional object patterns or
 `-duplicates`, and both selector flags are required. A valid query with no

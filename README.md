@@ -32,8 +32,8 @@ Additional commands:
   **[Cross-role planning](#cross-role-planning)** and the runnable
   **[`examples/manifest/`](examples/manifest/)**.
 - **drift** — detect cross-node schema drift across per-node HCL dumps.
-- **locate** — find every declaration site of an object across manifest
-  layers and per-node dumps; `-duplicates` audits the once-only rule.
+- **locate** — find object declaration sites or search resolved models for
+table columns; `-duplicates` audits the object once-only rule.
 - **dump-cluster** — enumerate a cluster's nodes and dump one `<host>.hcl`
   per node. **dump-sql** — dump a database's CREATE statements as replayable
   DDL.
@@ -756,7 +756,7 @@ in the reference for the manifest format, and
 **[`examples/manifest/`](examples/manifest/)** for a runnable
 two-role × three-environment example.
 
-## Locate declarations
+## Locate declarations and resolved columns
 
 `hclexp locate` answers "where does a name live?" across a manifest's
 whole layer tree: every declaration site of each matching object
@@ -764,7 +764,7 @@ whole layer tree: every declaration site of each matching object
 raw blocks), with its inheritance markers and the `(role, env)` stacks
 whose layer lists include each declaring layer. It is query-only:
 nothing is resolved or diffed. See
-**[Locating declarations](docs/README.hcl.md#locating-declarations--hclexp-locate)**
+**[Locating declarations and resolved columns](docs/README.hcl.md#locating-declarations-and-resolved-columns--hclexp-locate)**
 for the full reference.
 
 ```sh
@@ -778,7 +778,7 @@ hclexp locate -manifest manifest.hcl -layer-root ./schema 'events*' person
 # Also report which per-node dump files declare it
 hclexp locate -manifest manifest.hcl -layer-root ./schema -dump prod/eu events
 
-# Find selected columns within selected tables across every dump snapshot
+# Resolve every dump snapshot, then find selected table columns in each model
 hclexp locate -dump prod/eu \
   -tables 'flag_evaluations,sharded_flag_evaluations' \
   -columns 'person_properties,group*_properties' -format json
@@ -812,26 +812,31 @@ or a `[raw <kind>]` block. An object extended by others lists its children
 
 Column lookup is a separate selector mode: provide both `-tables` and
 `-columns` as comma-separated exact names or globs, with no positional object
-patterns. It reports authored `column`, `patch_column`, and `modify_column`
-blocks, grouped by database, table, and column; dump sites include the snapshot
-node. It remains syntax-only, so raw SQL, `drop_columns`, and inherited columns
-not written on the selected table are not invented. A valid query with no
-matches succeeds and JSON includes `"columns": []`.
+patterns. Before searching, locate loads every supplied source into resolved
+models: each manifest `(role, env)` layer stack, the complete ordered `-layer`
+stack, and each per-node dump file. Independent models load concurrently in a
+bounded pool (up to 32 at once), so 30 node dumps are loaded in parallel while
+result ordering remains deterministic. Locate then searches the final table
+columns in every model, so inheritance, patches, modifications, overrides, and
+drops are reflected exactly as resolution produced them. Results are grouped by
+database, table, and column and list every matching model, including dump node
+identity. A valid query with no matches succeeds and JSON includes
+`"columns": []`.
 
 **Flags:**
 
 - `-manifest` — the same role manifest `plan`/`validate`/`load` consume.
-  Unlike those commands there is no `-env`: locate scans the union of
-  every layer named by any `(role, env)` stack and derives placement for
-  all of them.
+  Unlike those commands there is no `-env`: object lookup scans the union of
+  every referenced layer, while column lookup composes and resolves every
+  `(role, env)` model.
 - `-layer-root` — root directory the manifest's layer paths resolve
   under (default `.`)
-- `-layer` — comma-separated ad-hoc layer dirs or `.hcl` files to search
-  too (or instead of a manifest); resolved as given, no placement info,
-  deduped against the manifest's layers
+- `-layer` — comma-separated ad-hoc layer dirs or `.hcl` files. Object lookup
+  searches them as source layers; column lookup loads the whole list, in the
+  declared order, as one resolved model.
 - `-dump` — directory of per-node `.hcl` dumps (as written by
-  `introspect`/`dump-cluster`); reports which node files also declare
-  each matching object
+  `introspect`/`dump-cluster`); object lookup reports declaration sites, while
+  column lookup loads and resolves every node model concurrently
 - `-tables` / `-columns` — enter column-selector mode; both are required and
   accept comma-separated exact names or globs. Table patterns match bare or
   `database.table`; column patterns match bare, `table.column`, or
@@ -839,7 +844,8 @@ matches succeeds and JSON includes `"columns": []`.
 - `-format` — `text` (default) or `json` (a `{"patterns": [...],
   "objects": [...]}` / `{"duplicates": [...]}` document with per-site
   file/line/layer/markers/placements, or a column-selector document containing
-  `table_patterns`, `column_patterns`, and `columns`)
+  `table_patterns`, `column_patterns`, and `columns`; every column has its
+  matching `models`)
 - `-duplicates` — takes no name argument and requires `-manifest` or
   `-layer` (mutually exclusive with `-dump` and column selectors); lists every object defined
   at more than one site and exits non-zero when any is found. Patch sites,
