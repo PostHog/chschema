@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
 )
@@ -49,27 +50,20 @@ type locateDump struct {
 	Type string `json:"type"`
 }
 
-type locateColumnSite struct {
-	File       string            `json:"file"`
-	Line       int               `json:"line"`
-	Layer      string            `json:"layer,omitempty"`
-	Type       string            `json:"type"`
-	Placements []locatePlacement `json:"placements,omitempty"`
-}
-
-type locateColumnDump struct {
-	File string `json:"file"`
-	Line int    `json:"line"`
-	Node string `json:"node"`
-	Type string `json:"type"`
+type locateModelRef struct {
+	Source string   `json:"source"`
+	File   string   `json:"file,omitempty"`
+	Node   string   `json:"node,omitempty"`
+	Role   string   `json:"role,omitempty"`
+	Env    string   `json:"env,omitempty"`
+	Layers []string `json:"layers,omitempty"`
 }
 
 type locateColumn struct {
-	Database     string             `json:"database"`
-	Table        string             `json:"table"`
-	Name         string             `json:"column"`
-	Declarations []locateColumnSite `json:"declarations,omitempty"`
-	Dumps        []locateColumnDump `json:"dumps,omitempty"`
+	Database string           `json:"database"`
+	Table    string           `json:"table"`
+	Name     string           `json:"column"`
+	Models   []locateModelRef `json:"models"`
 }
 
 // locateColumnDoc is deliberately separate from the existing object-query
@@ -345,6 +339,19 @@ func indexLocateLayers(stacks []locateStack, layerRoot string, extraLayers []str
 	return stacksByLayer, layerOrder
 }
 
+type locateModel struct {
+	Ref    locateModelRef
+	Schema *hclload.Schema
+}
+
+type locateModelTask struct {
+	Ref      locateModelRef
+	Resolved []string
+	Dump     bool
+}
+
+const locateLoadParallelism = 32
+
 func buildLocateColumnDoc(stacks []locateStack, layerRoot string, extraLayers []string, dumpDir string, tablePatterns, columnPatterns []string) (locateColumnDoc, error) {
 	doc := locateColumnDoc{
 		TablePatterns:  tablePatterns,
@@ -353,68 +360,35 @@ func buildLocateColumnDoc(stacks []locateStack, layerRoot string, extraLayers []
 	}
 	type key struct{ db, table, column string }
 	index := map[key]int{}
-	upsert := func(d hclload.ColumnDeclaration) *locateColumn {
-		k := key{d.Database, d.Table, d.Name}
+	upsert := func(database, table, column string) *locateColumn {
+		k := key{database, table, column}
 		if i, ok := index[k]; ok {
 			return &doc.Columns[i]
 		}
 		index[k] = len(doc.Columns)
-		doc.Columns = append(doc.Columns, locateColumn{Database: d.Database, Table: d.Table, Name: d.Name})
+		doc.Columns = append(doc.Columns, locateColumn{
+			Database: database, Table: table, Name: column, Models: []locateModelRef{},
+		})
 		return &doc.Columns[len(doc.Columns)-1]
 	}
-	matches := func(d hclload.ColumnDeclaration) bool {
-		return matchesTablePatterns(tablePatterns, d.Database, d.Table) && matchesColumnPatterns(columnPatterns, d.Database, d.Table, d.Name)
-	}
 
-	stacksByLayer, layerOrder := indexLocateLayers(stacks, layerRoot, extraLayers)
-	layerByFile := map[string]string{}
-	for _, layer := range layerOrder {
-		files, err := hclload.LayerFiles(layer)
-		if err != nil {
-			return locateColumnDoc{}, err
-		}
-		for _, file := range files {
-			if _, ok := layerByFile[file]; ok {
-				continue
-			}
-			layerByFile[file] = layer
-			decls, _, err := hclload.ScanFileColumnDeclarations(file)
-			if err != nil {
-				return locateColumnDoc{}, err
-			}
-			for _, d := range decls {
-				if !matches(d) {
+	models, err := loadLocateModels(stacks, layerRoot, extraLayers, dumpDir)
+	if err != nil {
+		return locateColumnDoc{}, err
+	}
+	for _, model := range models {
+		for _, database := range model.Schema.Databases {
+			for _, table := range database.Tables {
+				if !matchesTablePatterns(tablePatterns, database.Name, table.Name) {
 					continue
 				}
-				column := upsert(d)
-				column.Declarations = append(column.Declarations, locateColumnSite{
-					File: d.File, Line: d.Line, Layer: layer, Type: d.Type,
-					Placements: stacksByLayer[layer],
-				})
-			}
-		}
-	}
-
-	if dumpDir != "" {
-		files, err := filepath.Glob(filepath.Join(dumpDir, "*.hcl"))
-		if err != nil {
-			return locateColumnDoc{}, fmt.Errorf("dump dir %q: %w", dumpDir, err)
-		}
-		sort.Strings(files)
-		for _, file := range files {
-			decls, node, err := hclload.ScanFileColumnDeclarations(file)
-			if err != nil {
-				return locateColumnDoc{}, err
-			}
-			if node == "" {
-				node = strings.TrimSuffix(filepath.Base(file), ".hcl")
-			}
-			for _, d := range decls {
-				if !matches(d) {
-					continue
+				for _, column := range table.Columns {
+					if !matchesColumnPatterns(columnPatterns, database.Name, table.Name, column.Name) {
+						continue
+					}
+					match := upsert(database.Name, table.Name, column.Name)
+					match.Models = append(match.Models, model.Ref)
 				}
-				column := upsert(d)
-				column.Dumps = append(column.Dumps, locateColumnDump{File: d.File, Line: d.Line, Node: node, Type: d.Type})
 			}
 		}
 	}
@@ -430,6 +404,125 @@ func buildLocateColumnDoc(stacks []locateStack, layerRoot string, extraLayers []
 		return left.Name < right.Name
 	})
 	return doc, nil
+}
+
+func loadLocateModels(stacks []locateStack, layerRoot string, extraLayers []string, dumpDir string) ([]locateModel, error) {
+	var tasks []locateModelTask
+	for _, stack := range stacks {
+		resolved := make([]string, len(stack.Layers))
+		for i, layer := range stack.Layers {
+			resolved[i] = filepath.Join(layerRoot, layer)
+		}
+		tasks = append(tasks, locateModelTask{
+			Ref: locateModelRef{
+				Source: "manifest", Role: stack.Role, Env: stack.Env,
+				Layers: append([]string(nil), stack.Layers...),
+			},
+			Resolved: resolved,
+		})
+	}
+	if len(extraLayers) > 0 {
+		tasks = append(tasks, locateModelTask{
+			Ref:      locateModelRef{Source: "layer", Layers: append([]string(nil), extraLayers...)},
+			Resolved: append([]string(nil), extraLayers...),
+		})
+	}
+	if dumpDir != "" {
+		entries, err := os.ReadDir(dumpDir)
+		if err != nil {
+			return nil, fmt.Errorf("read dump dir %q: %w", dumpDir, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".hcl" {
+				continue
+			}
+			file := filepath.Join(dumpDir, entry.Name())
+			tasks = append(tasks, locateModelTask{
+				Ref:      locateModelRef{Source: "dump", File: file},
+				Resolved: []string{file},
+				Dump:     true,
+			})
+		}
+	}
+	return loadLocateModelTasks(tasks, locateLoadParallelism, loadLocateModel)
+}
+
+func loadLocateModel(task locateModelTask) (locateModel, error) {
+	var schema *hclload.Schema
+	var err error
+	if task.Dump {
+		schema, err = loadDumpSchema(task.Ref.File)
+	} else {
+		schema, err = hclload.LoadLayers(task.Resolved)
+		if err == nil {
+			err = hclload.Resolve(schema)
+		}
+	}
+	if err != nil {
+		return locateModel{}, fmt.Errorf("load %s: %w", locateModelLabel(task.Ref), err)
+	}
+	ref := task.Ref
+	if task.Dump {
+		ref.Node = strings.TrimSuffix(filepath.Base(ref.File), ".hcl")
+		if len(schema.Nodes) > 0 && schema.Nodes[0].Name != "" {
+			ref.Node = schema.Nodes[0].Name
+		}
+	}
+	return locateModel{Ref: ref, Schema: schema}, nil
+}
+
+func locateModelLabel(ref locateModelRef) string {
+	switch ref.Source {
+	case "manifest":
+		return fmt.Sprintf("manifest model (%s, %s)", ref.Role, ref.Env)
+	case "layer":
+		return fmt.Sprintf("layer model %v", ref.Layers)
+	default:
+		return fmt.Sprintf("dump model %s", ref.File)
+	}
+}
+
+type locateModelLoader func(locateModelTask) (locateModel, error)
+
+// loadLocateModelTasks bounds parallel parsing while preserving task order in
+// the result. Thirty dump files therefore load concurrently, but arbitrarily
+// large directories cannot create an unbounded number of goroutines.
+func loadLocateModelTasks(tasks []locateModelTask, parallelism int, loader locateModelLoader) ([]locateModel, error) {
+	if len(tasks) == 0 {
+		return []locateModel{}, nil
+	}
+	if parallelism < 1 {
+		parallelism = 1
+	}
+	if parallelism > len(tasks) {
+		parallelism = len(tasks)
+	}
+
+	models := make([]locateModel, len(tasks))
+	errs := make([]error, len(tasks))
+	jobs := make(chan int, len(tasks))
+	for i := range tasks {
+		jobs <- i
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	wg.Add(parallelism)
+	for range parallelism {
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				models[i], errs[i] = loader(tasks[i])
+			}
+		}()
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	return models, nil
 }
 
 func matchesTablePatterns(patterns []string, database, table string) bool {
@@ -576,18 +669,15 @@ func renderLocateText(w io.Writer, doc locateDoc) {
 func renderLocateColumnText(w io.Writer, doc locateColumnDoc) {
 	for _, column := range doc.Columns {
 		fmt.Fprintf(w, "column %s.%s.%s\n", column.Database, column.Table, column.Name)
-		for _, d := range column.Declarations {
-			marker := ""
-			if d.Type != "column" {
-				marker = "  [" + d.Type + "]"
+		for _, model := range column.Models {
+			switch model.Source {
+			case "manifest":
+				fmt.Fprintf(w, "  manifest: (%s, %s)  layers: %s\n", model.Role, model.Env, strings.Join(model.Layers, ","))
+			case "layer":
+				fmt.Fprintf(w, "  layers: %s\n", strings.Join(model.Layers, ","))
+			case "dump":
+				fmt.Fprintf(w, "  dump: %s  (node %s)\n", model.File, model.Node)
 			}
-			fmt.Fprintf(w, "  %s:%d%s\n", d.File, d.Line, marker)
-			if len(d.Placements) > 0 {
-				fmt.Fprintf(w, "      %s\n", formatPlacements(d.Placements))
-			}
-		}
-		for _, d := range column.Dumps {
-			fmt.Fprintf(w, "  dump: %s:%d  (node %s)\n", d.File, d.Line, d.Node)
 		}
 	}
 }
@@ -606,15 +696,16 @@ func renderDuplicatesText(w io.Writer, doc locateDoc) {
 // runLocate answers "where is object X declared?" across a manifest's layer
 // tree, ad-hoc -layer entries, and/or a dump directory, or (with
 // -duplicates) audits the layer tree for objects defined at more than one
-// site. Column selector mode returns success with an empty result. Object
-// pattern mode exits 1 when any pattern matches nothing; duplicate mode exits
-// 1 when duplicates exist. Usage errors exit 2.
+// site. Column selector mode loads resolved models before searching and
+// returns success with an empty result. Object pattern mode exits 1 when any
+// pattern matches nothing; duplicate mode exits 1 when duplicates exist.
+// Usage errors exit 2.
 func runLocate(args []string) {
 	fs := flag.NewFlagSet("hclexp locate", flag.ExitOnError)
-	manifestFlag := fs.String("manifest", "", "HCL manifest: role blocks with env blocks; every (role, env) stack is searched")
+	manifestFlag := fs.String("manifest", "", "HCL manifest: object mode scans its layers; column mode resolves every (role, env) stack")
 	layerRootFlag := fs.String("layer-root", ".", "root directory the manifest's layer paths resolve under")
-	layersFlag := fs.String("layer", "", "comma-separated ad-hoc layer dirs or .hcl files to search too (or instead of a manifest); no placement info")
-	dumpFlag := fs.String("dump", "", "directory of per-node .hcl dumps to search as well")
+	layersFlag := fs.String("layer", "", "comma-separated ad-hoc layer dirs or .hcl files; column mode resolves them in order as one model")
+	dumpFlag := fs.String("dump", "", "directory of per-node .hcl dumps; column mode resolves node models concurrently")
 	formatFlag := fs.String("format", "text", "output format: text (default) or json")
 	duplicatesFlag := fs.Bool("duplicates", false, "list every object defined at more than one site (patch/override/extend sites refine; abstracts define); takes no name argument")
 	tablesFlag := fs.String("tables", "", "comma-separated table names or globs for column lookup; requires -columns and no name argument")

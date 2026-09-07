@@ -3,11 +3,14 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 
+	hclload "github.com/posthog/chschema/internal/loader/hcl"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,7 +51,7 @@ database "posthog" {
     column "uuid" { type = "UUID" }
   }
   table "person" {
-    engine "MergeTree" {}
+    engine "merge_tree" {}
     order_by = ["id"]
     column "id" { type = "UInt64" }
   }
@@ -58,7 +61,7 @@ database "posthog" {
 database "posthog" {
   table "events" {
     extend   = "events_base"
-    engine "MergeTree" {}
+    engine "merge_tree" {}
     order_by = ["uuid"]
   }
 }
@@ -66,7 +69,7 @@ database "posthog" {
 	mustWrite("aux/dup.hcl", `
 database "posthog" {
   table "person" {
-    engine "MergeTree" {}
+    engine "merge_tree" {}
     order_by = ["id"]
     column "id" { type = "UInt64" }
   }
@@ -76,7 +79,7 @@ database "posthog" {
 node "node1" {}
 database "posthog" {
   table "events" {
-    engine "MergeTree" {}
+    engine "merge_tree" {}
     order_by = ["uuid"]
     column "uuid" { type = "UUID" }
   }
@@ -85,7 +88,7 @@ database "posthog" {
 	mustWrite("dumps/node2.hcl", `
 database "posthog" {
   table "only_live" {
-    engine "MergeTree" {}
+    engine "merge_tree" {}
     order_by = ["id"]
     column "id" { type = "UInt64" }
   }
@@ -223,36 +226,60 @@ func TestBuildLocateDocMultiplePatterns(t *testing.T) {
 	assert.Equal(t, []string{"person", "only_*", "nosuch*"}, doc.Patterns)
 }
 
-func TestBuildLocateColumnDocFindsLayerAndDumpSites(t *testing.T) {
+func TestBuildLocateColumnDocSearchesResolvedManifestAndDumpModels(t *testing.T) {
 	root := locateTree(t)
 	stacks, err := parseManifestAllEnvs(filepath.Join(root, "manifest.hcl"))
 	require.NoError(t, err)
 
-	doc, err := buildLocateColumnDoc(stacks, root, nil, filepath.Join(root, "dumps"),
-		[]string{"events*"}, []string{"uuid"})
+	// The aux stack deliberately redeclares person for the object-duplicate
+	// tests. The two ingestion stacks are valid resolved models.
+	doc, err := buildLocateColumnDoc(stacks[:2], root, nil, filepath.Join(root, "dumps"),
+		[]string{"events"}, []string{"uuid"})
 	require.NoError(t, err)
-	assert.Equal(t, []string{"events*"}, doc.TablePatterns)
+	assert.Equal(t, []string{"events"}, doc.TablePatterns)
 	assert.Equal(t, []string{"uuid"}, doc.ColumnPatterns)
-	require.Len(t, doc.Columns, 2)
+	require.Len(t, doc.Columns, 1)
 
 	events := doc.Columns[0]
 	assert.Equal(t, "posthog", events.Database)
 	assert.Equal(t, "events", events.Table)
 	assert.Equal(t, "uuid", events.Name)
-	assert.Empty(t, events.Declarations, "inherited columns are not invented by syntax-only locate")
-	assert.Equal(t, []locateColumnDump{{
-		File: filepath.Join(root, "dumps", "node1.hcl"), Line: 7, Node: "node1", Type: "column",
-	}}, events.Dumps)
+	assert.Equal(t, []locateModelRef{
+		{Source: "manifest", Role: "ingestion", Env: "prod-us", Layers: []string{"shared", "ingestion"}},
+		{Source: "manifest", Role: "ingestion", Env: "prod-eu", Layers: []string{"shared", "ingestion"}},
+		{Source: "dump", File: filepath.Join(root, "dumps", "node1.hcl"), Node: "node1"},
+	}, events.Models, "uuid is inherited into both composed manifest models and loaded from the dump model")
+}
 
-	base := doc.Columns[1]
-	assert.Equal(t, "events_base", base.Table)
-	require.Len(t, base.Declarations, 1)
-	assert.Equal(t, filepath.Join(root, "shared", "base.hcl"), base.Declarations[0].File)
-	assert.Equal(t, []locatePlacement{
-		{Role: "ingestion", Env: "prod-us"},
-		{Role: "ingestion", Env: "prod-eu"},
-		{Role: "aux", Env: "prod-us"},
-	}, base.Declarations[0].Placements)
+func TestBuildLocateColumnDocSearchesResolvedLayerStack(t *testing.T) {
+	root := t.TempDir()
+	base := writeLocateLayer(t, root, "base.hcl", `
+database "posthog" {
+  table "events_base" {
+    abstract = true
+    column "uuid" { type = "UUID" }
+  }
+  table "events" {
+    extend = "events_base"
+    engine "log" {}
+  }
+}`)
+	patch := writeLocateLayer(t, root, "patch.hcl", `
+database "posthog" {
+  patch_table "events" {
+    column "person_properties" { type = "String" }
+  }
+}`)
+
+	doc, err := buildLocateColumnDoc(nil, "", []string{base, patch}, "",
+		[]string{"events"}, []string{"uuid", "person_properties"})
+	require.NoError(t, err)
+	require.Len(t, doc.Columns, 2)
+	assert.Equal(t, "person_properties", doc.Columns[0].Name)
+	assert.Equal(t, "uuid", doc.Columns[1].Name)
+	for _, column := range doc.Columns {
+		assert.Equal(t, []locateModelRef{{Source: "layer", Layers: []string{base, patch}}}, column.Models)
+	}
 }
 
 func TestBuildLocateColumnDocNoMatchIsEmpty(t *testing.T) {
@@ -393,20 +420,64 @@ func TestRenderLocateColumnText(t *testing.T) {
 		Database: "posthog",
 		Table:    "flag_evaluations",
 		Name:     "person_properties",
-		Declarations: []locateColumnSite{{
-			File: "schema/flags.hcl", Line: 12, Type: "modify_column",
-			Placements: []locatePlacement{{Role: "ingestion", Env: "prod-us"}},
-		}},
-		Dumps: []locateColumnDump{{File: "prod-us/node1.hcl", Line: 20, Node: "node1", Type: "column"}},
+		Models: []locateModelRef{
+			{Source: "manifest", Role: "ingestion", Env: "prod-us", Layers: []string{"shared", "prod-us"}},
+			{Source: "layer", Layers: []string{"shared", "local"}},
+			{Source: "dump", File: "prod-us/node1.hcl", Node: "node1"},
+		},
 	}}}
 
 	var buf bytes.Buffer
 	renderLocateColumnText(&buf, doc)
 	out := buf.String()
 	assert.Contains(t, out, "column posthog.flag_evaluations.person_properties")
-	assert.Contains(t, out, "schema/flags.hcl:12  [modify_column]")
-	assert.Contains(t, out, "(ingestion, prod-us)")
-	assert.Contains(t, out, "dump: prod-us/node1.hcl:20  (node node1)")
+	assert.Contains(t, out, "manifest: (ingestion, prod-us)  layers: shared,prod-us")
+	assert.Contains(t, out, "layers: shared,local")
+	assert.Contains(t, out, "dump: prod-us/node1.hcl  (node node1)")
+}
+
+func TestLoadLocateModelTasksLoadsThirtyNodesInParallel(t *testing.T) {
+	tasks := make([]locateModelTask, 30)
+	for i := range tasks {
+		tasks[i].Ref = locateModelRef{Source: "dump", File: fmt.Sprintf("node-%02d.hcl", i)}
+	}
+	started := make(chan struct{}, len(tasks))
+	release := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(release)
+		}
+	}()
+	type result struct {
+		models []locateModel
+		err    error
+	}
+	done := make(chan result, 1)
+	go func() {
+		models, err := loadLocateModelTasks(tasks, locateLoadParallelism, func(task locateModelTask) (locateModel, error) {
+			started <- struct{}{}
+			<-release
+			return locateModel{Ref: task.Ref, Schema: &hclload.Schema{}}, nil
+		})
+		done <- result{models: models, err: err}
+	}()
+
+	for range tasks {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			require.FailNow(t, "all 30 loaders did not start concurrently")
+		}
+	}
+	close(release)
+	released = true
+	got := <-done
+	require.NoError(t, got.err)
+	require.Len(t, got.models, 30)
+	for i := range got.models {
+		assert.Equal(t, tasks[i].Ref, got.models[i].Ref, "parallel results preserve deterministic task order")
+	}
 }
 
 func TestLocateColumnsCLIProcess(t *testing.T) {
@@ -437,12 +508,15 @@ database "posthog" {
   table "flag_evaluations" {
     column "person_properties" { type = "String" }
     column "group0_properties" { type = "String" }
+    engine "log" {}
   }
   table "sharded_flag_evaluations" {
     column "group4_properties" { type = "String" }
+    engine "log" {}
   }
   table "not_selected" {
     column "person_properties" { type = "String" }
+    engine "log" {}
   }
 }
 `)
@@ -451,13 +525,16 @@ node "node-b" {}
 database "posthog" {
   table "flag_evaluations" {
     column "person_properties" { type = "String" }
+    engine "log" {}
   }
   table "writable_flag_evaluations" {
     column "group2_properties" { type = "String" }
+    engine "log" {}
   }
   table "kafka_flag_evaluations" {
     column "group3_properties" { type = "String" }
     column "event" { type = "String" }
+    engine "log" {}
   }
 }
 `)
@@ -472,7 +549,7 @@ database "posthog" {
 	assert.Equal(t, "flag_evaluations", doc.Columns[0].Table)
 	assert.Equal(t, "group0_properties", doc.Columns[0].Name)
 	assert.Equal(t, "person_properties", doc.Columns[1].Name)
-	assert.Equal(t, []string{"node-a", "node-b"}, []string{doc.Columns[1].Dumps[0].Node, doc.Columns[1].Dumps[1].Node})
+	assert.Equal(t, []string{"node-a", "node-b"}, []string{doc.Columns[1].Models[0].Node, doc.Columns[1].Models[1].Node})
 	assert.Equal(t, "kafka_flag_evaluations", doc.Columns[2].Table)
 	assert.Equal(t, "sharded_flag_evaluations", doc.Columns[3].Table)
 	assert.Equal(t, "writable_flag_evaluations", doc.Columns[4].Table)
@@ -494,10 +571,47 @@ database "posthog" {
 	assert.Equal(t, 1, exitErr.ExitCode(), string(failed))
 }
 
+func TestLocateColumnsCLIThirtyNodesEndToEnd(t *testing.T) {
+	dumps := t.TempDir()
+	for i := range 30 {
+		node := fmt.Sprintf("node-%02d", i)
+		body := fmt.Sprintf(`
+node %q {}
+database "posthog" {
+  table "events" {
+    column "uuid" { type = "UUID" }
+    engine "log" {}
+  }
+}
+`, node)
+		require.NoError(t, os.WriteFile(filepath.Join(dumps, node+".hcl"), []byte(body), 0o600))
+	}
+
+	output, err := runLocateColumnsCLI(t, "-dump", dumps, "-tables", "events", "-columns", "uuid", "-format", "json")
+	require.NoError(t, err, string(output))
+	var doc locateColumnDoc
+	require.NoError(t, json.Unmarshal(output, &doc), string(output))
+	require.Len(t, doc.Columns, 1)
+	require.Len(t, doc.Columns[0].Models, 30)
+	for i, model := range doc.Columns[0].Models {
+		expectedNode := fmt.Sprintf("node-%02d", i)
+		assert.Equal(t, "dump", model.Source)
+		assert.Equal(t, expectedNode, model.Node)
+		assert.Equal(t, filepath.Join(dumps, expectedNode+".hcl"), model.File)
+	}
+}
+
 func runLocateColumnsCLI(t *testing.T, args ...string) ([]byte, error) {
 	t.Helper()
 	commandArgs := append([]string{"-test.run=^TestLocateColumnsCLIProcess$", "--"}, args...)
 	cmd := exec.Command(os.Args[0], commandArgs...)
 	cmd.Env = append(os.Environ(), "HCLEXP_LOCATE_COLUMNS_HELPER=1")
 	return cmd.CombinedOutput()
+}
+
+func writeLocateLayer(t *testing.T, root, name, body string) string {
+	t.Helper()
+	path := filepath.Join(root, name)
+	require.NoError(t, os.WriteFile(path, []byte(body), 0o600))
+	return path
 }

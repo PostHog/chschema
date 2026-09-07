@@ -158,37 +158,6 @@ database "posthog" {
 	assert.Empty(t, node)
 }
 
-func TestScanFileColumnDeclarations(t *testing.T) {
-	dir := t.TempDir()
-	path := writeHCL(t, dir, "columns.hcl", `
-node "prod-ch-1a" {}
-database "posthog" {
-  table "events" {
-    column "uuid" { type = "UUID" }
-    patch_column "properties" { codec = "ZSTD(1)" }
-  }
-  patch_table "events" {
-    modify_column "uuid" { type = "String" }
-    column "person_properties" { type = "String" }
-    drop_columns = ["obsolete"]
-  }
-  materialized_view "events_mv" {
-    column "ignored" { type = "UInt64" }
-  }
-}
-`)
-
-	decls, node, err := ScanFileColumnDeclarations(path)
-	require.NoError(t, err)
-	assert.Equal(t, "prod-ch-1a", node)
-	assert.Equal(t, []ColumnDeclaration{
-		{Database: "posthog", Table: "events", Name: "uuid", File: path, Line: 5, Type: "column"},
-		{Database: "posthog", Table: "events", Name: "properties", File: path, Line: 6, Type: "patch_column"},
-		{Database: "posthog", Table: "events", Name: "uuid", File: path, Line: 9, Type: "modify_column"},
-		{Database: "posthog", Table: "events", Name: "person_properties", File: path, Line: 10, Type: "column"},
-	}, decls)
-}
-
 func TestMatchesPattern(t *testing.T) {
 	assert.True(t, MatchesPattern("events", "posthog", "events"))
 	assert.True(t, MatchesPattern("events*", "posthog", "events_mv"))
