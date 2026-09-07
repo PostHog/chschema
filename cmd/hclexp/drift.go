@@ -178,6 +178,14 @@ func renderDriftText(w io.Writer, doc hclload.DriftJSON, details bool) {
 // from the file's node{} block when present and otherwise from the filename.
 // An empty glob matches every .hcl file.
 func loadDriftNodes(dir, glob string) ([]driftNode, error) {
+	return loadDriftNodesWithOptions(dir, glob, 1, parallelLoadProgress{})
+}
+
+func loadDriftNodesWithProgress(dir, glob string, progress parallelLoadProgress) ([]driftNode, error) {
+	return loadDriftNodesWithOptions(dir, glob, parallelLoadLimit, progress)
+}
+
+func loadDriftNodesWithOptions(dir, glob string, parallelism int, progress parallelLoadProgress) ([]driftNode, error) {
 	globs := splitList(glob)
 	if len(globs) == 0 {
 		globs = []string{"*"}
@@ -193,7 +201,7 @@ func loadDriftNodes(dir, glob string) ([]driftNode, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read dir %q: %w", dir, err)
 	}
-	var nodes []driftNode
+	var paths []string
 	for _, e := range entries {
 		if e.IsDir() || filepath.Ext(e.Name()) != ".hcl" {
 			continue
@@ -201,15 +209,17 @@ func loadDriftNodes(dir, glob string) ([]driftNode, error) {
 		if !matchesAny(globs, e.Name()) {
 			continue
 		}
-		path := filepath.Join(dir, e.Name())
+		paths = append(paths, filepath.Join(dir, e.Name()))
+	}
+	return loadInParallel(paths, parallelism, progress, func(path string) (driftNode, error) {
 		schema, err := loadDumpSchema(path)
 		if err != nil {
-			return nil, fmt.Errorf("load %s: %w", path, err)
+			return driftNode{}, fmt.Errorf("load %s: %w", path, err)
 		}
 
 		n := driftNode{
 			File:   path,
-			Name:   strings.TrimSuffix(e.Name(), ".hcl"),
+			Name:   strings.TrimSuffix(filepath.Base(path), ".hcl"),
 			Schema: schema,
 		}
 		if len(schema.Nodes) > 0 {
@@ -219,9 +229,8 @@ func loadDriftNodes(dir, glob string) ([]driftNode, error) {
 			n.Macros = schema.Nodes[0].Macros
 		}
 		n.Shard, n.Replica, n.Role = parseNodeIdentity(n.Name)
-		nodes = append(nodes, n)
-	}
-	return nodes, nil
+		return n, nil
+	})
 }
 
 // loadDumpSchema accepts snapshots captured by users that can use a

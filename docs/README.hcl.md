@@ -1350,6 +1350,11 @@ a schema list at `/`, each schema under `/s/<env>/<role>/`. `-env` filters to a
 single environment; `-layer-root` prefixes the manifest's layer paths. Each
 composed schema auto-reloads from its own layers like the single-schema mode.
 
+Manifest compositions and per-node dump models are loaded concurrently through
+a bounded pool of up to 32 workers. Startup progress is written to stderr, and
+the final browser ordering remains deterministic regardless of completion
+order.
+
 ## `view`
 
 A `view` block declares a ClickHouse **plain** (non-materialized) view — a

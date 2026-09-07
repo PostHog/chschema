@@ -886,6 +886,12 @@ are rejected rather than silently combined. `-dump` is mutually exclusive with
 the single-schema and manifest inputs, and `-glob` accepts the same
 comma-separated filename patterns as `drift`.
 
+At startup, manifest compositions and dump node models load concurrently in a
+bounded pool of up to 32 workers. Progress is printed to stderr while loading,
+so a large fleet shows that work is advancing without interfering with other
+command output. The browser retains deterministic manifest/file ordering even
+when models finish loading in a different order.
+
 The dump-node list links to **Review object differences**, a fleet-wide
 inventory of every qualified object found in the loaded dumps. It uses the same
 semantic diff as the CLI, summarizes uniform and differing schemas, groups

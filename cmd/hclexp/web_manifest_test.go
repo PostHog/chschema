@@ -1,11 +1,16 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
+	"context"
 	"crypto/tls"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -115,8 +120,11 @@ func TestWebManifest_BrowseSchemas(t *testing.T) {
 	root := manifestFixture(t)
 	comps, err := manifestCompositions(filepath.Join(root, "manifest.hcl"), "")
 	require.NoError(t, err)
-	ms, err := buildMultiServer(comps, root, 0)
+	var status bytes.Buffer
+	ms, err := buildMultiServerWithProgress(comps, root, 0, &status)
 	require.NoError(t, err)
+	assert.Contains(t, status.String(), "web: loading 3 manifest models in parallel (3 workers)")
+	assert.Contains(t, status.String(), "web: loaded 3 manifest models")
 
 	// Top-level list shows every env/role and links to each base path.
 	code, body := getMulti(t, ms, "/")
@@ -151,6 +159,89 @@ func TestWebManifest_BrowseSchemas(t *testing.T) {
 	// Unknown schema -> 404.
 	code, _ = getMulti(t, ms, "/s/prod-us/nope/")
 	assert.Equal(t, http.StatusNotFound, code)
+}
+
+func TestWebDump_LoadsThirtyNodeModelsWithProgress(t *testing.T) {
+	root := writeWebDumpNodes(t, 30)
+
+	var status bytes.Buffer
+	ms, err := buildDumpMultiServerWithOptionsAndProgress(root, "*", 0, hclload.DiffOptions{}, &status)
+	require.NoError(t, err)
+	require.Len(t, ms.servers, 30)
+	for i := range 30 {
+		assert.Contains(t, ms.servers, nodeBasePath(fmt.Sprintf("node-%02d", i)))
+	}
+	assert.Contains(t, status.String(), "web: loading 30 dump models in parallel (30 workers)")
+	assert.Contains(t, status.String(), "web: loaded 30 dump models")
+}
+
+func TestWebParallelLoadingCLIProcess(t *testing.T) {
+	if os.Getenv("HCLEXP_WEB_PARALLEL_HELPER") != "1" {
+		return
+	}
+	for i, arg := range os.Args {
+		if arg == "--" {
+			runWeb(os.Args[i+1:])
+			return
+		}
+	}
+	t.Fatal("missing web CLI arguments")
+}
+
+func TestWebDumpParallelLoadingStatusEndToEnd(t *testing.T) {
+	root := writeWebDumpNodes(t, 30)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0],
+		"-test.run=^TestWebParallelLoadingCLIProcess$", "--",
+		"-dump", root, "-glob", "*", "-addr", "127.0.0.1:0", "-reload-interval", "0")
+	cmd.Env = append(os.Environ(), "HCLEXP_WEB_PARALLEL_HELPER=1")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	stderr, err := cmd.StderrPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	waited := false
+	defer func() {
+		if !waited {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}()
+
+	var lines []string
+	scanner := bufio.NewScanner(stderr)
+	for scanner.Scan() {
+		line := scanner.Text()
+		lines = append(lines, line)
+		if strings.Contains(line, "serving dump browser") {
+			break
+		}
+	}
+	require.NoError(t, scanner.Err())
+	require.NoError(t, cmd.Process.Kill())
+	_ = cmd.Wait()
+	waited = true
+
+	output := strings.Join(lines, "\n")
+	assert.Contains(t, output, "web: loading 30 dump models in parallel (30 workers)")
+	assert.Contains(t, output, "web: loading dump models: 1/30 complete")
+	assert.Contains(t, output, "web: loaded 30 dump models")
+	assert.Contains(t, output, "serving dump browser")
+	assert.Empty(t, stdout.String(), "web startup status belongs on stderr")
+}
+
+func writeWebDumpNodes(t *testing.T, count int) string {
+	t.Helper()
+	root := t.TempDir()
+	for i := range count {
+		node := fmt.Sprintf("node-%02d", i)
+		writeFileT(t, filepath.Join(root, node+".hcl"), `node "`+node+`" {
+  macros = { cluster = "cluster-a", hostClusterRole = "data" }
+}
+`+tableLayer("events"))
+	}
+	return root
 }
 
 func TestWebManifest_LookupAcrossAndWithinSchemas(t *testing.T) {

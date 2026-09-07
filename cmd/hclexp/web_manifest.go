@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"html/template"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -181,15 +182,24 @@ func newMultiServer(title, heading, empty string) (*multiServer, error) {
 // each, plus the top-level list. layerRoot prefixes the manifest's layer paths;
 // reloadInterval (when > 0) arms per-schema auto-reload.
 func buildMultiServer(comps []composition, layerRoot string, reloadInterval time.Duration) (*multiServer, error) {
+	return buildMultiServerWithProgress(comps, layerRoot, reloadInterval, nil)
+}
+
+func buildMultiServerWithProgress(comps []composition, layerRoot string, reloadInterval time.Duration, status io.Writer) (*multiServer, error) {
 	ms, err := newMultiServer("Schemas", "Schemas", "No schemas in this manifest.")
 	if err != nil {
 		return nil, err
 	}
 
-	groups := map[string]*envGroup{}
-	var envOrder []string
-
-	for _, c := range comps {
+	type loadedComposition struct {
+		composition composition
+		server      *webServer
+	}
+	loaded, err := loadInParallel(comps, parallelLoadLimit, parallelLoadProgress{
+		Writer: status,
+		Prefix: "web",
+		Label:  "manifest models",
+	}, func(c composition) (loadedComposition, error) {
 		stack := make([]string, len(c.Layers))
 		for i, l := range c.Layers {
 			stack[i] = filepath.Join(layerRoot, l)
@@ -197,18 +207,28 @@ func buildMultiServer(comps []composition, layerRoot string, reloadInterval time
 		layers := strings.Join(stack, ",")
 		schema, err := loadSide(layers)
 		if err != nil {
-			return nil, fmt.Errorf("compose %s/%s: %w", c.Env, c.Role, err)
+			return loadedComposition{}, fmt.Errorf("compose %s/%s: %w", c.Env, c.Role, err)
 		}
 		srv, err := newWebServer(schema)
 		if err != nil {
-			return nil, fmt.Errorf("build server %s/%s: %w", c.Env, c.Role, err)
+			return loadedComposition{}, fmt.Errorf("build server %s/%s: %w", c.Env, c.Role, err)
 		}
-		base := schemaBasePath(c.Env, c.Role)
-		srv.basePath = base
-		srv.label = c.Env + " / " + c.Role
 		if reloadInterval > 0 {
 			srv.enableReload("", layers, reloadInterval)
 		}
+		return loadedComposition{composition: c, server: srv}, nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	groups := map[string]*envGroup{}
+	var envOrder []string
+	for _, item := range loaded {
+		c, srv := item.composition, item.server
+		base := schemaBasePath(c.Env, c.Role)
+		srv.basePath = base
+		srv.label = c.Env + " / " + c.Role
 		ms.servers[base] = srv
 
 		if _, ok := groups[c.Env]; !ok {
@@ -239,7 +259,20 @@ func buildDumpMultiServerWithOptions(
 	reloadInterval time.Duration,
 	options hclload.DiffOptions,
 ) (*multiServer, error) {
-	nodes, err := loadDriftNodes(dir, glob)
+	return buildDumpMultiServerWithOptionsAndProgress(dir, glob, reloadInterval, options, nil)
+}
+
+func buildDumpMultiServerWithOptionsAndProgress(
+	dir, glob string,
+	reloadInterval time.Duration,
+	options hclload.DiffOptions,
+	status io.Writer,
+) (*multiServer, error) {
+	nodes, err := loadDriftNodesWithProgress(dir, glob, parallelLoadProgress{
+		Writer: status,
+		Prefix: "web",
+		Label:  "dump models",
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -517,7 +550,7 @@ func runWebManifest(manifestPath, env, layerRoot, addr string, reloadInterval ti
 		slog.Error("failed to read manifest", "file", manifestPath, "err", err)
 		os.Exit(1)
 	}
-	ms, err := buildMultiServer(comps, layerRoot, reloadInterval)
+	ms, err := buildMultiServerWithProgress(comps, layerRoot, reloadInterval, os.Stderr)
 	if err != nil {
 		slog.Error("failed to build schema browser", "err", err)
 		os.Exit(1)
@@ -531,7 +564,7 @@ func runWebManifest(manifestPath, env, layerRoot, addr string, reloadInterval ti
 
 // runWebDump serves one independently browsable schema per selected node dump.
 func runWebDump(dir, glob, addr string, reloadInterval time.Duration, options hclload.DiffOptions) {
-	ms, err := buildDumpMultiServerWithOptions(dir, glob, reloadInterval, options)
+	ms, err := buildDumpMultiServerWithOptionsAndProgress(dir, glob, reloadInterval, options, os.Stderr)
 	if err != nil {
 		slog.Error("failed to build dump browser", "dir", dir, "err", err)
 		os.Exit(1)
