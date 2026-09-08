@@ -37,7 +37,7 @@ func runWeb(args []string) {
 	globFlag := flags.String("glob", "*", "with -dump: comma-separated filename globs selecting node dumps")
 	addrFlag := flags.String("addr", ":8080", "address to listen on (host:port)")
 	reloadFlag := flags.Duration("reload-interval", 2*time.Second, "re-stat the source files at most this often and reload on change; 0 disables")
-	ignoreColumnOrder := flags.Bool("ignore-column-order", false, "with -dump: ignore table and materialized-view column declaration order by default (changeable for the browser session)")
+	ignoreColumnOrder := flags.Bool("ignore-column-order", false, "with -dump: ignore table and materialized-view column declaration order by default (overrides .hclexp.config; changeable for the browser session)")
 	_ = flags.Parse(args)
 	explicit := map[string]bool{}
 	flags.Visit(func(f *flag.Flag) { explicit[f.Name] = true })
@@ -51,6 +51,12 @@ func runWeb(args []string) {
 			fmt.Fprintln(os.Stderr, "web: -dump is mutually exclusive with -config, -layer, -manifest, -env, and -layer-root")
 			os.Exit(2)
 		}
+		configuredColumnOrder, err := configuredIgnoreColumnOrder(flags, "web", *ignoreColumnOrder)
+		if err != nil {
+			slog.Error("failed to load hclexp config", "err", err)
+			os.Exit(1)
+		}
+		*ignoreColumnOrder = configuredColumnOrder
 		runWebDump(*dumpFlag, *globFlag, *addrFlag, *reloadFlag, hclload.DiffOptions{IgnoreColumnOrder: *ignoreColumnOrder})
 		return
 	}

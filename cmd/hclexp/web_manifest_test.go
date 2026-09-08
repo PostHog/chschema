@@ -195,7 +195,8 @@ func TestWebDumpParallelLoadingStatusEndToEnd(t *testing.T) {
 	cmd := exec.CommandContext(ctx, os.Args[0],
 		"-test.run=^TestWebParallelLoadingCLIProcess$", "--",
 		"-dump", root, "-glob", "*", "-addr", "127.0.0.1:0", "-reload-interval", "0")
-	cmd.Env = append(os.Environ(), "HCLEXP_WEB_PARALLEL_HELPER=1")
+	cmd.Dir = root
+	cmd.Env = hclexpConfigTestEnv(filepath.Join(root, "test-home"), "HCLEXP_WEB_PARALLEL_HELPER=1")
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	stderr, err := cmd.StderrPipe()

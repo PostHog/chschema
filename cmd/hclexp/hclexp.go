@@ -117,6 +117,10 @@ Commands:
   help         print this help
 
 Run "hclexp <command> -h" for command-specific flags.
+
+Comparison defaults:
+  diff, drift, plan, and dump-mode web read $HOME/.hclexp.config followed by
+  <working-directory>/.hclexp.config. Explicit command-line flags win.
 `)
 }
 
@@ -908,8 +912,14 @@ func runDiff(args []string) {
 	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects matching its patterns/object_types are dropped from both sides before diffing")
 	allowRaw := fs.Bool("allow-raw", false, "capture unparseable objects on live sides as raw{} blocks instead of failing")
 	scopeFlag := fs.String("scope", "all", "object scope: all (exact), left (ignore right-only objects), or right (ignore left-only objects)")
-	ignoreColumnOrder := fs.Bool("ignore-column-order", false, "ignore table and materialized-view column declaration order")
+	ignoreColumnOrder := fs.Bool("ignore-column-order", false, "ignore table and materialized-view column declaration order (overrides .hclexp.config)")
 	_ = fs.Parse(args)
+	configuredColumnOrder, err := configuredIgnoreColumnOrder(fs, "diff", *ignoreColumnOrder)
+	if err != nil {
+		slog.Error("failed to load hclexp config", "err", err)
+		os.Exit(1)
+	}
+	*ignoreColumnOrder = configuredColumnOrder
 
 	if *leftFlag == "" || *rightFlag == "" {
 		slog.Error("both -left and -right are required")

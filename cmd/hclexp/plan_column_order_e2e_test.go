@@ -47,7 +47,7 @@ func TestPlanIgnoreColumnOrderEndToEnd(t *testing.T) {
 		"-env", "prod",
 		"-dump", dumpRoot,
 	}
-	output, err := runPlanColumnOrderCLI(args...)
+	output, err := runPlanColumnOrderCLI(root, args...)
 	require.NoError(t, err, string(output))
 	var orderSensitive hclload.PlanResult
 	require.NoError(t, json.Unmarshal(output, &orderSensitive), string(output))
@@ -60,7 +60,7 @@ func TestPlanIgnoreColumnOrderEndToEnd(t *testing.T) {
 		}}, object.Changes)
 	}
 
-	ignored, err := runPlanColumnOrderCLI(append(args, "-ignore-column-order")...)
+	ignored, err := runPlanColumnOrderCLI(root, append(args, "-ignore-column-order")...)
 	require.NoError(t, err, string(ignored))
 	var clean hclload.PlanResult
 	require.NoError(t, json.Unmarshal(ignored, &clean), string(ignored))
@@ -69,7 +69,7 @@ func TestPlanIgnoreColumnOrderEndToEnd(t *testing.T) {
 	require.Len(t, clean.Roles, 1)
 	assert.Empty(t, clean.Roles[0].Objects)
 
-	text, err := runPlanColumnOrderCLI(append(args, "-ignore-column-order", "-format", "text")...)
+	text, err := runPlanColumnOrderCLI(root, append(args, "-ignore-column-order", "-format", "text")...)
 	require.NoError(t, err, string(text))
 	assert.Equal(t, "no changes\n", string(text))
 }
@@ -91,9 +91,10 @@ func planColumnOrderHCL(first, second string) string {
 `
 }
 
-func runPlanColumnOrderCLI(args ...string) ([]byte, error) {
+func runPlanColumnOrderCLI(workdir string, args ...string) ([]byte, error) {
 	commandArgs := append([]string{"-test.run=^TestPlanColumnOrderCLIProcess$", "--"}, args...)
 	cmd := exec.Command(os.Args[0], commandArgs...)
-	cmd.Env = append(os.Environ(), "HCLEXP_PLAN_COLUMN_ORDER_HELPER=1")
+	cmd.Dir = workdir
+	cmd.Env = hclexpConfigTestEnv(filepath.Join(workdir, "test-home"), "HCLEXP_PLAN_COLUMN_ORDER_HELPER=1")
 	return cmd.Output()
 }

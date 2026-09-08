@@ -78,6 +78,7 @@ func runDiffColumnOrderCLI(left, right string, extra ...string) ([]byte, error) 
 	args := []string{"-test.run=^TestDiffColumnOrderCLIProcess$", "--", "-left", left, "-right", right}
 	args = append(args, extra...)
 	cmd := exec.Command(os.Args[0], args...)
-	cmd.Env = append(os.Environ(), "HCLEXP_DIFF_COLUMN_ORDER_HELPER=1")
+	cmd.Dir = filepath.Dir(left)
+	cmd.Env = hclexpConfigTestEnv(filepath.Join(filepath.Dir(left), "test-home"), "HCLEXP_DIFF_COLUMN_ORDER_HELPER=1")
 	return cmd.Output()
 }
