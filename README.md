@@ -72,6 +72,43 @@ For TLS-only clusters (typically port `9440`), set `CLICKHOUSE_SECURE=true`
 — or pass `-secure` on the CLI, or `?secure=true` on the diff URL form.
 See **[TLS / secure connections](#tls--secure-connections)** below.
 
+## CLI comparison defaults
+
+`diff`, `drift`, `plan`, and dump-mode `web` read comparison defaults from up
+to two HCL files, in this order:
+
+1. `$HOME/.hclexp.config` — user-wide defaults.
+2. `<working-directory>/.hclexp.config` — project defaults.
+
+Only those exact locations are inspected; parent directories of the working
+directory are not searched. If both paths identify the same file, it is read
+once. Each file can set a `global` default and override it per subcommand:
+
+```hcl
+global {
+  ignore_column_order = true
+}
+
+plan {
+  ignore_column_order = false
+}
+
+web {
+  ignore_column_order = true
+}
+```
+
+The supported command blocks are `diff`, `drift`, `plan`, and `web`.
+Precedence, from lowest to highest, is the built-in default, home `global`,
+home command block, working-directory `global`, working-directory command
+block, and an explicit CLI flag. Both directions are explicit: for example,
+`-ignore-column-order=false` overrides a configured `true`.
+
+Malformed files, unknown settings, and unknown command blocks stop the command
+with the config path in the error. When stderr is a terminal, hclexp prints one
+`hclexp: loaded config <path>` line per file read. The status goes to stderr;
+JSON and redirected stdout remain machine-clean.
+
 ## Introspect a live database
 
 ```bash

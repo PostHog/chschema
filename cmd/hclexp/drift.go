@@ -51,8 +51,14 @@ func runDrift(args []string) {
 	details := fs.Bool("details", false, "print the full change set of each drifting node against its group reference")
 	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects matching its patterns/object_types are dropped from every node before comparing")
 	formatFlag := fs.String("format", "text", "output format: text (default) or json")
-	ignoreColumnOrder := fs.Bool("ignore-column-order", false, "ignore table and materialized-view column declaration order")
+	ignoreColumnOrder := fs.Bool("ignore-column-order", false, "ignore table and materialized-view column declaration order (overrides .hclexp.config)")
 	_ = fs.Parse(args)
+	configuredColumnOrder, err := configuredIgnoreColumnOrder(fs, "drift", *ignoreColumnOrder)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "drift: failed to load hclexp config: %v\n", err)
+		os.Exit(1)
+	}
+	*ignoreColumnOrder = configuredColumnOrder
 
 	if *dirFlag == "" {
 		fmt.Fprintln(os.Stderr, "drift: -dir is required")

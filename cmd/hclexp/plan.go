@@ -77,8 +77,14 @@ func runPlan(args []string) {
 	scopeFlag := fs.String("scope", "all", "dump object scope: all (exact) or desired (ignore live-only objects)")
 	formatFlag := fs.String("format", "json", "output format: json (default) or text")
 	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects matching its patterns/object_types are dropped from both sides before diffing")
-	ignoreColumnOrder := fs.Bool("ignore-column-order", false, "ignore table and materialized-view column declaration order")
+	ignoreColumnOrder := fs.Bool("ignore-column-order", false, "ignore table and materialized-view column declaration order (overrides .hclexp.config)")
 	_ = fs.Parse(args)
+	configuredColumnOrder, err := configuredIgnoreColumnOrder(fs, "plan", *ignoreColumnOrder)
+	if err != nil {
+		slog.Error("failed to load hclexp config", "err", err)
+		os.Exit(1)
+	}
+	*ignoreColumnOrder = configuredColumnOrder
 
 	if *manifestFlag == "" || *envFlag == "" {
 		slog.Error("-manifest and -env are required")

@@ -747,6 +747,49 @@ reported once with all referencing nodes. `-skip-validation`,
 the generated DDL, a table is created before any Distributed table that
 forwards to it, and dropped after it.
 
+## CLI comparison defaults — `.hclexp.config`
+
+`diff`, `drift`, `plan`, and dump-mode `web` load comparison defaults from two
+HCL locations, in order: `$HOME/.hclexp.config`, then
+`<working-directory>/.hclexp.config`. These are exact locations; hclexp does
+not walk through parent directories. If home and the working directory are the
+same directory, the file is loaded once.
+
+Each file has an optional `global` block and optional `diff`, `drift`, `plan`,
+and `web` blocks. A command block overrides `global` from the same file:
+
+```hcl
+global {
+  ignore_column_order = true
+}
+
+diff {
+  ignore_column_order = false
+}
+
+plan {
+  ignore_column_order = true
+}
+```
+
+The full precedence order is:
+
+1. built-in default;
+2. home `global`, then the home command block;
+3. working-directory `global`, then the working-directory command block;
+4. an explicit CLI value.
+
+An explicit false is significant, so `-ignore-column-order=false` reverses a
+configured `true`. Currently `ignore_column_order` is the only config setting.
+Unknown settings or blocks and malformed HCL fail closed with the config path
+in the error.
+
+When stderr is an interactive terminal, every successfully read file is
+reported as `hclexp: loaded config <path>`. The message is written to stderr,
+so JSON and redirected stdout remain machine-clean. Dump-mode `web` uses the
+resolved value as the initial browser-session comparison setting; its UI can
+still change that setting for the session.
+
 ## Directional object scope — `hclexp diff -scope`
 
 An ordinary two-way diff is exact: every object present on only one side is a
