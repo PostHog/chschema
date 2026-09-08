@@ -6,7 +6,7 @@ require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.40.3
 	github.com/google/go-cmp v0.7.0
 	github.com/hashicorp/hcl/v2 v2.24.0
-	github.com/orian/clickhouse-sql-parser v0.0.0-20260813141301-768a69c3d95a
+	github.com/orian/clickhouse-sql-parser v1.0.1
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1

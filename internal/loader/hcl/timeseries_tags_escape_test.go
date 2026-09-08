@@ -1,6 +1,7 @@
 package hcl
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -40,6 +41,23 @@ ORDER BY metric_family_name`
 	engine, ok := db.Tables[0].Engine.Decoded.(EngineTimeSeries)
 	require.True(t, ok)
 	assert.Equal(t, map[string]string{"foo'bar": "foo_bar"}, engine.TagsToColumns)
+	assert.Nil(t, engine.Samples)
+	assert.Nil(t, engine.Tags)
+	assert.Nil(t, engine.Metrics)
+
+	// SHOW CREATE's default targets must not introduce drift from the same
+	// table declared without explicit targets, regardless of parser support.
+	bareSQL := strings.Split(sql, " DATA\n")[0]
+	bare := &DatabaseSpec{Name: "default"}
+	require.NoError(t, processIntrospectRows(bare, "default", &fakeRows{rows: []fakeRow{{name: "m", sql: bareSQL}}}))
+	changes := Diff(&Schema{Databases: []DatabaseSpec{*bare}}, &Schema{Databases: []DatabaseSpec{*db}})
+	assert.Empty(t, changes.Databases)
+
+	// A custom target must not be silently normalized away. Engine-only
+	// custom targets are still unsupported by the schema converter.
+	customSQL := strings.Replace(sql, "ORDER BY (id, timestamp)", "ORDER BY (timestamp, id)", 1)
+	_, err := buildTableFromCreateSQL(customSQL)
+	require.ErrorContains(t, err, "samples target: clause has neither external table nor inner columns")
 }
 
 func TestSQLGen_TimeSeriesTagsToColumns_HCLFirstEscaping(t *testing.T) {

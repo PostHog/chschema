@@ -225,13 +225,7 @@ func upsertView(db *DatabaseSpec, v ViewSpec) {
 // Parser panics become errors so introspection can use its normal -allow-raw
 // fallback instead of terminating the process.
 func parseCreateStatement(createSQL string) (chparser.Expr, error) {
-	stmts, err := safeParseStmts(createSQL)
-	if err != nil {
-		normalized := stripDefaultTimeSeriesTargetShorthand(createSQL)
-		if normalized != createSQL {
-			stmts, err = safeParseStmts(normalized)
-		}
-	}
+	stmts, err := safeParseStmts(stripDefaultTimeSeriesTargetShorthand(createSQL))
 	if err != nil {
 		return nil, fmt.Errorf("parser: %w", err)
 	}
@@ -253,9 +247,9 @@ var defaultTimeSeriesTargetShorthandRE = regexp.MustCompile(
 // table. The schema model already represents these exact auto-generated
 // targets as nil, so retaining the suffix would create a permanent diff.
 //
-// The SQL parser supports the documented INNER COLUMNS / INNER ENGINE form,
-// but not this newer server spelling (orian/clickhouse-sql-parser#24). The
-// matcher is suffix-anchored and requires every default clause, so custom
+// Normalize before parsing even when the parser supports this shorthand:
+// these defaults must still map to nil targets in the schema (issue #246).
+// The matcher is suffix-anchored and requires every default clause, so custom
 // target definitions are never discarded.
 func stripDefaultTimeSeriesTargetShorthand(createSQL string) string {
 	if !strings.Contains(createSQL, "ENGINE = TimeSeries") {
