@@ -594,6 +594,25 @@ func TestBuildDecomposition_PatchesEveryPatchableObjectKind(t *testing.T) {
 		assert.Contains(t, patch, "first = true")
 	})
 
+	t.Run("materialized view destination only", func(t *testing.T) {
+		makeSchema := func(destination string) *hclload.Schema {
+			return &hclload.Schema{Databases: []hclload.DatabaseSpec{{Name: "analytics", MaterializedViews: []hclload.MaterializedViewSpec{{
+				Name: "events_mv", ToTable: destination, Query: "SELECT 1",
+				Columns: []hclload.ColumnSpec{{Name: "id", Type: "UInt64"}},
+			}}}}}
+		}
+		generated, err := buildDecomposition([]decomposeSnapshot{
+			{Env: "eu", Role: "events", Schema: makeSchema("analytics.events")},
+			{Env: "us", Role: "events", Schema: makeSchema("analytics.writable_events")},
+		}, []string{"eu", "us"}, decomposeAssignment{Version: 1, Objects: map[string]decomposeObjectAssignment{}})
+		require.NoError(t, err)
+		patch := string(generated.Files[envLayerPath("us", "events")])
+		assert.Contains(t, patch, `patch_materialized_view "events_mv"`)
+		assert.Contains(t, patch, `to_table = "analytics.writable_events"`)
+		assert.NotContains(t, patch, "query")
+		assert.NotContains(t, patch, "column")
+	})
+
 	t.Run("view", func(t *testing.T) {
 		commentA, commentB := "old", "new"
 		from := &hclload.Schema{Databases: []hclload.DatabaseSpec{{Name: "analytics", Views: []hclload.ViewSpec{{Name: "events", Query: "SELECT 1", Comment: &commentA}}}}}

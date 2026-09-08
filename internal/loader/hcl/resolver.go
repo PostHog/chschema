@@ -786,6 +786,9 @@ func applyMaterializedViewPatches(db *DatabaseSpec) error {
 			copy(target.Columns[pos+1:], target.Columns[pos:])
 			target.Columns[pos] = column
 		}
+		if patch.ToTable != nil {
+			target.ToTable = *patch.ToTable
+		}
 		if patch.Query != nil {
 			target.Query = *patch.Query
 		}

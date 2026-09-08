@@ -463,6 +463,7 @@ declared once, the env layer replaces just the fields it sets.
 ```hcl
 database "posthog" {
   patch_materialized_view "events_mv" {
+    to_table = "posthog.writable_events"
     query = file("sql/events_mv_dev.sql")
     modify_column "team_id" { type = "UInt64" }
     column "region" { type = "LowCardinality(String)" }
@@ -480,11 +481,12 @@ database "posthog" {
 }
 ```
 
-- `patch_materialized_view` fields: `query` (replace), plus `column`,
+- `patch_materialized_view` fields: `to_table` and `query` (replace when set), plus `column`,
   `modify_column`, and `drop_columns` with the same semantics and placement
   options as `patch_table`. MV column patches apply after `extend`, so they
   may target columns inherited from an abstract table. The query is
-  normalized like a declared MV query.
+  normalized like a declared MV query. A patch setting only `to_table` preserves
+  the declared query and columns.
 - `patch_view` fields: `query`, `comment` — each replaces the target's
   value when set. The patched query normalizes to the canonical beautified
   form, so a heredoc patch and a one-liner declaration of the same SQL
@@ -688,7 +690,7 @@ existing table, which stays authoritative except where patched.
 | Add / modify / drop a column on the same table in one environment | `patch_table` |
 | Change a setting, index, `order_by`/`partition_by`/`ttl`, or the engine on the same table in one environment | `patch_table` |
 | A Distributed table whose target moves with the env's topology | `patch_table` with `engine` |
-| An MV's `query` or columns differing per environment | `patch_materialized_view` |
+| An MV's `to_table`, `query`, or columns differing per environment | `patch_materialized_view` |
 | A view's `query` or a dictionary's `source` differing per environment | `patch_view` / `patch_dictionary` |
 | Add a projection to the same table in one environment | `patch_table` with `projection` |
 | A table differing beyond the patchable fields (`primary_key`, constraints, …) | `override = true` |

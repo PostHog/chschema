@@ -98,11 +98,12 @@ type MaterializedViewSpec struct {
 }
 
 // PatchMaterializedViewSpec is the materialized-view counterpart of
-// patch_table. Query replaces when set; columns follow patch_table's
+// patch_table. ToTable and Query replace when set; columns follow patch_table's
 // modify -> drop -> add semantics. It is consumed after MV extend resolution,
 // so inherited columns may be modified or dropped too.
 type PatchMaterializedViewSpec struct {
 	Name          string       `hcl:"name,label"`
+	ToTable       *string      `hcl:"to_table,optional"`
 	Columns       []ColumnSpec `hcl:"column,block"`
 	ModifyColumns []ColumnSpec `hcl:"modify_column,block"`
 	DropColumns   []string     `hcl:"drop_columns,optional"`

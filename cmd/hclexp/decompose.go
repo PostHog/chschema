@@ -571,9 +571,6 @@ func tablePatch(from, to *hclload.Schema, object decomposeObject) (hclload.Patch
 func materializedViewPatch(from, to *hclload.Schema, object decomposeObject) (hclload.PatchMaterializedViewSpec, error) {
 	f, t := onlyMaterializedView(from), onlyMaterializedView(to)
 	var unsupported []string
-	if f.ToTable != t.ToTable {
-		unsupported = append(unsupported, "to_table")
-	}
 	if !reflect.DeepEqual(f.Cluster, t.Cluster) {
 		unsupported = append(unsupported, "cluster")
 	}
@@ -588,6 +585,10 @@ func materializedViewPatch(from, to *hclload.Schema, object decomposeObject) (hc
 		return hclload.PatchMaterializedViewSpec{}, fmt.Errorf("%s cannot use patch_materialized_view without loss: %s", object.key(), strings.Join(unsupported, ", "))
 	}
 	patch := hclload.PatchMaterializedViewSpec{Name: object.Name, Columns: adds, ModifyColumns: modifies, DropColumns: drops}
+	if f.ToTable != t.ToTable {
+		toTable := t.ToTable
+		patch.ToTable = &toTable
+	}
 	if f.Query != t.Query {
 		query := t.Query
 		patch.Query = &query
@@ -747,7 +748,7 @@ func onlyMaterializedView(schema *hclload.Schema) *hclload.MaterializedViewSpec 
 }
 
 func patchMaterializedViewEmpty(p hclload.PatchMaterializedViewSpec) bool {
-	return len(p.Columns)+len(p.ModifyColumns)+len(p.DropColumns) == 0 && p.Query == nil
+	return len(p.Columns)+len(p.ModifyColumns)+len(p.DropColumns) == 0 && p.Query == nil && p.ToTable == nil
 }
 
 func patchDictionaryEmpty(p hclload.PatchDictionarySpec) bool {
