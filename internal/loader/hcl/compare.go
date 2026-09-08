@@ -310,7 +310,12 @@ func fieldChangesForMaterializedView(mvd MaterializedViewDiff) []FieldChange {
 	if c := mvd.ToTableChange; c != nil {
 		out = append(out, stringChangeField("to_table", c))
 	}
-	if mvd.ColumnsChanged {
+	if c := mvd.ColumnOrderChange; c != nil {
+		out = append(out, FieldChange{
+			Field: "column_order", Change: "modify",
+			Old: strings.Join(c.Old, ", "), New: strings.Join(c.New, ", "),
+		})
+	} else if mvd.ColumnsChanged {
 		out = append(out, FieldChange{Field: "columns", Change: "modify"})
 	}
 	if c := mvd.QueryChange; c != nil {

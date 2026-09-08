@@ -16,6 +16,7 @@ import (
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/posthog/chschema/config"
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
+	"golang.org/x/term"
 )
 
 func main() {
@@ -946,6 +947,7 @@ func runDiff(args []string) {
 
 	cs := hclload.DiffWithOptions(left, right, hclload.DiffOptions{IgnoreColumnOrder: *ignoreColumnOrder})
 	gen := hclload.GenerateSQL(cs)
+	showColumnOrderHint := shouldShowColumnOrderHint(cs, *ignoreColumnOrder, term.IsTerminal(int(os.Stdout.Fd())))
 
 	if *formatFlag == "json" {
 		out, err := hclload.RenderDiffJSON(cs, gen, left, right)
@@ -960,6 +962,9 @@ func runDiff(args []string) {
 	if *asSQL {
 		for _, u := range gen.Unsafe {
 			fmt.Printf("-- UNSAFE: %s: %s\n", qualifiedName(u.Database, u.Table), u.Reason)
+		}
+		if showColumnOrderHint {
+			renderColumnOrderHint(os.Stdout, true)
 		}
 		for i, stmt := range gen.Statements {
 			if gen.Ops[i].Manual {
@@ -980,6 +985,36 @@ func runDiff(args []string) {
 	}
 	hclload.RenderObjectComparisons(os.Stdout,
 		hclload.BuildObjectComparisons(cs, gen, left, right))
+	if showColumnOrderHint {
+		renderColumnOrderHint(os.Stdout, false)
+	}
+}
+
+func shouldShowColumnOrderHint(cs hclload.ChangeSet, ignoreColumnOrder, terminal bool) bool {
+	if ignoreColumnOrder || !terminal {
+		return false
+	}
+	for _, dc := range cs.Databases {
+		for _, td := range dc.AlterTables {
+			if td.ColumnOrderChange != nil {
+				return true
+			}
+		}
+		for _, mvd := range dc.AlterMaterializedViews {
+			if mvd.ColumnOrderChange != nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func renderColumnOrderHint(w io.Writer, sql bool) {
+	prefix := "\nhint:"
+	if sql {
+		prefix = "-- hint:"
+	}
+	fmt.Fprintf(w, "%s if column order is not significant for this comparison, rerun with -ignore-column-order\n", prefix)
 }
 
 // applyDiffScope narrows one side of a two-way comparison to the logical

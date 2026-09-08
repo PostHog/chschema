@@ -100,8 +100,13 @@ type MaterializedViewDiff struct {
 
 	// Detail fields used by renderers. ColumnsChanged can accompany a safe
 	// QueryChange when the desired output is a compatible additive projection.
-	ToTableChange  *StringChange
-	ColumnsChanged bool
+	ToTableChange *StringChange
+
+	// ColumnOrderChange is populated when the column names and definitions are
+	// identical and declaration order is the only column difference. The view
+	// still requires recreation; this field makes that reason diagnosable.
+	ColumnOrderChange *OrderByChange
+	ColumnsChanged    bool
 }
 
 func (mvd MaterializedViewDiff) IsEmpty() bool {
@@ -740,6 +745,12 @@ func diffMaterializedView(database string, from, to *MaterializedViewSpec, toR T
 	}
 	if !materializedViewColumnsEqual(from.Columns, to.Columns, options.IgnoreColumnOrder) {
 		mvd.ColumnsChanged = true
+		if !options.IgnoreColumnOrder && materializedViewColumnsEqual(from.Columns, to.Columns, true) {
+			mvd.ColumnOrderChange = &OrderByChange{
+				Old: orderedColumnNames(from.Columns),
+				New: orderedColumnNames(to.Columns),
+			}
+		}
 	}
 	queryChanged := from.Query != to.Query
 	if mvd.ToTableChange != nil {
@@ -843,6 +854,14 @@ func materializedViewColumnsEqual(from, to []ColumnSpec, ignoreOrder bool) bool 
 		}
 	}
 	return true
+}
+
+func orderedColumnNames(columns []ColumnSpec) []string {
+	names := make([]string, len(columns))
+	for i := range columns {
+		names[i] = columns[i].Name
+	}
+	return names
 }
 
 func indexTables(tables []TableSpec) map[string]*TableSpec {

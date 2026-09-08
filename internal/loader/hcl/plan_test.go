@@ -134,6 +134,42 @@ func TestBuildPlan_CrossRoleAlterOrdering(t *testing.T) {
 	assert.True(t, sharded.Replicated)
 }
 
+func TestBuildPlanWithOptions_IgnoreColumnOrder(t *testing.T) {
+	column := func(name string) ColumnSpec { return ColumnSpec{Name: name, Type: "UInt64"} }
+	table := func(columns ...ColumnSpec) TableSpec {
+		return TableSpec{Name: "events", Columns: columns, Engine: &EngineSpec{Kind: "log", Decoded: EngineLog{}}}
+	}
+	view := func(columns ...ColumnSpec) MaterializedViewSpec {
+		return MaterializedViewSpec{
+			Name: "events_mv", ToTable: "events", Query: "SELECT a, b FROM source", Columns: columns,
+		}
+	}
+	schema := func(columns ...ColumnSpec) *Schema {
+		return &Schema{Databases: []DatabaseSpec{{
+			Name: "posthog", Tables: []TableSpec{table(columns...)}, MaterializedViews: []MaterializedViewSpec{view(columns...)},
+		}}}
+	}
+
+	roles := []RoleDiff{{
+		Role: "ops", Current: schema(column("a"), column("b")), Desired: schema(column("b"), column("a")),
+	}}
+	orderSensitive := BuildPlan(roles)
+	require.Len(t, orderSensitive.Unsafe, 2)
+	require.Len(t, orderSensitive.Roles, 1)
+	require.Len(t, orderSensitive.Roles[0].Objects, 2)
+	for _, object := range orderSensitive.Roles[0].Objects {
+		assert.Equal(t, []FieldChange{{
+			Field: "column_order", Change: "modify", Old: "a, b", New: "b, a",
+		}}, object.Changes)
+	}
+
+	ignored := BuildPlanWithOptions(roles, DiffOptions{IgnoreColumnOrder: true})
+	assert.Empty(t, ignored.Operations)
+	assert.Empty(t, ignored.Unsafe)
+	require.Len(t, ignored.Roles, 1)
+	assert.Empty(t, ignored.Roles[0].Objects)
+}
+
 // Removed objects exist only in current, so the current-side union must drive
 // DROP ordering and metadata. This also exercises the cross-role case where
 // the storage table and its dependants are discovered in different role diffs.

@@ -217,7 +217,25 @@ func TestDiff_MaterializedViewColumnOrderPolicy(t *testing.T) {
 		Columns: []ColumnSpec{{Name: "b", Type: "UInt8"}, {Name: "a", Type: "UInt8"}},
 	}}}}}
 
-	assert.False(t, Diff(from, to).IsEmpty())
+	cs := Diff(from, to)
+	assert.False(t, cs.IsEmpty())
+	require.Len(t, cs.Databases, 1)
+	require.Len(t, cs.Databases[0].AlterMaterializedViews, 1)
+	mvd := cs.Databases[0].AlterMaterializedViews[0]
+	assert.True(t, mvd.ColumnsChanged)
+	assert.True(t, mvd.Recreate)
+	assert.Equal(t, &OrderByChange{
+		Old: []string{"a", "b"},
+		New: []string{"b", "a"},
+	}, mvd.ColumnOrderChange)
+	generated := GenerateSQL(cs)
+	require.Len(t, generated.Unsafe, 1)
+	assert.Equal(t, "materialized view column order changed; recreating the view is required", generated.Unsafe[0].Reason)
+	comparisons := BuildObjectComparisons(cs, generated, from, to)
+	require.Len(t, comparisons, 1)
+	assert.Equal(t, []FieldChange{{
+		Field: "column_order", Change: "modify", Old: "a, b", New: "b, a",
+	}}, comparisons[0].Changes)
 	assert.True(t, DiffWithOptions(from, to, DiffOptions{IgnoreColumnOrder: true}).IsEmpty())
 }
 

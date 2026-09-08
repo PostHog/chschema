@@ -190,9 +190,13 @@ func GenerateSQL(cs ChangeSet) GeneratedSQL {
 	for _, dc := range cs.Databases {
 		for _, mvd := range dc.AlterMaterializedViews {
 			if mvd.Recreate {
+				reason := "materialized view to_table or incompatible column list change requires recreating the view"
+				if mvd.ToTableChange == nil && mvd.ColumnOrderChange != nil {
+					reason = "materialized view column order changed; recreating the view is required"
+				}
 				out.Unsafe = append(out.Unsafe, UnsafeChange{
 					Database: dc.Database, Table: mvd.Name,
-					Reason: "materialized view to_table or incompatible column list change requires recreating the view",
+					Reason: reason,
 				})
 				continue
 			}
