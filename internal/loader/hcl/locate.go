@@ -204,12 +204,29 @@ type DuplicateGroup struct {
 	Declarations []Declaration // every site for the name, legitimate ones included
 }
 
+// FindDuplicateCandidates returns names authored as a complete object at two
+// or more sites. Unlike FindDuplicates, an override declaration counts as a
+// complete site: callers that load the resolved compositions can determine
+// whether it is a genuine replacement or an identical copy. Patch and extend
+// declarations remain refinements and do not create candidates by themselves.
+func FindDuplicateCandidates(decls []Declaration) []DuplicateGroup {
+	return findDuplicateGroups(decls, func(d Declaration) bool {
+		return !d.Patch && d.Extends == ""
+	})
+}
+
 // FindDuplicates groups declarations by (database, name) — the ClickHouse
 // namespace, which object types share — and returns groups holding two or more
 // definition sites: declarations that are not patches or overrides and do not
 // carry extend. Every declaration is retained in a reported group's output.
 // Results are sorted by database then name.
 func FindDuplicates(decls []Declaration) []DuplicateGroup {
+	return findDuplicateGroups(decls, func(d Declaration) bool {
+		return !d.Patch && !d.Override && d.Extends == ""
+	})
+}
+
+func findDuplicateGroups(decls []Declaration, definition func(Declaration) bool) []DuplicateGroup {
 	type key struct{ db, name string }
 	byKey := map[key][]Declaration{}
 	for _, d := range decls {
@@ -220,7 +237,7 @@ func FindDuplicates(decls []Declaration) []DuplicateGroup {
 	for k, group := range byKey {
 		definitions := 0
 		for _, d := range group {
-			if !d.Patch && !d.Override && d.Extends == "" {
+			if definition(d) {
 				definitions++
 			}
 		}

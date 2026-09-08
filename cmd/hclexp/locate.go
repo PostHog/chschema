@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
+	"golang.org/x/term"
 )
 
 // locateStack is one (role, env) deployment from the manifest and its
@@ -26,6 +26,27 @@ type locateStack struct {
 type locatePlacement struct {
 	Role string `json:"role"`
 	Env  string `json:"env"`
+}
+
+type locateCompositionRef struct {
+	Source string   `json:"source"`
+	Role   string   `json:"role,omitempty"`
+	Env    string   `json:"env,omitempty"`
+	Layers []string `json:"layers"`
+}
+
+type locateDefinitionRef struct {
+	File string `json:"file"`
+	Line int    `json:"line"`
+}
+
+// locateResolvedVariant is one semantic object shape and every resolved
+// composition that produces it. Definitions names the effective full-object
+// declaration behind those models, deduplicated when one shared declaration
+// is reused by several environments.
+type locateResolvedVariant struct {
+	Models      []locateModelRef      `json:"models"`
+	Definitions []locateDefinitionRef `json:"definitions"`
 }
 
 // locateDecl is one declaration site plus its derived placements: the
@@ -82,21 +103,27 @@ type locateColumnDoc struct {
 // whose extend attribute names this one, whether or not they matched the
 // query themselves.
 type locateObject struct {
-	Database     string       `json:"database,omitempty"`
-	Name         string       `json:"name"`
-	Types        []string     `json:"types"`
-	ExtendedBy   []string     `json:"extended_by,omitempty"`
-	Declarations []locateDecl `json:"declarations"`
-	Dumps        []locateDump `json:"dumps,omitempty"`
+	Database         string                  `json:"database,omitempty"`
+	Name             string                  `json:"name"`
+	Types            []string                `json:"types"`
+	ExtendedBy       []string                `json:"extended_by,omitempty"`
+	Declarations     []locateDecl            `json:"declarations"`
+	Dumps            []locateDump            `json:"dumps,omitempty"`
+	CollisionIn      []locateCompositionRef  `json:"collision_in,omitempty"`
+	ResolvedVariants []locateResolvedVariant `json:"resolved_variants,omitempty"`
 }
 
 // locateDoc is the `locate -format json` document. Objects carries the
-// pattern query's results; Duplicates carries -duplicates mode's. Exactly
-// one of the two is populated (non-nil, so JSON emits [] rather than null).
+// pattern query's results. In -duplicates mode, Duplicates contains repeated
+// definitions that produce an equal resolved object, Variants contains repeated
+// names whose resolved shapes remain distinct, and Collisions contains invalid
+// same-composition redeclarations that cannot be resolved for comparison.
 type locateDoc struct {
 	Patterns   []string       `json:"patterns,omitempty"`
 	Objects    []locateObject `json:"objects,omitempty"`
 	Duplicates []locateObject `json:"duplicates,omitempty"`
+	Variants   []locateObject `json:"variants,omitempty"`
+	Collisions []locateObject `json:"collisions,omitempty"`
 }
 
 // locateFlagsError reports the usage error in a locate invocation, if any.
@@ -199,6 +226,18 @@ func parseManifestAllEnvs(path string) ([]locateStack, error) {
 // duplicates = true the patterns are ignored and the doc's Duplicates side
 // is populated instead.
 func buildLocateDoc(stacks []locateStack, layerRoot string, extraLayers []string, dumpDir string, patterns []string, duplicates bool) (locateDoc, []string, error) {
+	return buildLocateDocWithProgress(stacks, layerRoot, extraLayers, dumpDir, patterns, duplicates, nil)
+}
+
+func buildLocateDocWithProgress(
+	stacks []locateStack,
+	layerRoot string,
+	extraLayers []string,
+	dumpDir string,
+	patterns []string,
+	duplicates bool,
+	status io.Writer,
+) (locateDoc, []string, error) {
 	// Index which (role, env) stacks include each resolved layer, keeping
 	// first-seen layer order so output is stable.
 	stacksByLayer, layerOrder := indexLocateLayers(stacks, layerRoot, extraLayers)
@@ -208,11 +247,13 @@ func buildLocateDoc(stacks []locateStack, layerRoot string, extraLayers []string
 	// attribution.
 	var decls []hclload.Declaration
 	layerByFile := map[string]string{}
+	filesByLayer := map[string][]string{}
 	for _, layer := range layerOrder {
 		files, err := hclload.LayerFiles(layer)
 		if err != nil {
 			return locateDoc{}, nil, err
 		}
+		filesByLayer[layer] = append([]string(nil), files...)
 		for _, file := range files {
 			if _, ok := layerByFile[file]; ok {
 				continue
@@ -232,14 +273,48 @@ func buildLocateDoc(stacks []locateStack, layerRoot string, extraLayers []string
 	extendedBy := extendedByIndex(decls)
 
 	if duplicates {
-		doc := locateDoc{Duplicates: []locateObject{}}
-		for _, g := range hclload.FindDuplicates(decls) {
-			obj := locateObject{Database: g.Database, Name: g.Name, ExtendedBy: extendedBy[[2]string{g.Database, g.Name}]}
-			for _, d := range g.Declarations {
+		doc := locateDoc{Duplicates: []locateObject{}, Variants: []locateObject{}, Collisions: []locateObject{}}
+		scopes := locateDuplicateScopes(stacks, layerRoot, extraLayers)
+		candidates := hclload.FindDuplicateCandidates(decls)
+		blockedScopes := locateCollisionScopes(candidates, scopes, filesByLayer)
+		models := map[int]locateModel{}
+		if len(candidates) > 0 {
+			var err error
+			models, err = loadLocateDuplicateModels(
+				scopes, blockedScopes, locateCandidatesHaveAbstracts(candidates),
+				parallelLoadProgress{Writer: status, Prefix: "locate", Label: "composition models"},
+			)
+			if err != nil {
+				return locateDoc{}, nil, err
+			}
+		}
+		for _, candidate := range candidates {
+			collisionIn := collisionCompositions(candidate, scopes, filesByLayer)
+			resolvedVariants := resolvedLocateVariants(candidate, scopes, models, filesByLayer)
+			if len(collisionIn) == 0 && resolvedVariantDefinitionCount(resolvedVariants) < 2 {
+				// A base and its valid replacement may occur in one stack, leaving
+				// only the replacement as an effective definition. There is no pair
+				// of independently composed objects to classify in that case.
+				continue
+			}
+			isDuplicate := variantsContainDuplicate(resolvedVariants)
+			obj := locateObject{
+				Database: candidate.Database, Name: candidate.Name,
+				ExtendedBy:       extendedBy[[2]string{candidate.Database, candidate.Name}],
+				CollisionIn:      collisionIn,
+				ResolvedVariants: resolvedVariants,
+			}
+			for _, d := range candidate.Declarations {
 				obj.Types = appendUniqueString(obj.Types, d.ObjectType)
 				obj.Declarations = append(obj.Declarations, toLocateDecl(d, layerByFile, stacksByLayer))
 			}
-			doc.Duplicates = append(doc.Duplicates, obj)
+			if isDuplicate {
+				doc.Duplicates = append(doc.Duplicates, obj)
+			} else if len(collisionIn) > 0 {
+				doc.Collisions = append(doc.Collisions, obj)
+			} else {
+				doc.Variants = append(doc.Variants, obj)
+			}
 		}
 		return doc, nil, nil
 	}
@@ -314,6 +389,332 @@ func buildLocateDoc(stacks []locateStack, layerRoot string, extraLayers []string
 	return doc, unmatched, nil
 }
 
+type locateDuplicateScope struct {
+	Ref      locateCompositionRef
+	Resolved []string
+}
+
+func locateDuplicateScopes(
+	stacks []locateStack,
+	layerRoot string,
+	extraLayers []string,
+) []locateDuplicateScope {
+	scopes := make([]locateDuplicateScope, 0, len(stacks)+1)
+	for _, stack := range stacks {
+		resolved := make([]string, len(stack.Layers))
+		for i, layer := range stack.Layers {
+			resolved[i] = filepath.Join(layerRoot, layer)
+		}
+		scopes = append(scopes, locateDuplicateScope{
+			Ref: locateCompositionRef{
+				Source: "manifest", Role: stack.Role, Env: stack.Env,
+				Layers: append([]string(nil), stack.Layers...),
+			},
+			Resolved: resolved,
+		})
+	}
+	if len(extraLayers) > 0 {
+		resolved := make([]string, len(extraLayers))
+		for i, layer := range extraLayers {
+			resolved[i] = filepath.Clean(layer)
+		}
+		scopes = append(scopes, locateDuplicateScope{
+			Ref:      locateCompositionRef{Source: "layer", Layers: append([]string(nil), extraLayers...)},
+			Resolved: resolved,
+		})
+	}
+	return scopes
+}
+
+func collisionCompositions(
+	candidate hclload.DuplicateGroup,
+	scopes []locateDuplicateScope,
+	filesByLayer map[string][]string,
+) []locateCompositionRef {
+	var collisions []locateCompositionRef
+	for _, scope := range scopes {
+		if locateScopeCollides(candidate, scope, filesByLayer) {
+			collisions = append(collisions, scope.Ref)
+		}
+	}
+	return collisions
+}
+
+func locateCollisionScopes(
+	candidates []hclload.DuplicateGroup,
+	scopes []locateDuplicateScope,
+	filesByLayer map[string][]string,
+) map[int]bool {
+	blocked := map[int]bool{}
+	for i, scope := range scopes {
+		for _, candidate := range candidates {
+			if locateScopeCollides(candidate, scope, filesByLayer) {
+				blocked[i] = true
+				break
+			}
+		}
+	}
+	return blocked
+}
+
+func locateScopeCollides(
+	candidate hclload.DuplicateGroup,
+	scope locateDuplicateScope,
+	filesByLayer map[string][]string,
+) bool {
+	defined := false
+	for _, declaration := range orderedLocateDeclarations(candidate, scope, filesByLayer) {
+		if !locateFullDefinition(declaration) {
+			continue
+		}
+		if defined && !declaration.Override {
+			return true
+		}
+		defined = true
+	}
+	return false
+}
+
+func locateFullDefinition(declaration hclload.Declaration) bool {
+	return !declaration.Patch && declaration.Extends == ""
+}
+
+func orderedLocateDeclarations(
+	candidate hclload.DuplicateGroup,
+	scope locateDuplicateScope,
+	filesByLayer map[string][]string,
+) []hclload.Declaration {
+	var ordered []hclload.Declaration
+	seenFiles := map[string]bool{}
+	for _, layer := range scope.Resolved {
+		for _, file := range filesByLayer[layer] {
+			if seenFiles[file] {
+				continue
+			}
+			seenFiles[file] = true
+			for _, declaration := range candidate.Declarations {
+				if declaration.File == file {
+					ordered = append(ordered, declaration)
+				}
+			}
+		}
+	}
+	return ordered
+}
+
+func effectiveLocateDefinition(
+	candidate hclload.DuplicateGroup,
+	scope locateDuplicateScope,
+	filesByLayer map[string][]string,
+) (hclload.Declaration, bool) {
+	var effective hclload.Declaration
+	found := false
+	for _, declaration := range orderedLocateDeclarations(candidate, scope, filesByLayer) {
+		if !locateFullDefinition(declaration) {
+			continue
+		}
+		effective = declaration
+		found = true
+	}
+	return effective, found
+}
+
+func locateCandidatesHaveAbstracts(candidates []hclload.DuplicateGroup) bool {
+	for _, candidate := range candidates {
+		for _, declaration := range candidate.Declarations {
+			if locateFullDefinition(declaration) && declaration.Abstract {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func loadLocateDuplicateModels(
+	scopes []locateDuplicateScope,
+	blocked map[int]bool,
+	preserveRaw bool,
+	progress parallelLoadProgress,
+) (map[int]locateModel, error) {
+	var tasks []locateModelTask
+	var scopeIndexes []int
+	for i, scope := range scopes {
+		if blocked[i] {
+			continue
+		}
+		tasks = append(tasks, locateModelTask{
+			Ref: locateModelRef{
+				Source: scope.Ref.Source, Role: scope.Ref.Role, Env: scope.Ref.Env,
+				Layers: append([]string(nil), scope.Ref.Layers...),
+			},
+			Resolved: append([]string(nil), scope.Resolved...),
+		})
+		scopeIndexes = append(scopeIndexes, i)
+	}
+	loader := loadLocateModel
+	if preserveRaw {
+		loader = loadLocateDuplicateModel
+	}
+	loaded, err := loadLocateModelTasksWithProgress(tasks, locateLoadParallelism, progress, loader)
+	if err != nil {
+		return nil, err
+	}
+	models := make(map[int]locateModel, len(loaded))
+	for i, model := range loaded {
+		models[scopeIndexes[i]] = model
+	}
+	return models, nil
+}
+
+func loadLocateDuplicateModel(task locateModelTask) (locateModel, error) {
+	raw, err := hclload.LoadLayers(task.Resolved)
+	if err != nil {
+		return locateModel{}, fmt.Errorf("load %s: %w", locateModelLabel(task.Ref), err)
+	}
+	model, err := loadLocateModel(task)
+	if err != nil {
+		return locateModel{}, err
+	}
+	model.RawSchema = raw
+	return model, nil
+}
+
+func resolvedLocateVariants(
+	candidate hclload.DuplicateGroup,
+	scopes []locateDuplicateScope,
+	models map[int]locateModel,
+	filesByLayer map[string][]string,
+) []locateResolvedVariant {
+	type variant struct {
+		locateResolvedVariant
+		schema *hclload.Schema
+	}
+	var groups []variant
+	for i, scope := range scopes {
+		model, ok := models[i]
+		if !ok {
+			continue
+		}
+		definition, ok := effectiveLocateDefinition(candidate, scope, filesByLayer)
+		if !ok {
+			continue
+		}
+		objectSchema, ok := scopeLocateObject(model.Schema, candidate.Database, candidate.Name)
+		if !ok && model.RawSchema != nil {
+			// Abstract definitions intentionally disappear from the final model.
+			// Compare their merged pre-resolution shape so copied templates remain
+			// detectable without weakening the semantic classifier.
+			objectSchema, ok = scopeLocateObject(model.RawSchema, candidate.Database, candidate.Name)
+		}
+		if !ok {
+			continue
+		}
+		definitionRef := locateDefinitionRef{File: definition.File, Line: definition.Line}
+		matched := false
+		for gi := range groups {
+			if !hclload.Diff(groups[gi].schema, objectSchema).IsEmpty() {
+				continue
+			}
+			groups[gi].Models = append(groups[gi].Models, model.Ref)
+			groups[gi].Definitions = appendUniqueDefinitionRef(groups[gi].Definitions, definitionRef)
+			matched = true
+			break
+		}
+		if !matched {
+			groups = append(groups, variant{
+				locateResolvedVariant: locateResolvedVariant{
+					Models:      []locateModelRef{model.Ref},
+					Definitions: []locateDefinitionRef{definitionRef},
+				},
+				schema: objectSchema,
+			})
+		}
+	}
+	out := make([]locateResolvedVariant, len(groups))
+	for i := range groups {
+		out[i] = groups[i].locateResolvedVariant
+	}
+	return out
+}
+
+func scopeLocateObject(schema *hclload.Schema, database, name string) (*hclload.Schema, bool) {
+	if database == "" {
+		out := &hclload.Schema{}
+		for _, collection := range schema.NamedCollections {
+			if collection.Name == name {
+				out.NamedCollections = append(out.NamedCollections, collection)
+			}
+		}
+		return out, len(out.NamedCollections) > 0
+	}
+	for _, databaseSpec := range schema.Databases {
+		if databaseSpec.Name != database {
+			continue
+		}
+		objectDB := hclload.DatabaseSpec{Name: database}
+		for _, table := range databaseSpec.Tables {
+			if table.Name == name {
+				objectDB.Tables = append(objectDB.Tables, table)
+			}
+		}
+		for _, view := range databaseSpec.MaterializedViews {
+			if view.Name == name {
+				objectDB.MaterializedViews = append(objectDB.MaterializedViews, view)
+			}
+		}
+		for _, view := range databaseSpec.Views {
+			if view.Name == name {
+				objectDB.Views = append(objectDB.Views, view)
+			}
+		}
+		for _, dictionary := range databaseSpec.Dictionaries {
+			if dictionary.Name == name {
+				objectDB.Dictionaries = append(objectDB.Dictionaries, dictionary)
+			}
+		}
+		for _, raw := range databaseSpec.Raws {
+			if raw.Name == name {
+				objectDB.Raws = append(objectDB.Raws, raw)
+			}
+		}
+		present := len(objectDB.Tables)+len(objectDB.MaterializedViews)+len(objectDB.Views)+
+			len(objectDB.Dictionaries)+len(objectDB.Raws) > 0
+		if present {
+			return &hclload.Schema{Databases: []hclload.DatabaseSpec{objectDB}}, true
+		}
+		break
+	}
+	return &hclload.Schema{}, false
+}
+
+func appendUniqueDefinitionRef(refs []locateDefinitionRef, ref locateDefinitionRef) []locateDefinitionRef {
+	for _, existing := range refs {
+		if existing == ref {
+			return refs
+		}
+	}
+	return append(refs, ref)
+}
+
+func variantsContainDuplicate(variants []locateResolvedVariant) bool {
+	for _, variant := range variants {
+		if len(variant.Definitions) >= 2 {
+			return true
+		}
+	}
+	return false
+}
+
+func resolvedVariantDefinitionCount(variants []locateResolvedVariant) int {
+	seen := map[locateDefinitionRef]bool{}
+	for _, variant := range variants {
+		for _, definition := range variant.Definitions {
+			seen[definition] = true
+		}
+	}
+	return len(seen)
+}
+
 func indexLocateLayers(stacks []locateStack, layerRoot string, extraLayers []string) (map[string][]locatePlacement, []string) {
 	stacksByLayer := map[string][]locatePlacement{}
 	var layerOrder []string
@@ -340,8 +741,9 @@ func indexLocateLayers(stacks []locateStack, layerRoot string, extraLayers []str
 }
 
 type locateModel struct {
-	Ref    locateModelRef
-	Schema *hclload.Schema
+	Ref       locateModelRef
+	Schema    *hclload.Schema
+	RawSchema *hclload.Schema
 }
 
 type locateModelTask struct {
@@ -488,41 +890,16 @@ type locateModelLoader func(locateModelTask) (locateModel, error)
 // the result. Thirty dump files therefore load concurrently, but arbitrarily
 // large directories cannot create an unbounded number of goroutines.
 func loadLocateModelTasks(tasks []locateModelTask, parallelism int, loader locateModelLoader) ([]locateModel, error) {
-	if len(tasks) == 0 {
-		return []locateModel{}, nil
-	}
-	if parallelism < 1 {
-		parallelism = 1
-	}
-	if parallelism > len(tasks) {
-		parallelism = len(tasks)
-	}
+	return loadLocateModelTasksWithProgress(tasks, parallelism, parallelLoadProgress{}, loader)
+}
 
-	models := make([]locateModel, len(tasks))
-	errs := make([]error, len(tasks))
-	jobs := make(chan int, len(tasks))
-	for i := range tasks {
-		jobs <- i
-	}
-	close(jobs)
-
-	var wg sync.WaitGroup
-	wg.Add(parallelism)
-	for range parallelism {
-		go func() {
-			defer wg.Done()
-			for i := range jobs {
-				models[i], errs[i] = loader(tasks[i])
-			}
-		}()
-	}
-	wg.Wait()
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
-		}
-	}
-	return models, nil
+func loadLocateModelTasksWithProgress(
+	tasks []locateModelTask,
+	parallelism int,
+	progress parallelLoadProgress,
+	loader locateModelLoader,
+) ([]locateModel, error) {
+	return loadInParallel(tasks, parallelism, progress, loader)
 }
 
 func matchesTablePatterns(patterns []string, database, table string) bool {
@@ -683,13 +1060,61 @@ func renderLocateColumnText(w io.Writer, doc locateColumnDoc) {
 }
 
 func renderDuplicatesText(w io.Writer, doc locateDoc) {
-	if len(doc.Duplicates) == 0 {
-		fmt.Fprintln(w, "no duplicate declarations")
+	if len(doc.Duplicates) == 0 && len(doc.Variants) == 0 && len(doc.Collisions) == 0 {
+		fmt.Fprintln(w, "no repeated object definitions")
 		return
 	}
 	for _, o := range doc.Duplicates {
 		fmt.Fprintf(w, "duplicate %s %s (%d sites)\n", strings.Join(o.Types, "|"), qualifiedName(o.Database, o.Name), len(o.Declarations))
+		renderCollisionCompositions(w, o.CollisionIn)
+		renderResolvedVariants(w, o.ResolvedVariants)
 		renderLocateSites(w, o)
+	}
+	for _, o := range doc.Collisions {
+		fmt.Fprintf(w, "declaration collision %s %s (%d sites)\n", strings.Join(o.Types, "|"), qualifiedName(o.Database, o.Name), len(o.Declarations))
+		renderCollisionCompositions(w, o.CollisionIn)
+		renderResolvedVariants(w, o.ResolvedVariants)
+		renderLocateSites(w, o)
+	}
+	for _, o := range doc.Variants {
+		fmt.Fprintf(w, "distinct variants %s %s (%d sites)\n", strings.Join(o.Types, "|"), qualifiedName(o.Database, o.Name), len(o.Declarations))
+		renderResolvedVariants(w, o.ResolvedVariants)
+		renderLocateSites(w, o)
+	}
+}
+
+func renderCollisionCompositions(w io.Writer, compositions []locateCompositionRef) {
+	if len(compositions) == 0 {
+		return
+	}
+	labels := make([]string, 0, len(compositions))
+	for _, composition := range compositions {
+		if composition.Source == "manifest" {
+			labels = append(labels, fmt.Sprintf("(%s, %s)", composition.Role, composition.Env))
+			continue
+		}
+		labels = append(labels, "layer stack "+strings.Join(composition.Layers, ","))
+	}
+	fmt.Fprintf(w, "    declaration collision in: %s\n", strings.Join(labels, ", "))
+}
+
+func renderResolvedVariants(w io.Writer, variants []locateResolvedVariant) {
+	for i, variant := range variants {
+		label := fmt.Sprintf("resolved variant %d", i+1)
+		if len(variant.Definitions) >= 2 {
+			label += fmt.Sprintf(" (duplicate across %d definitions)", len(variant.Definitions))
+		}
+		fmt.Fprintf(w, "    %s:\n", label)
+		for _, definition := range variant.Definitions {
+			fmt.Fprintf(w, "      definition: %s:%d\n", definition.File, definition.Line)
+		}
+		for _, model := range variant.Models {
+			if model.Source == "manifest" {
+				fmt.Fprintf(w, "      (%s, %s)  layers: %s\n", model.Role, model.Env, strings.Join(model.Layers, ","))
+				continue
+			}
+			fmt.Fprintf(w, "      layer stack: %s\n", strings.Join(model.Layers, ","))
+		}
 	}
 }
 
@@ -698,8 +1123,8 @@ func renderDuplicatesText(w io.Writer, doc locateDoc) {
 // -duplicates) audits the layer tree for objects defined at more than one
 // site. Column selector mode loads resolved models before searching and
 // returns success with an empty result. Object pattern mode exits 1 when any
-// pattern matches nothing; duplicate mode exits 1 when duplicates exist.
-// Usage errors exit 2.
+// pattern matches nothing; duplicate mode exits 1 when semantic duplicates or
+// invalid declaration collisions exist. Usage errors exit 2.
 func runLocate(args []string) {
 	fs := flag.NewFlagSet("hclexp locate", flag.ExitOnError)
 	manifestFlag := fs.String("manifest", "", "HCL manifest: object mode scans its layers; column mode resolves every (role, env) stack")
@@ -707,7 +1132,7 @@ func runLocate(args []string) {
 	layersFlag := fs.String("layer", "", "comma-separated ad-hoc layer dirs or .hcl files; column mode resolves them in order as one model")
 	dumpFlag := fs.String("dump", "", "directory of per-node .hcl dumps; column mode resolves node models concurrently")
 	formatFlag := fs.String("format", "text", "output format: text (default) or json")
-	duplicatesFlag := fs.Bool("duplicates", false, "list every object defined at more than one site (patch/override/extend sites refine; abstracts define); takes no name argument")
+	duplicatesFlag := fs.Bool("duplicates", false, "compare repeated full-object definitions across resolved compositions; takes no name argument")
 	tablesFlag := fs.String("tables", "", "comma-separated table names or globs for column lookup; requires -columns and no name argument")
 	columnsFlag := fs.String("columns", "", "comma-separated column names or globs to locate within -tables")
 	_ = fs.Parse(args)
@@ -753,7 +1178,13 @@ func runLocate(args []string) {
 		return
 	}
 
-	doc, unmatched, err := buildLocateDoc(stacks, *layerRootFlag, splitList(*layersFlag), *dumpFlag, patterns, *duplicatesFlag)
+	var status io.Writer
+	if *duplicatesFlag && term.IsTerminal(int(os.Stderr.Fd())) {
+		status = os.Stderr
+	}
+	doc, unmatched, err := buildLocateDocWithProgress(
+		stacks, *layerRootFlag, splitList(*layersFlag), *dumpFlag, patterns, *duplicatesFlag, status,
+	)
 	if err != nil {
 		slog.Error("locate failed", "err", err)
 		os.Exit(1)
@@ -773,7 +1204,7 @@ func runLocate(args []string) {
 	}
 
 	if *duplicatesFlag {
-		if len(doc.Duplicates) > 0 {
+		if len(doc.Duplicates) > 0 || len(doc.Collisions) > 0 {
 			os.Exit(1)
 		}
 		return
