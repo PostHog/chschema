@@ -217,6 +217,16 @@ func TestFieldChangesForMaterializedView(t *testing.T) {
 	assert.Equal(t, []FieldChange{
 		{Field: "query", Change: "modify", Old: "SELECT 1", New: "SELECT 2"},
 	}, fieldChangesForMaterializedView(mvd))
+
+	// An order-only column difference is explicit and replaces the opaque
+	// generic "columns changed" field.
+	mvd = MaterializedViewDiff{
+		Name: "mv", Recreate: true, ColumnsChanged: true,
+		ColumnOrderChange: &OrderByChange{Old: []string{"a", "b"}, New: []string{"b", "a"}},
+	}
+	assert.Equal(t, []FieldChange{{
+		Field: "column_order", Change: "modify", Old: "a, b", New: "b, a",
+	}}, fieldChangesForMaterializedView(mvd))
 }
 
 func TestFieldChangesForView(t *testing.T) {

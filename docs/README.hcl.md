@@ -1206,10 +1206,11 @@ so its DROP+CREATE is the destructive one.
 | `column:<name>` | table |
 | `index:<name>`, `projection:<name>`, `constraint:<name>` | table |
 | `setting:<name>` | table |
-| `engine`, `column_order`, `order_by`, `primary_key`, `partition_by`, `sample_by`, `ttl` | table |
+| `engine`, `order_by`, `primary_key`, `partition_by`, `sample_by`, `ttl` | table |
+| `column_order` | table, materialized view |
 | `comment` | table, view, named collection |
 | `query` | view, materialized view |
-| `to_table`, `columns` | materialized view (either forces a recreate) |
+| `to_table`, `columns` | materialized view (either forces a recreate; `columns` means names or definitions differ) |
 | `column_aliases`, `sql_security`, `definer`, `cluster` | view (each forces a recreate) |
 | `param:<name>`, `on_cluster` | named collection |
 | `sql` | raw block |
@@ -1218,7 +1219,9 @@ so its DROP+CREATE is the destructive one.
 
 How values render: a column as a compact descriptor (`Nullable(String) MATERIALIZED
 upper(s) CODEC(LZ4)`), an engine as its SQL clause, and `column_order`/
-`order_by`/`primary_key` comma-joined. A rename is reported on the **new** name (`column:<new>`, with `old`
+`order_by`/`primary_key` comma-joined. For an order-only difference, interactive
+terminal text also suggests `-ignore-column-order`; redirected and JSON output
+contain only the structured comparison. A rename is reported on the **new** name (`column:<new>`, with `old`
 = the previous name). Two cases carry no per-field values, because the diff holds
 none: a dictionary reconciles via `CREATE OR REPLACE`, so it emits one `modify`
 per changed config path; and a named-collection `param:` set is always `modify`

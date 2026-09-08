@@ -289,6 +289,13 @@ hclexp diff -left ./schema/posthog.hcl \
   and definition while ignoring declaration order. By default physical column
   order is significant because it affects `SELECT *`, positional inserts, and
   dump convergence.
+
+When materialized-view column names and definitions match but their declaration
+order differs, the diff reports `column_order` with both ordered name lists and
+states that recreating the view is required. It does not silently treat the
+reorder as a content change. Interactive terminal output also suggests
+`-ignore-column-order` as the explicit opt-out; redirected and JSON output stay
+machine-clean.
 - `-exclude <file>` — apply the same HCL exclude config to both sides. For a
   live side, matching objects are skipped before their `CREATE` DDL is parsed,
   so transient or unsupported objects cannot abort the diff.

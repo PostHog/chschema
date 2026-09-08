@@ -364,6 +364,30 @@ func TestRenderChangeSet_MaterializedViews(t *testing.T) {
 	require.Equal(t, want, buf.String())
 }
 
+func TestColumnOrderHintIsTerminalOnly(t *testing.T) {
+	cs := hclload.ChangeSet{Databases: []hclload.DatabaseChange{{
+		Database: "posthog",
+		AlterMaterializedViews: []hclload.MaterializedViewDiff{{
+			Name: "mv", Recreate: true, ColumnsChanged: true,
+			ColumnOrderChange: &hclload.OrderByChange{Old: []string{"a", "b"}, New: []string{"b", "a"}},
+		}},
+	}}}
+	require.True(t, shouldShowColumnOrderHint(cs, false, true))
+	require.False(t, shouldShowColumnOrderHint(cs, false, false), "redirected output stays machine-clean")
+	require.False(t, shouldShowColumnOrderHint(cs, true, true), "the user already selected the opt-out")
+
+	genericColumns := cs
+	genericColumns.Databases[0].AlterMaterializedViews[0].ColumnOrderChange = nil
+	require.False(t, shouldShowColumnOrderHint(genericColumns, false, true), "content changes do not suggest ignoring order")
+
+	var text bytes.Buffer
+	renderColumnOrderHint(&text, false)
+	require.Equal(t, "\nhint: if column order is not significant for this comparison, rerun with -ignore-column-order\n", text.String())
+	var sql bytes.Buffer
+	renderColumnOrderHint(&sql, true)
+	require.Equal(t, "-- hint: if column order is not significant for this comparison, rerun with -ignore-column-order\n", sql.String())
+}
+
 func TestRenderChangeSet_Views(t *testing.T) {
 	cs := hclload.ChangeSet{
 		Databases: []hclload.DatabaseChange{
