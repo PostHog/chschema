@@ -1759,7 +1759,7 @@ columns/indexes. Any descendant inherits that completed result, while siblings
 remain on their own inheritance path. Abstract and concrete tables follow the
 same rule.
 
-`patch_materialized_view` does the same for MV queries and output columns;
+`patch_materialized_view` does the same for MV destinations (`to_table`), queries, and output columns;
 its column operations run after `extend`, so inherited columns are patchable.
 `patch_view` and `patch_dictionary` cover views (`query`, `comment`) and
 dictionaries (`source`/`layout`/`lifetime` replace, `settings` merge). See the

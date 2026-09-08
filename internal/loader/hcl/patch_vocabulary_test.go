@@ -247,11 +247,58 @@ database "posthog" {
 	require.Len(t, db.MaterializedViews, 1)
 	mv := db.MaterializedViews[0]
 	assert.Contains(t, mv.Query, "FROM source_dev")
+	assert.Equal(t, "posthog.events", mv.ToTable)
 	assert.Equal(t, []ColumnSpec{
 		{Name: "id", Type: "UInt64"},
 		{Name: "extra", Type: "String"},
 	}, mv.Columns)
 	assert.Empty(t, db.MaterializedViewPatches, "patches are consumed during resolution")
+}
+
+func TestPatchMaterializedView_ToTable(t *testing.T) {
+	root := t.TempDir()
+	base := writePatchLayer(t, root, "base/mv.hcl", `
+database "posthog" {
+  materialized_view "events_mv" {
+    to_table = "posthog.events"
+    query = "SELECT id FROM source"
+    column "id" { type = "UInt64" }
+  }
+}`)
+	for _, tc := range []struct {
+		name  string
+		patch string
+		want  string
+	}{
+		{"destination only", `to_table = "posthog.writable_events"`, "posthog.writable_events"},
+		{"last patch wins", `to_table = "posthog.writable_events"
+  }
+  patch_materialized_view "events_mv" {
+    to_table = "other.events"`, "other.events"},
+		{"empty destination rejected", `to_table = ""`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			patch := writePatchLayer(t, root, "role/patch.hcl", `database "posthog" {
+  patch_materialized_view "events_mv" {
+    `+tc.patch+`
+  }
+}`)
+			schema, err := LoadLayers([]string{base, patch})
+			require.NoError(t, err)
+			err = Resolve(schema)
+			if tc.want == "" {
+				require.ErrorContains(t, err, "materialized_view requires to_table")
+				return
+			}
+			require.NoError(t, err)
+			mv := schema.Databases[0].MaterializedViews[0]
+			assert.Equal(t, tc.want, mv.ToTable)
+			assert.Contains(t, mv.Query, "SELECT id")
+			assert.Contains(t, mv.Query, "FROM source")
+			assert.Equal(t, []ColumnSpec{{Name: "id", Type: "UInt64"}}, mv.Columns)
+			assert.Empty(t, schema.Databases[0].MaterializedViewPatches)
+		})
+	}
 }
 
 func TestPatchMaterializedView_UnknownAndInvalidColumnTargets(t *testing.T) {

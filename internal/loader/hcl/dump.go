@@ -106,6 +106,9 @@ func writeLayerDatabase(body *hclwrite.Body, db DatabaseSpec) {
 	for _, patch := range mvPatches {
 		body.AppendNewline()
 		pb := body.AppendNewBlock("patch_materialized_view", []string{patch.Name}).Body()
+		if patch.ToTable != nil {
+			pb.SetAttributeValue("to_table", cty.StringVal(*patch.ToTable))
+		}
 		if patch.Query != nil {
 			setQueryAttribute(pb, *patch.Query)
 		}
