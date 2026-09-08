@@ -65,6 +65,12 @@ type PlanResult struct {
 // the MV); DROP runs in reverse. Identical statements across roles dedupe to a
 // single operation carrying the union of contributing roles.
 func BuildPlan(roles []RoleDiff) PlanResult {
+	return BuildPlanWithOptions(roles, DiffOptions{})
+}
+
+// BuildPlanWithOptions is BuildPlan with the same comparison policy controls
+// used by the other schema-comparison entry points.
+func BuildPlanWithOptions(roles []RoleDiff, options DiffOptions) PlanResult {
 	type opKey struct{ kind, db, object, sql string }
 
 	var firstSeen []opKey
@@ -75,7 +81,7 @@ func BuildPlan(roles []RoleDiff) PlanResult {
 	// as DiffJSON.Objects).
 	roleComparisons := make([]RoleComparison, 0, len(roles))
 	for _, rd := range roles {
-		cs := Diff(rd.Current, rd.Desired)
+		cs := DiffWithOptions(rd.Current, rd.Desired, options)
 		gen := GenerateSQL(cs)
 		objs := BuildObjectComparisons(cs, gen, rd.Current, rd.Desired)
 		roleComparisons = append(roleComparisons, RoleComparison{

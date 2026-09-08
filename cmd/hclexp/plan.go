@@ -13,6 +13,7 @@ import (
 	"github.com/hashicorp/hcl/v2/gohcl"
 	"github.com/hashicorp/hcl/v2/hclparse"
 	hclload "github.com/posthog/chschema/internal/loader/hcl"
+	"golang.org/x/term"
 )
 
 // planManifest is the HCL manifest: role blocks, each with one env block per
@@ -76,6 +77,7 @@ func runPlan(args []string) {
 	scopeFlag := fs.String("scope", "all", "dump object scope: all (exact) or desired (ignore live-only objects)")
 	formatFlag := fs.String("format", "json", "output format: json (default) or text")
 	excludeFlag := fs.String("exclude", "", "HCL exclude config: objects matching its patterns/object_types are dropped from both sides before diffing")
+	ignoreColumnOrder := fs.Bool("ignore-column-order", false, "ignore table and materialized-view column declaration order")
 	_ = fs.Parse(args)
 
 	if *manifestFlag == "" || *envFlag == "" {
@@ -139,7 +141,7 @@ func runPlan(args []string) {
 		}
 	}
 
-	plan := hclload.BuildPlan(roleDiffs)
+	plan := hclload.BuildPlanWithOptions(roleDiffs, hclload.DiffOptions{IgnoreColumnOrder: *ignoreColumnOrder})
 
 	if *formatFlag == "json" {
 		out, err := json.MarshalIndent(plan, "", "  ")
@@ -151,6 +153,25 @@ func runPlan(args []string) {
 		return
 	}
 	renderPlanText(os.Stdout, plan)
+	if shouldShowPlanColumnOrderHint(plan, *ignoreColumnOrder, term.IsTerminal(int(os.Stdout.Fd()))) {
+		renderColumnOrderHint(os.Stdout, false)
+	}
+}
+
+func shouldShowPlanColumnOrderHint(plan hclload.PlanResult, ignoreColumnOrder, terminal bool) bool {
+	if ignoreColumnOrder || !terminal {
+		return false
+	}
+	for _, role := range plan.Roles {
+		for _, object := range role.Objects {
+			for _, change := range object.Changes {
+				if change.Field == "column_order" {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func roleDiffsFromDump(

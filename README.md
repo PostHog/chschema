@@ -293,9 +293,9 @@ hclexp diff -left ./schema/posthog.hcl \
 When materialized-view column names and definitions match but their declaration
 order differs, the diff reports `column_order` with both ordered name lists and
 states that recreating the view is required. It does not silently treat the
-reorder as a content change. Interactive terminal output also suggests
-`-ignore-column-order` as the explicit opt-out; redirected and JSON output stay
-machine-clean.
+reorder as a content change. Interactive output from `diff` and
+`plan -format text` also suggests `-ignore-column-order` as the explicit
+opt-out; redirected and JSON output stay machine-clean.
 - `-exclude <file>` — apply the same HCL exclude config to both sides. For a
   live side, matching objects are skipped before their `CREATE` DDL is parsed,
   so transient or unsupported objects cannot abort the diff.
@@ -755,8 +755,11 @@ hclexp plan \
 `-from-manifest` and `-dump` are mutually exclusive. A proposed-only role
 plans as all-CREATE; a previous-only role is rejected because decommissioning
 a role must be explicit. `-format text` prints the same ordered list
-human-readably. Require the reference-scoped live drift check to be empty
-immediately before applying this reference-to-proposed plan.
+human-readably. Pass `-ignore-column-order` to compare table and materialized-
+view columns by name and definition instead of declaration position, matching
+`diff`; the default remains order-sensitive. Require the reference-scoped live
+drift check to be empty immediately before applying this reference-to-proposed
+plan.
 
 See **[Cross-role planning](docs/README.hcl.md#cross-role-planning--hclexp-plan)**
 in the reference for the manifest format, and

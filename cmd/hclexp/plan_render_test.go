@@ -25,6 +25,18 @@ func TestPlanRenderEmpty(t *testing.T) {
 	assert.Equal(t, "no changes\n", renderPlanToString(t, hclload.PlanResult{}))
 }
 
+func TestPlanColumnOrderHintIsTerminalOnly(t *testing.T) {
+	plan := hclload.PlanResult{Roles: []hclload.RoleComparison{{
+		Role: "ops", Objects: []hclload.ObjectComparison{{
+			Object: "events", Changes: []hclload.FieldChange{{Field: "column_order", Change: "modify"}},
+		}},
+	}}}
+	assert.True(t, shouldShowPlanColumnOrderHint(plan, false, true))
+	assert.False(t, shouldShowPlanColumnOrderHint(plan, false, false), "redirected output stays machine-clean")
+	assert.False(t, shouldShowPlanColumnOrderHint(plan, true, true), "the user already selected the opt-out")
+	assert.False(t, shouldShowPlanColumnOrderHint(hclload.PlanResult{}, false, true))
+}
+
 // TestPlanRenderUnsafeOnly: unsafe changes that produce no statement (engine or
 // ORDER BY swap needing a full recreate) still print their warnings before the
 // "no changes" summary.
