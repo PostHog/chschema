@@ -16,7 +16,7 @@ func TestRenderObjectSQL_Table(t *testing.T) {
 	sql, err := RenderObjectSQL("posthog", KindTable, "events", &db)
 	require.NoError(t, err)
 	assert.Contains(t, sql, "CREATE TABLE posthog.events")
-	assert.Contains(t, sql, "ORDER BY (id)")
+	assert.Contains(t, sql, "ORDER BY id")
 }
 
 func TestRenderObjectHCL_Table(t *testing.T) {

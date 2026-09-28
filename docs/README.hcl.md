@@ -253,7 +253,7 @@ attributes depend on the kind.
 | `distributed`                         | `cluster_name`, `remote_database`, `remote_table`  | `sharding_key`, `policy_name` (requires `sharding_key`) |
 | `log`                                 | —                                                  | —                      |
 | `kafka`                               | `collection`, or `broker_list`, `topic_list`, `group_name`, `format` | Typed `kafka_*` fields and `extra`; all act as overrides with `collection` |
-| `time_series` (experimental)          | —                                                  | `settings`, `tags_to_columns`, nested `samples`/`tags`/`metrics` blocks |
+| `time_series` (experimental)          | —                                                  | `settings`, `tags_to_columns`, nested `samples`/`tags`/`metrics`/`recent_samples` blocks |
 | `join`                                | `strictness` (`ANY`/`ALL`/`SEMI`/`ANTI`), `type` (`LEFT`/`INNER`/`RIGHT`/`FULL`), `keys = [...]` | — |
 | `null`                                | —                                                  | —                      |
 | `memory`                              | —                                                  | —                      |
@@ -279,7 +279,7 @@ with file/line positions.
 
 ### `time_series` engine
 
-Models ClickHouse's [TimeSeries](https://clickhouse.com/docs/en/engines/table-engines/special/time_series) engine for Prometheus-style metrics. Three sibling target tables (samples/tags/metrics) are declared via nested sub-blocks; each takes either an external `target = "db.table"` reference or an inline `inner {}` block with column list + nested engine.
+Models ClickHouse's [TimeSeries](https://clickhouse.com/docs/en/engines/table-engines/special/time_series) engine for Prometheus-style metrics. Its target tables (samples/tags/metrics, plus recent_samples on ClickHouse 26.8+) are declared via nested sub-blocks; each takes either an external `target = "db.table"` reference or an inline `inner {}` block with column list + nested engine.
 
 ```hcl
 table "prom_metrics" {
@@ -306,6 +306,8 @@ table "prom_metrics" {
 - Inner-form engines restricted to MergeTree-family kinds.
 - ALTER-able settings: `id_generator`, `filter_by_min_time_and_max_time`. Every other setting and every target change requires recreating the table (flagged `-- UNSAFE`).
 - HCL authors always write `samples`; the `DATA` alias CH supports is preserved on dump-side only via a `KeywordHint` round-trip.
+- `recent_samples` is the `RECENT SAMPLES` target ClickHouse 26.8 added: a short-lived copy of the newest samples, on by default (`recent_samples_ttl_seconds = 345600`). Its inner table carries the `PARTITION BY` and `TTL` that expire it.
+- ClickHouse 26.8 stores every default target explicitly in `SHOW CREATE`, so introspecting a table created without targets yields four `inner {}` blocks (26.3 wrote an engine-only shorthand that hclexp folds back to nil).
 
 Inner form for a single target:
 
@@ -317,6 +319,30 @@ samples {
     column "value"     { type = "Float64" }
     engine "merge_tree" {}
     order_by = ["id", "timestamp"]
+  }
+}
+```
+
+An `inner {}` block takes the storage clauses of the target table: `engine`,
+`primary_key`, `order_by`, `partition_by`, `ttl` and `settings`. Inner columns
+take the full column syntax (`codec`, `default`, …). `ttl` is canonicalized like
+a table TTL, so `INTERVAL 4 DAY` and ClickHouse's stored `toIntervalDay(4)`
+compare equal:
+
+```hcl
+recent_samples {
+  inner {
+    column "id"        { type = "Tuple(UInt64, UUID)" }
+    column "timestamp" {
+      type  = "DateTime64(3)"
+      codec = "DoubleDelta, ZSTD(1)"
+    }
+    column "value"     { type = "Float64" }
+    engine "merge_tree" {}
+    order_by     = ["id", "timestamp"]
+    partition_by = "toStartOfInterval(toDateTime(timestamp), toIntervalHour(5))"
+    ttl          = "toDateTime(timestamp) + toIntervalSecond(345600)"
+    settings     = { ttl_only_drop_parts = "1" }
   }
 }
 ```

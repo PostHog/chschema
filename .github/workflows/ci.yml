@@ -38,10 +38,11 @@ jobs:
     - name: Run golangci-lint
       uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
       with:
-        # v2.12.2's prebuilt binary is built with go1.26, so it type-checks this
-        # module's go1.26 source. (Older v2.4.0 was built with go1.25 and
-        # panicked: "file requires newer Go version go1.26".)
-        version: v2.12.2
+        # The prebuilt binary must be built with at least the module's Go
+        # version: v2.14.0 is built with go1.27. (v2.12.2, built with go1.26,
+        # refuses to load the config: "the Go language version (go1.26) used
+        # to build golangci-lint is lower than the targeted Go version (1.27)".)
+        version: v2.14.0
 
   vet:
     runs-on: depot-ubuntu-24.04

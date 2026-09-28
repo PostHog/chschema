@@ -53,11 +53,17 @@ ORDER BY metric_family_name`
 	changes := Diff(&Schema{Databases: []DatabaseSpec{*bare}}, &Schema{Databases: []DatabaseSpec{*db}})
 	assert.Empty(t, changes.Databases)
 
-	// A custom target must not be silently normalized away. Engine-only
-	// custom targets are still unsupported by the schema converter.
+	// A custom target must not be silently normalized away: an engine-only
+	// (shorthand) target is kept as an inner table without columns.
 	customSQL := strings.Replace(sql, "ORDER BY (id, timestamp)", "ORDER BY (timestamp, id)", 1)
-	_, err := buildTableFromCreateSQL(customSQL)
-	require.ErrorContains(t, err, "samples target: clause has neither external table nor inner columns")
+	custom, err := buildTableFromCreateSQL(customSQL)
+	require.NoError(t, err)
+	samples := custom.Engine.Decoded.(EngineTimeSeries).Samples
+	require.NotNil(t, samples)
+	require.NotNil(t, samples.Inner)
+	assert.Empty(t, samples.Inner.Columns)
+	assert.Equal(t, "merge_tree", samples.Inner.Engine.Kind)
+	assert.Equal(t, []string{"timestamp", "id"}, samples.Inner.OrderBy)
 }
 
 func TestSQLGen_TimeSeriesTagsToColumns_HCLFirstEscaping(t *testing.T) {

@@ -188,6 +188,11 @@ func TestLive_HCLIntrospect_TimeSeries(t *testing.T) {
 	// may use a connection pool — a session-level SET wouldn't survive.
 	tsSetting := " SETTINGS allow_experimental_time_series_table = 1"
 
+	// Since ClickHouse 26.8 the tags table must carry min_time/max_time, and
+	// AggregatingMergeTree rejects the non-key `tags` dimension unless
+	// allow_dimensions_outside_sorting_key is set (as the default inner tags
+	// table does).
+
 	stmts := []string{
 		`CREATE TABLE ` + dbName + `.prom_data (
 			id UUID,
@@ -197,8 +202,11 @@ func TestLive_HCLIntrospect_TimeSeries(t *testing.T) {
 		`CREATE TABLE ` + dbName + `.prom_tags (
 			id UUID,
 			metric_name LowCardinality(String),
-			tags Map(LowCardinality(String), String)
-		) ENGINE = AggregatingMergeTree PRIMARY KEY metric_name ORDER BY (metric_name, id)`,
+			tags Map(LowCardinality(String), String),
+			min_time SimpleAggregateFunction(min, Nullable(DateTime64(3))),
+			max_time SimpleAggregateFunction(max, Nullable(DateTime64(3)))
+		) ENGINE = AggregatingMergeTree PRIMARY KEY metric_name ORDER BY (metric_name, id)
+		SETTINGS allow_dimensions_outside_sorting_key = 1`,
 		`CREATE TABLE ` + dbName + `.prom_metrics_meta (
 			metric_family_name String,
 			type String,
@@ -231,7 +239,8 @@ func TestLive_HCLIntrospect_TimeSeries(t *testing.T) {
 	require.NotNil(t, external, "prom_external should round-trip")
 	ext, ok := external.Engine.Decoded.(hclload.EngineTimeSeries)
 	require.True(t, ok)
-	require.Equal(t, "DATA", ext.KeywordHint, "DATA alias preserved")
+	// 26.3 kept the DATA alias verbatim; 26.8 stores it as SAMPLES.
+	require.Contains(t, []string{"DATA", "SAMPLES"}, ext.KeywordHint)
 	require.NotNil(t, ext.Samples)
 	require.NotNil(t, ext.Samples.Target)
 	require.Equal(t, dbName+".prom_data", *ext.Samples.Target)

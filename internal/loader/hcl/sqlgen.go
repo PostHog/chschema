@@ -734,18 +734,27 @@ func createTableSQL(database string, t TableSpec) string {
 	clause, extraSettings := engineSQL(engine)
 	fmt.Fprintf(&b, " ENGINE = %s", clause)
 
-	// TimeSeries: emit the SAMPLES/TAGS/METRICS tail clauses between the
-	// ENGINE clause and the storage clauses (which are mostly inapplicable
-	// to TimeSeries anyway — the outer table has no ORDER BY etc.).
+	settings := mergeSettings(t.Settings, extraSettings)
+
+	// TimeSeries: emit the SETTINGS and then the SAMPLES/TAGS/METRICS/RECENT
+	// SAMPLES tail clauses between the ENGINE clause and the storage clauses
+	// (which are mostly inapplicable to TimeSeries anyway — the outer table
+	// has no ORDER BY etc.). SETTINGS must precede the targets, as in SHOW
+	// CREATE: a SETTINGS clause after them is query-level, and ClickHouse
+	// rejects engine settings such as recent_samples_ttl_seconds there.
 	if ts, ok := engine.(EngineTimeSeries); ok {
+		if len(settings) > 0 {
+			fmt.Fprintf(&b, " SETTINGS %s", formatSettingsList(settings))
+			settings = nil
+		}
 		b.WriteString(timeSeriesTailSQL(ts))
 	}
 
 	if len(t.PrimaryKey) > 0 {
-		fmt.Fprintf(&b, " PRIMARY KEY (%s)", strings.Join(t.PrimaryKey, ", "))
+		fmt.Fprintf(&b, " PRIMARY KEY %s", keyExprSQL(t.PrimaryKey))
 	}
 	if len(t.OrderBy) > 0 {
-		fmt.Fprintf(&b, " ORDER BY (%s)", strings.Join(t.OrderBy, ", "))
+		fmt.Fprintf(&b, " ORDER BY %s", keyExprSQL(t.OrderBy))
 	}
 	if t.PartitionBy != nil {
 		fmt.Fprintf(&b, " PARTITION BY %s", *t.PartitionBy)
@@ -757,7 +766,6 @@ func createTableSQL(database string, t TableSpec) string {
 		fmt.Fprintf(&b, " TTL %s", *t.TTL)
 	}
 
-	settings := mergeSettings(t.Settings, extraSettings)
 	if len(settings) > 0 {
 		fmt.Fprintf(&b, " SETTINGS %s", formatSettingsList(settings))
 	}
@@ -1195,7 +1203,7 @@ func renderTagsToColumnsMap(m map[string]string) string {
 	return "{" + strings.Join(parts, ", ") + "}"
 }
 
-// timeSeriesTailSQL renders the SAMPLES/TAGS/METRICS tail clauses that
+// timeSeriesTailSQL renders the SAMPLES/TAGS/METRICS/RECENT SAMPLES tail clauses that
 // follow `ENGINE = TimeSeries` on a CREATE TABLE statement. Empty string
 // when no target sub-blocks are set.
 func timeSeriesTailSQL(e EngineTimeSeries) string {
@@ -1203,6 +1211,7 @@ func timeSeriesTailSQL(e EngineTimeSeries) string {
 	emitTimeSeriesTarget(&b, e.Samples, samplesKeyword(e.KeywordHint))
 	emitTimeSeriesTarget(&b, e.Tags, "TAGS")
 	emitTimeSeriesTarget(&b, e.Metrics, "METRICS")
+	emitTimeSeriesTarget(&b, e.RecentSamples, "RECENT SAMPLES")
 	return b.String()
 }
 
@@ -1224,11 +1233,13 @@ func emitTimeSeriesTarget(b *strings.Builder, t *TimeSeriesTarget, keyword strin
 	if t.Inner == nil {
 		return
 	}
-	parts := make([]string, len(t.Inner.Columns))
-	for i, c := range t.Inner.Columns {
-		parts[i] = columnDefSQL(c)
+	if len(t.Inner.Columns) > 0 {
+		parts := make([]string, len(t.Inner.Columns))
+		for i, c := range t.Inner.Columns {
+			parts[i] = columnDefSQL(c)
+		}
+		fmt.Fprintf(b, " %s INNER COLUMNS (%s)", keyword, strings.Join(parts, ", "))
 	}
-	fmt.Fprintf(b, " %s INNER COLUMNS (%s)", keyword, strings.Join(parts, ", "))
 	if t.Inner.Engine != nil && t.Inner.Engine.Decoded != nil {
 		innerClause, innerSettings := engineSQL(t.Inner.Engine.Decoded)
 		fmt.Fprintf(b, " %s INNER ENGINE = %s", keyword, innerClause)
@@ -1240,13 +1251,19 @@ func emitTimeSeriesTarget(b *strings.Builder, t *TimeSeriesTarget, keyword strin
 		}
 	}
 	if len(t.Inner.PrimaryKey) > 0 {
-		fmt.Fprintf(b, " PRIMARY KEY (%s)", strings.Join(t.Inner.PrimaryKey, ", "))
+		fmt.Fprintf(b, " PRIMARY KEY %s", keyExprSQL(t.Inner.PrimaryKey))
 	}
 	if len(t.Inner.OrderBy) > 0 {
-		fmt.Fprintf(b, " ORDER BY (%s)", strings.Join(t.Inner.OrderBy, ", "))
+		fmt.Fprintf(b, " ORDER BY %s", keyExprSQL(t.Inner.OrderBy))
 	}
 	if t.Inner.PartitionBy != nil {
 		fmt.Fprintf(b, " PARTITION BY %s", *t.Inner.PartitionBy)
+	}
+	if t.Inner.TTL != nil {
+		fmt.Fprintf(b, " TTL %s", *t.Inner.TTL)
+	}
+	if len(t.Inner.Settings) > 0 {
+		fmt.Fprintf(b, " SETTINGS %s", formatSettingsList(t.Inner.Settings))
 	}
 }
 
@@ -1346,4 +1363,15 @@ func unsafeReasons(database string, td TableDiff) []UnsafeChange {
 		}
 	}
 	return out
+}
+
+// keyExprSQL renders an ORDER BY / PRIMARY KEY expression list. A single
+// expression is emitted bare: since 26.8 ClickHouse stores `ORDER BY (id)`
+// verbatim (26.3 normalised it to `ORDER BY id`), so wrapping it would make
+// the stored DDL differ from the bare form a user writes by hand.
+func keyExprSQL(exprs []string) string {
+	if len(exprs) == 1 {
+		return exprs[0]
+	}
+	return "(" + strings.Join(exprs, ", ") + ")"
 }

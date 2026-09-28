@@ -253,6 +253,19 @@ type EngineKafka struct {
 
 func (EngineKafka) Kind() string { return "kafka" }
 
+// hasInlineSettings reports whether any per-table Kafka setting is set, i.e.
+// anything beyond the Collection reference.
+func (k EngineKafka) hasInlineSettings() bool {
+	return k.BrokerList != nil || k.TopicList != nil || k.GroupName != nil || k.Format != nil ||
+		k.SecurityProtocol != nil || k.SaslMechanism != nil || k.SaslUsername != nil || k.SaslPassword != nil ||
+		k.ClientID != nil || k.Schema != nil || k.HandleErrorMode != nil || k.CompressionCodec != nil ||
+		k.NumConsumers != nil || k.MaxBlockSize != nil || k.SkipBrokenMessages != nil ||
+		k.PollTimeoutMs != nil || k.PollMaxBatchSize != nil || k.FlushIntervalMs != nil ||
+		k.ConsumerRescheduleMs != nil || k.MaxRowsPerMessage != nil || k.CompressionLevel != nil ||
+		k.CommitEveryBatch != nil || k.ThreadPerConsumer != nil || k.CommitOnSelect != nil ||
+		k.AutodetectClientRack != nil || len(k.Extra) > 0
+}
+
 // mergeTreeFamilyVirtuals is the stable virtual-column set every
 // MergeTree-family engine exposes. Version-gated names (_block_number,
 // _block_offset on CH 24.x+, _row_exists with lightweight deletes) are
@@ -364,6 +377,10 @@ type EngineTimeSeries struct {
 	Samples *TimeSeriesTarget `hcl:"samples,block"`
 	Tags    *TimeSeriesTarget `hcl:"tags,block"`
 	Metrics *TimeSeriesTarget `hcl:"metrics,block"`
+	// RecentSamples is the RECENT SAMPLES target (ClickHouse 26.8+): a
+	// short-lived copy of the newest samples, on by default
+	// (recent_samples_ttl_seconds).
+	RecentSamples *TimeSeriesTarget `hcl:"recent_samples,block"`
 
 	// KeywordHint preserves whether the samples target's source SQL used
 	// SAMPLES or DATA. Populated by the introspector; sqlgen reads it to
@@ -374,9 +391,25 @@ type EngineTimeSeries struct {
 
 func (EngineTimeSeries) Kind() string { return "time_series" }
 
+// timeSeriesTargetSlot is one TimeSeries target with its HCL block label.
+type timeSeriesTargetSlot struct {
+	kind string
+	t    *TimeSeriesTarget
+}
+
+// targets lists every target slot in SQL clause order; unset ones are nil.
+func (e EngineTimeSeries) targets() []timeSeriesTargetSlot {
+	return []timeSeriesTargetSlot{
+		{"samples", e.Samples},
+		{"tags", e.Tags},
+		{"metrics", e.Metrics},
+		{"recent_samples", e.RecentSamples},
+	}
+}
+
 func (EngineTimeSeries) Virtuals() []DeclaredColumn { return nil }
 
-// TimeSeriesTarget is one of {samples, tags, metrics}. Exactly one of
+// TimeSeriesTarget is one of {samples, tags, metrics, recent_samples}. Exactly one of
 // Target or Inner must be set; both/neither is a resolve-time error.
 type TimeSeriesTarget struct {
 	Target *string               `hcl:"target,optional"`
@@ -391,6 +424,7 @@ type TimeSeriesInnerTable struct {
 	PrimaryKey  []string          `hcl:"primary_key,optional"`
 	OrderBy     []string          `hcl:"order_by,optional"`
 	PartitionBy *string           `hcl:"partition_by,optional"`
+	TTL         *string           `hcl:"ttl,optional"`
 	Settings    map[string]string `hcl:"settings,optional"`
 }
 
@@ -564,7 +598,8 @@ func DecodeEngine(spec *EngineSpec) (Engine, error) {
 		if !diags.HasErrors() {
 			// Recursively decode inner engines so resolver/sqlgen see
 			// typed values without each caller having to do it again.
-			for _, t := range []*TimeSeriesTarget{e.Samples, e.Tags, e.Metrics} {
+			for _, slot := range e.targets() {
+				t := slot.t
 				if t == nil || t.Inner == nil || t.Inner.Engine == nil {
 					continue
 				}

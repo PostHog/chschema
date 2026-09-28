@@ -644,18 +644,11 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 		if len(v.TagsToColumns) > 0 {
 			b.SetAttributeValue("tags_to_columns", stringMap(v.TagsToColumns))
 		}
-		for _, sub := range []struct {
-			label string
-			t     *TimeSeriesTarget
-		}{
-			{"samples", v.Samples},
-			{"tags", v.Tags},
-			{"metrics", v.Metrics},
-		} {
+		for _, sub := range v.targets() {
 			if sub.t == nil {
 				continue
 			}
-			tBlock := b.AppendNewBlock(sub.label, nil)
+			tBlock := b.AppendNewBlock(sub.kind, nil)
 			tb := tBlock.Body()
 			if sub.t.Target != nil {
 				tb.SetAttributeValue("target", cty.StringVal(*sub.t.Target))
@@ -680,6 +673,9 @@ func writeEngine(parent *hclwrite.Body, e Engine) {
 			}
 			if sub.t.Inner.PartitionBy != nil {
 				ib.SetAttributeValue("partition_by", cty.StringVal(*sub.t.Inner.PartitionBy))
+			}
+			if sub.t.Inner.TTL != nil {
+				ib.SetAttributeValue("ttl", cty.StringVal(*sub.t.Inner.TTL))
 			}
 			if len(sub.t.Inner.Settings) > 0 {
 				ib.SetAttributeValue("settings", stringMap(sub.t.Inner.Settings))

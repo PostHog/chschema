@@ -296,3 +296,27 @@ database "db" {
 	assert.Equal(t, []string{"id", "name", "ts"}, colNames(events))
 	assert.Equal(t, "users", db.Tables[1].Name)
 }
+
+// TestApplySQL_KafkaTrailingQuerySettings: a trailing query-level SETTINGS
+// clause after the engine's own (#250) used to make the parser drop the
+// engine's kafka_* settings (orian/clickhouse-sql-parser#35). All four keys
+// must survive, and the query-level setting is not part of the schema.
+func TestApplySQL_KafkaTrailingQuerySettings(t *testing.T) {
+	s := baseSchema()
+	_, err := ApplySQL(s, `CREATE TABLE db.q (id UInt64) ENGINE = Kafka
+SETTINGS kafka_broker_list = 'b', kafka_topic_list = 't', kafka_group_name = 'g',
+         kafka_format = 'JSONEachRow'
+SETTINGS flatten_nested = 0;`, "", false)
+	require.NoError(t, err)
+	q := findTable(&s.Databases[0], "q")
+	k := q.Engine.Decoded.(EngineKafka)
+	require.NotNil(t, k.BrokerList)
+	assert.Equal(t, "b", *k.BrokerList)
+	require.NotNil(t, k.TopicList)
+	assert.Equal(t, "t", *k.TopicList)
+	require.NotNil(t, k.GroupName)
+	assert.Equal(t, "g", *k.GroupName)
+	require.NotNil(t, k.Format)
+	assert.Equal(t, "JSONEachRow", *k.Format)
+	assert.NotContains(t, q.Settings, "flatten_nested")
+}

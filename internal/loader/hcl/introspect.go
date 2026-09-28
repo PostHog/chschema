@@ -327,6 +327,8 @@ func buildTableFromCreateTable(ct *chparser.CreateTable) (TableSpec, error) {
 					ts.Tags = target
 				case "metrics":
 					ts.Metrics = target
+				case "recent_samples":
+					ts.RecentSamples = target
 				default:
 					return TableSpec{}, fmt.Errorf("unknown TimeSeries target kind: %q", tc.Kind)
 				}
@@ -1711,18 +1713,22 @@ func buildTimeSeriesTarget(tc *chparser.TimeSeriesTargetClause) (*TimeSeriesTarg
 		ref := stripBackticks(tc.External.String())
 		return &TimeSeriesTarget{Target: &ref}, nil
 	}
-	if tc.InnerColumns == nil {
-		return nil, errors.New("clause has neither external table nor inner columns")
+	// INNER UUID is instance identity, like a table's UUID, and is ignored.
+	if tc.InnerColumns == nil && tc.InnerEngine == nil {
+		return nil, errors.New("clause has neither external table nor inner columns/engine")
 	}
-	cols := columnsFromTableSchema(tc.InnerColumns)
-	inner := &TimeSeriesInnerTable{
-		Columns: make([]ColumnSpec, len(cols)),
-	}
-	for i, c := range cols {
-		inner.Columns[i] = ColumnSpec{Name: c.Name, Type: c.Type}
+	inner := &TimeSeriesInnerTable{}
+	if tc.InnerColumns != nil {
+		for _, c := range tc.InnerColumns.Columns {
+			cd, ok := c.(*chparser.ColumnDef)
+			if !ok {
+				return nil, fmt.Errorf("unhandled inner column item %T", c)
+			}
+			inner.Columns = append(inner.Columns, columnFromAST(cd))
+		}
 	}
 	if tc.InnerEngine != nil {
-		eng, _, err := engineFromAST(tc.InnerEngine)
+		eng, settings, err := engineFromAST(tc.InnerEngine)
 		if err != nil {
 			return nil, fmt.Errorf("inner engine: %w", err)
 		}
@@ -1740,6 +1746,12 @@ func buildTimeSeriesTarget(tc *chparser.TimeSeriesTargetClause) (*TimeSeriesTarg
 		if tc.InnerEngine.PartitionBy != nil {
 			pb := formatNode(tc.InnerEngine.PartitionBy.Expr)
 			inner.PartitionBy = &pb
+		}
+		if tc.InnerEngine.TTL != nil && len(tc.InnerEngine.TTL.Items) > 0 {
+			inner.TTL = strPtr(formatTTLItems(tc.InnerEngine.TTL.Items))
+		}
+		if len(settings) > 0 {
+			inner.Settings = settings
 		}
 	}
 	return &TimeSeriesTarget{Inner: inner}, nil

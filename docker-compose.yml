@@ -2,7 +2,7 @@ name: chschema
 
 services:
   keeper:
-    image: clickhouse/clickhouse-keeper:26.3.12.3
+    image: clickhouse/clickhouse-keeper:26.8.11.7
     environment:
       - KEEPER_SERVER_ID=1
     volumes:
@@ -18,7 +18,7 @@ services:
     restart: unless-stopped
 
   clickhouse:
-    image: clickhouse/clickhouse-server:26.3.12.3
+    image: clickhouse/clickhouse-server:26.8.11.7
     depends_on:
       - keeper
     ports:

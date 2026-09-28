@@ -448,9 +448,9 @@ func normalizeDictionaryAttrs(object string, attrs []DictionaryAttribute) {
 	}
 }
 
-// normalizeEngineInnerColumns canonicalizes the columns of a TimeSeries
-// engine's inner tables — the one column list that lives inside an engine
-// block rather than on the table. It runs off EngineSpec.Decoded, which is why
+// normalizeEngineInnerColumns canonicalizes the columns and TTL of a
+// TimeSeries engine's inner tables — the one column list that lives inside an
+// engine block rather than on the table. It runs off EngineSpec.Decoded, which is why
 // canonicalize is called after the engines are decoded; the target sub-blocks
 // are pointers, so mutating through them updates the decoded engine in place.
 func normalizeEngineInnerColumns(object string, e *EngineSpec) {
@@ -461,11 +461,13 @@ func normalizeEngineInnerColumns(object string, e *EngineSpec) {
 	if !ok {
 		return
 	}
-	for _, t := range []*TimeSeriesTarget{ts.Samples, ts.Tags, ts.Metrics} {
+	for _, slot := range ts.targets() {
+		t := slot.t
 		if t == nil || t.Inner == nil {
 			continue
 		}
 		normalizeColumnExprs(object+" (inner)", t.Inner.Columns)
+		normalizeTTLPtr(&t.Inner.TTL)
 	}
 }
 

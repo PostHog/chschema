@@ -253,7 +253,7 @@ var createTableCases = []createTableCase{
     engine "merge_tree" {}
   }
 }`,
-		wantContains: []string{"PRIMARY KEY (id)"},
+		wantContains: []string{"PRIMARY KEY id ORDER BY (id, ts)"},
 	},
 
 	// Docs: "CONSTRAINT" — CHECK boolean expression.
