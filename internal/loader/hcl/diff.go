@@ -1252,10 +1252,11 @@ func diffTimeSeries(td *TableDiff, fromSpec, toSpec *EngineSpec, from, to Engine
 	if !reflect.DeepEqual(from.TagsToColumns, to.TagsToColumns) {
 		bakedDiffers = true
 	}
-	if !reflect.DeepEqual(from.Samples, to.Samples) ||
-		!reflect.DeepEqual(from.Tags, to.Tags) ||
-		!reflect.DeepEqual(from.Metrics, to.Metrics) {
-		bakedDiffers = true
+	fromTargets, toTargets := from.targets(), to.targets()
+	for i := range fromTargets {
+		if !timeSeriesTargetEqual(fromTargets[i].t, toTargets[i].t) {
+			bakedDiffers = true
+		}
 	}
 
 	if bakedDiffers {
@@ -1422,4 +1423,23 @@ func virtualNameSet(e Engine, r TableResolver) map[string]bool {
 		out["_headers"] = true
 	}
 	return out
+}
+
+// timeSeriesTargetEqual compares two TimeSeries targets by value. An inner
+// engine's HCL Body (set only when the target was loaded from HCL) is not
+// part of the value: comparing it made every loaded inner target differ from
+// its introspected twin.
+func timeSeriesTargetEqual(a, b *TimeSeriesTarget) bool {
+	return reflect.DeepEqual(withoutInnerEngineBody(a), withoutInnerEngineBody(b))
+}
+
+func withoutInnerEngineBody(t *TimeSeriesTarget) *TimeSeriesTarget {
+	if t == nil || t.Inner == nil || t.Inner.Engine == nil {
+		return t
+	}
+	inner := *t.Inner
+	engine := *inner.Engine
+	engine.Body = nil
+	inner.Engine = &engine
+	return &TimeSeriesTarget{Target: t.Target, Inner: &inner}
 }

@@ -1,12 +1,12 @@
 module github.com/posthog/chschema
 
-go 1.25
+go 1.27
 
 require (
 	github.com/ClickHouse/clickhouse-go/v2 v2.40.3
 	github.com/google/go-cmp v0.7.0
 	github.com/hashicorp/hcl/v2 v2.24.0
-	github.com/orian/clickhouse-sql-parser v1.0.2
+	github.com/orian/clickhouse-sql-parser v1.1.1
 	github.com/pmezard/go-difflib v1.0.0
 	github.com/rs/zerolog v1.34.0
 	github.com/stretchr/testify v1.11.1

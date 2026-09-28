@@ -167,7 +167,8 @@ func CollectDependencies(dbs []DatabaseSpec) ([]Dependency, error) {
 				})
 			case EngineTimeSeries:
 				from := ObjectRef{Database: db.Name, Name: t.Name}
-				for _, target := range []*TimeSeriesTarget{eng.Samples, eng.Tags, eng.Metrics} {
+				for _, slot := range eng.targets() {
+					target := slot.t
 					if target == nil || target.Target == nil {
 						continue
 					}

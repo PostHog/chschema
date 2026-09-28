@@ -286,16 +286,7 @@ func validateKafkaEngines(s *Schema) error {
 				}
 			}
 
-			hasInline := k.BrokerList != nil || k.TopicList != nil || k.GroupName != nil || k.Format != nil ||
-				k.SecurityProtocol != nil || k.SaslMechanism != nil || k.SaslUsername != nil || k.SaslPassword != nil ||
-				k.ClientID != nil || k.Schema != nil || k.HandleErrorMode != nil || k.CompressionCodec != nil ||
-				k.NumConsumers != nil || k.MaxBlockSize != nil || k.SkipBrokenMessages != nil ||
-				k.PollTimeoutMs != nil || k.PollMaxBatchSize != nil || k.FlushIntervalMs != nil ||
-				k.ConsumerRescheduleMs != nil || k.MaxRowsPerMessage != nil || k.CompressionLevel != nil ||
-				k.CommitEveryBatch != nil || k.ThreadPerConsumer != nil || k.CommitOnSelect != nil ||
-				k.AutodetectClientRack != nil || len(k.Extra) > 0
-
-			if k.Collection == nil && !hasInline {
+			if k.Collection == nil && !k.hasInlineSettings() {
 				return fmt.Errorf("%s.%s: kafka engine requires either `collection` or inline settings", db.Name, t.Name)
 			}
 			if k.Collection != nil {
@@ -819,14 +810,7 @@ func validateTimeSeriesEngine(dbName, tableName string, tableSettings map[string
 		}
 	}
 
-	for _, kv := range []struct {
-		kind string
-		t    *TimeSeriesTarget
-	}{
-		{"samples", e.Samples},
-		{"tags", e.Tags},
-		{"metrics", e.Metrics},
-	} {
+	for _, kv := range e.targets() {
 		if kv.t == nil {
 			continue
 		}
