@@ -215,6 +215,15 @@ func TestFindDuplicates(t *testing.T) {
 	}
 
 	got := FindDuplicates(decls)
+	candidates := FindDuplicateCandidates(decls)
+	require.Len(t, candidates, 5)
+	assert.Equal(t, "events", candidates[2].Name)
+	assert.Equal(t, []Declaration{
+		{ObjectType: KindTable, Database: "posthog", Name: "events", File: "a/shared.hcl", Line: 20},
+		{ObjectType: KindTable, Database: "posthog", Name: "events", File: "b/data.hcl", Line: 6, Extends: "events_base"},
+		{ObjectType: KindTable, Database: "posthog", Name: "events", File: "c/prod.hcl", Line: 3, Override: true},
+		{ObjectType: KindTable, Database: "posthog", Name: "events", File: "c/satellite.hcl", Line: 12, Extends: "events_base"},
+	}, candidates[2].Declarations, "override is a full-object candidate while extend remains a reported refinement")
 
 	want := []DuplicateGroup{
 		{Name: "kafka_creds", Declarations: []Declaration{
