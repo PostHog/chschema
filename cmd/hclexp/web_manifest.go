@@ -516,6 +516,7 @@ func (ms *multiServer) handleLookup(w http.ResponseWriter, r *http.Request) {
 		sortLookupResults(results)
 	}
 	data := lookupData{Title: "Lookup", Query: query, Results: results, ShowSchema: true}
+	data.Groups = groupLookupResults(results)
 	if err := ms.tmplLookup.ExecuteTemplate(w, "layout", data); err != nil {
 		slog.Error("render aggregate lookup", "err", err)
 		http.Error(w, "template error", http.StatusInternalServerError)

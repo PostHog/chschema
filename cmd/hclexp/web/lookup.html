@@ -14,19 +14,19 @@
 <p class="muted">No objects match <code>{{.Query}}</code>.</p>
 {{else}}
 <p class="muted">{{len .Results}} matching object{{if ne (len .Results) 1}}s{{end}}</p>
-<div class="lookup-results">
-  <table class="grid">
-    <thead><tr><th>Object</th><th>Kind</th>{{if .ShowSchema}}<th>Schema / node</th>{{end}}</tr></thead>
-    <tbody>
-      {{range .Results}}
-      <tr>
-        <td><a href="{{.Href}}">{{.QualifiedName}}</a></td>
-        <td>{{.KindLabel}}</td>
-        {{if $.ShowSchema}}<td>{{.Schema}}</td>{{end}}
-      </tr>
-      {{end}}
-    </tbody>
-  </table>
-</div>
+{{range .Groups}}
+<section class="lookup-group">
+  <h2>{{.KindLabel}} <span class="count">{{len .Results}}</span></h2>
+  {{if or $.ShowSchema .Engine}}<dl class="lookup-group-meta">
+    {{if $.ShowSchema}}<div><dt>Schema / node</dt><dd>{{.Schema}}</dd></div>{{end}}
+    {{if .Engine}}<div><dt>Engine</dt><dd><code>{{.Engine}}</code></dd></div>{{end}}
+  </dl>{{end}}
+  <ul class="lookup-group-objects">
+    {{range .Results}}
+    <li><a href="{{.Href}}">{{.QualifiedName}}</a></li>
+    {{end}}
+  </ul>
+</section>
+{{end}}
 {{end}}
 {{end}}

@@ -502,6 +502,7 @@ type lookupResult struct {
 	Database      string
 	Kind          string
 	KindLabel     string
+	Engine        string
 	Name          string
 	QualifiedName string
 	Href          string
@@ -514,7 +515,40 @@ type lookupData struct {
 	Label      string
 	Query      string
 	Results    []lookupResult
+	Groups     []lookupGroup
 	ShowSchema bool
+}
+
+type lookupGroup struct {
+	Schema    string
+	KindLabel string
+	Engine    string
+	Results   []lookupResult
+}
+
+// groupLookupResults keeps the best-matching group first and preserves match
+// ranking within each group. A typed key avoids collisions in schema labels.
+func groupLookupResults(results []lookupResult) []lookupGroup {
+	type groupKey struct {
+		schema string
+		kind   string
+		engine string
+	}
+	var groups []lookupGroup
+	indexes := make(map[groupKey]int)
+	for _, result := range results {
+		key := groupKey{schema: result.Schema, kind: result.Kind, engine: result.Engine}
+		index, ok := indexes[key]
+		if !ok {
+			index = len(groups)
+			indexes[key] = index
+			groups = append(groups, lookupGroup{
+				Schema: result.Schema, KindLabel: result.KindLabel, Engine: result.Engine,
+			})
+		}
+		groups[index].Results = append(groups[index].Results, result)
+	}
+	return groups
 }
 
 // columnCollapseLimit is the row count above which a collapsible column list is
@@ -664,6 +698,7 @@ func (s *webServer) handleLookup(w http.ResponseWriter, r *http.Request) {
 		Query:   query,
 		Results: s.lookupResults(query, s.label),
 	}
+	data.Groups = groupLookupResults(data.Results)
 	s.render(w, s.tmplLookup, data)
 }
 
@@ -677,7 +712,7 @@ func (s *webServer) lookupResults(query, schemaLabel string) []lookupResult {
 	}
 
 	var results []lookupResult
-	add := func(database, kind, name string) {
+	add := func(database, kind, name, engine string) {
 		rank := lookupMatchRank(query, database, kind, name)
 		if rank < 0 {
 			return
@@ -687,6 +722,7 @@ func (s *webServer) lookupResults(query, schemaLabel string) []lookupResult {
 			Database:      database,
 			Kind:          kind,
 			KindLabel:     kindLabel(kind),
+			Engine:        engine,
 			Name:          name,
 			QualifiedName: database + "." + name,
 			Href:          s.basePath + objectHref(database, kind, name),
@@ -696,19 +732,23 @@ func (s *webServer) lookupResults(query, schemaLabel string) []lookupResult {
 	for i := range s.schema.Databases {
 		db := &s.schema.Databases[i]
 		for _, table := range db.Tables {
-			add(db.Name, hclload.KindTable, table.Name)
+			engine := ""
+			if table.Engine != nil {
+				engine = table.Engine.Kind
+			}
+			add(db.Name, hclload.KindTable, table.Name, engine)
 		}
 		for _, mv := range db.MaterializedViews {
-			add(db.Name, hclload.KindMaterializedView, mv.Name)
+			add(db.Name, hclload.KindMaterializedView, mv.Name, "")
 		}
 		for _, view := range db.Views {
-			add(db.Name, hclload.KindView, view.Name)
+			add(db.Name, hclload.KindView, view.Name, "")
 		}
 		for _, dictionary := range db.Dictionaries {
-			add(db.Name, hclload.KindDictionary, dictionary.Name)
+			add(db.Name, hclload.KindDictionary, dictionary.Name, "")
 		}
 		for _, raw := range db.Raws {
-			add(db.Name, hclload.KindRaw, raw.Name)
+			add(db.Name, hclload.KindRaw, raw.Name, "")
 		}
 	}
 	sortLookupResults(results)

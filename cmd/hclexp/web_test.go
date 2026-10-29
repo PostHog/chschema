@@ -73,6 +73,41 @@ func TestWeb_Lookup(t *testing.T) {
 	assert.Contains(t, body, "No objects match")
 }
 
+func TestWeb_LookupGroupsByKindAndEngine(t *testing.T) {
+	schema := webTestSchema()
+	db := &schema.Databases[0]
+	archive := db.Tables[0]
+	archive.Name = "events_z_archive"
+	db.Tables = append(db.Tables, archive, hclload.TableSpec{
+		Name: "events_kafka",
+		Engine: &hclload.EngineSpec{
+			Kind: "kafka", Decoded: hclload.EngineKafka{},
+		},
+	}, hclload.TableSpec{Name: "events_unknown"})
+	srv, err := newWebServer(schema)
+	require.NoError(t, err)
+
+	code, body := getBody(t, srv, "/lookup?q=events")
+	require.Equal(t, http.StatusOK, code)
+	assert.Contains(t, body, "5 matching objects")
+	sections := strings.Split(body, `<section class="lookup-group">`)
+	require.Len(t, sections, 5, "four groups plus the page before the first group")
+	// The exact name match puts its group first, and the other MergeTree
+	// match joins it even though other kinds and engines intervene by name.
+	mergeTree := strings.SplitN(sections[1], "</section>", 2)[0]
+	assert.Contains(t, mergeTree, `Table <span class="count">2</span>`)
+	assert.Contains(t, mergeTree, "merge_tree")
+	assert.Contains(t, mergeTree, `href="/db/posthog/table/events"`)
+	assert.Contains(t, mergeTree, `href="/db/posthog/table/events_z_archive"`)
+	assert.NotContains(t, mergeTree, "events_kafka")
+	assert.NotContains(t, mergeTree, "events_mv")
+	assert.NotContains(t, mergeTree, "events_unknown")
+	assert.Contains(t, body, "<code>kafka</code>")
+	assert.Contains(t, body, `href="/db/posthog/materialized_view/events_mv"`)
+	assert.Contains(t, body, `href="/db/posthog/table/events_unknown"`)
+	assert.NotContains(t, body, "<dt>Schema / node</dt>", "local lookup does not repeat its schema label")
+}
+
 func TestWeb_DatabaseAnchorIsStableAndURLSafe(t *testing.T) {
 	anchor := databaseAnchor("odd database/名")
 	assert.Equal(t, anchor, databaseAnchor("odd database/名"))

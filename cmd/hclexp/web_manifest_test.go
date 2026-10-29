@@ -259,11 +259,14 @@ func TestWebManifest_LookupAcrossAndWithinSchemas(t *testing.T) {
 	assert.Contains(t, body, "prod-us / ops")
 	assert.Contains(t, body, "prod-eu / ops")
 	assert.NotContains(t, body, "prod-us / data")
+	assert.Equal(t, 2, strings.Count(body, `<section class="lookup-group">`), "different schema labels have separate groups")
+	assert.Equal(t, 2, strings.Count(body, "<code>merge_tree</code>"))
 
 	code, body = getMulti(t, ms, "/s/prod-us/ops/lookup?q=ops")
 	require.Equal(t, http.StatusOK, code)
 	assert.Contains(t, body, `href="/s/prod-us/ops/db/posthog/table/ops_table"`)
 	assert.NotContains(t, body, "prod-eu / ops")
+	assert.Equal(t, 1, strings.Count(body, `<section class="lookup-group">`))
 }
 
 func TestWebDump_BrowseAndLookupNodes(t *testing.T) {
