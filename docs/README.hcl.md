@@ -697,12 +697,12 @@ which question you are asking:
   follows the same rule for every managed object kind.
 
 The declaration count is not cosmetic: `hclexp locate -duplicates` (the
-once-only CI guard) counts definition sites, while treating patch,
-`override`, and `extend` sites as sanctioned refinements. This permits a
-same-name extend child per disjoint environment stack: the shared column set
-stays on the abstract parent, and each child carries only its local engine,
-ordering, or additive columns. Two copied abstracts still count as two
-definitions and are flagged.
+once-only CI guard) finds repeated full-object declarations and then compares
+their resolved objects. `override` is included in that audit: it is honest when
+the resulting object is genuinely different, but it cannot hide an identical
+copy in another composition. Patch and `extend` sites are refinements rather
+than full definitions. Two mutually exclusive layers can therefore still hold
+a real duplicate when their composed objects are equal.
 
 The other asymmetry worth internalizing: **`extend`'s `settings` replace
 wholesale, `patch_table`'s `settings` merge (patch wins per key)**. An
@@ -1149,7 +1149,7 @@ hclexp locate -dump ./prod-us \
 # Ad-hoc layer dirs or .hcl files, no manifest required (no placements)
 hclexp locate -layer ./schema/shared,./schema/ingestion events
 
-# CI guard: any object defined at more than one site exits 1
+# Classify repeated definitions by their resolved semantic shape
 hclexp locate -manifest manifest.hcl -layer-root ./schema -duplicates
 ```
 
@@ -1201,19 +1201,40 @@ Objects are grouped by `(database, name)` — the namespace ClickHouse
 object types share — so a stray `view "events"` next to a `table
 "events"` shows up as one entry with both types.
 
-`-duplicates` (no name argument; requires `-manifest` or `-layer`) audits
-the once-only discipline: `load`/compose only reject a redeclaration when
-the two layers meet in one stack, so two layers that never co-compose can
-silently hold divergent copies of the same object. A definition site is a
-declaration that is not a patch or override and does not carry `extend`.
-Objects with two or more definition sites are reported and the command exits
-1; their output still includes every refinement site. Abstract declarations
-count as definitions, because copying a template copies its schema even though
-the abstract itself is dropped during resolution. An in-stack same-name
-redeclaration remains a compose error regardless of this cross-stack audit.
+`-duplicates` (no name argument; requires `-manifest` or `-layer`) audits the
+once-only discipline semantically. It first finds every name with two or more
+full-object declarations across the scanned source tree. Patch declarations
+and declarations carrying `extend` are refinements and do not create a
+candidate. `override = true` does count: it is a complete replacement and must
+not be able to suppress an otherwise identical copy.
 
-Exit codes: 0 found / no duplicates; 1 any pattern without a match,
-duplicates found, or a load error; 2 usage.
+For a manifest, hclexp loads and resolves every `(role, env)` layer stack in
+parallel. It scopes the normal schema diff to each candidate object and groups
+the models by equal resolved shape. Equality across two distinct effective
+source declarations is emitted under `duplicates`, even when the layers never
+co-compose. Repeated names whose resolved shapes differ are emitted under
+`variants`; that is the case where an override expresses a real environment
+difference. A shared definition deployed by many environments still counts as
+one source definition, not many duplicates. Abstract definitions, which are
+removed from final models, are compared from the merged pre-resolution model.
+When stderr is a terminal, locate reports parallel loading progress; redirected
+stderr receives no status chatter.
+
+Each JSON object retains every declaration site and adds
+`resolved_variants`, whose entries list the models producing one shape and the
+effective source `definitions`. An invalid same-stack plain redeclaration has
+no resolved model, so it is classified separately under `collisions`, with the
+affected models listed in `collision_in`. For `-layer`, the complete
+comma-separated list is one ad-hoc composition; manifest and ad-hoc
+compositions are evaluated independently when both are supplied.
+
+Text output labels the same groups `duplicate`, `distinct variants`, and
+`declaration collision`. The command exits 1 when `duplicates` or `collisions`
+is non-empty; genuinely different variants remain visible but do not fail the
+guard.
+
+Exit codes: 0 found / no semantic duplicates; 1 any pattern without a match,
+semantic duplicates or declaration collisions found, or a load error; 2 usage.
 
 ## Structured comparison output
 

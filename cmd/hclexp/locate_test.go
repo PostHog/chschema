@@ -344,15 +344,20 @@ func TestBuildLocateDocExtraLayers(t *testing.T) {
 // works before any manifest exists.
 func TestBuildLocateDocDuplicatesFromExtraLayers(t *testing.T) {
 	root := locateTree(t)
+	shared := filepath.Join(root, "shared")
+	aux := filepath.Join(root, "aux")
 
 	doc, _, err := buildLocateDoc(nil, "", []string{
-		filepath.Join(root, "shared"),
-		filepath.Join(root, "aux"),
+		shared,
+		aux,
 	}, "", nil, true)
 	require.NoError(t, err)
 
-	require.Len(t, doc.Duplicates, 1)
-	assert.Equal(t, "person", doc.Duplicates[0].Name)
+	assert.Empty(t, doc.Duplicates)
+	assert.Empty(t, doc.Variants)
+	require.Len(t, doc.Collisions, 1)
+	assert.Equal(t, "person", doc.Collisions[0].Name)
+	assert.Equal(t, []locateCompositionRef{{Source: "layer", Layers: []string{shared, aux}}}, doc.Collisions[0].CollisionIn)
 }
 
 // An extended object cross-links its children even when the pattern matches
@@ -381,13 +386,209 @@ func TestBuildLocateDocDuplicates(t *testing.T) {
 
 	// person is declared plainly in shared and aux; events_base (abstract) +
 	// events (extend child) must not be flagged.
+	assert.Empty(t, doc.Duplicates)
+	assert.Empty(t, doc.Variants)
+	require.Len(t, doc.Collisions, 1)
+	collision := doc.Collisions[0]
+	assert.Equal(t, "posthog", collision.Database)
+	assert.Equal(t, "person", collision.Name)
+	require.Len(t, collision.Declarations, 2)
+	assert.Equal(t, filepath.Join(root, "aux", "dup.hcl"), collision.Declarations[0].File)
+	assert.Equal(t, filepath.Join(root, "shared", "base.hcl"), collision.Declarations[1].File)
+	assert.Equal(t, []locateCompositionRef{{
+		Source: "manifest", Role: "aux", Env: "prod-us", Layers: []string{"shared", "aux"},
+	}}, collision.CollisionIn)
+	require.Len(t, collision.ResolvedVariants, 1)
+	assert.Len(t, collision.ResolvedVariants[0].Models, 2, "the two valid ingestion compositions still resolve")
+	assert.Len(t, collision.ResolvedVariants[0].Definitions, 1, "both valid compositions reuse the shared declaration")
+}
+
+func TestBuildLocateDocClassifiesDifferentResolvedObjectsAsVariants(t *testing.T) {
+	root := t.TempDir()
+	writeFileT(t, filepath.Join(root, "manifest.hcl"), `
+role "data" {
+  env "dev"   { layers = ["dev"] }
+  env "local" { layers = ["local"] }
+}
+`)
+	definition := func(kind string) string {
+		return `database "posthog" {
+  table "events" {
+    column "source" {
+      type    = "String"
+      default = "'` + kind + `'"
+    }
+    engine "log" {}
+  }
+}
+`
+	}
+	writeFileT(t, filepath.Join(root, "dev", "events.hcl"), definition("dev"))
+	writeFileT(t, filepath.Join(root, "local", "events.hcl"), definition("local"))
+	stacks, err := parseManifestAllEnvs(filepath.Join(root, "manifest.hcl"))
+	require.NoError(t, err)
+
+	doc, _, err := buildLocateDoc(stacks, root, nil, "", nil, true)
+	require.NoError(t, err)
+	assert.Empty(t, doc.Duplicates)
+	require.Len(t, doc.Variants, 1)
+	variant := doc.Variants[0]
+	assert.Equal(t, "events", variant.Name)
+	assert.Empty(t, variant.CollisionIn)
+	require.Len(t, variant.Declarations, 2)
+	require.Len(t, variant.ResolvedVariants, 2)
+	assert.Len(t, variant.ResolvedVariants[0].Definitions, 1)
+	assert.Len(t, variant.ResolvedVariants[1].Definitions, 1)
+
+	var text bytes.Buffer
+	renderDuplicatesText(&text, doc)
+	assert.Contains(t, text.String(), "distinct variants table posthog.events (2 sites)")
+}
+
+func TestBuildLocateDocSemanticDuplicatesCoverEveryManagedObjectKind(t *testing.T) {
+	root := t.TempDir()
+	writeFileT(t, filepath.Join(root, "manifest.hcl"), `
+role "data" {
+  env "left"  { layers = ["left"] }
+  env "right" { layers = ["right"] }
+}
+`)
+	writeFileT(t, filepath.Join(root, "left", "schema.hcl"), `
+named_collection "warehouse" {
+  param "host" { value = "warehouse.internal" }
+}
+database "analytics" {
+  table "events" {
+    column "id" { type = "UInt64" }
+    engine "log" {}
+  }
+  materialized_view "events_mv" {
+    to_table = "analytics.events"
+    query    = "SELECT id FROM analytics.events"
+    column "id" { type = "UInt64" }
+  }
+  view "environment" {
+    query = "SELECT 'production' AS name"
+  }
+  dictionary "labels" {
+    primary_key = ["id"]
+    attribute "id"    { type = "UInt64" }
+    attribute "label" { type = "String" }
+    source "null" {}
+    layout "flat" {}
+  }
+  raw "view" "legacy_environment" {
+    sql = "CREATE VIEW analytics.legacy_environment AS SELECT 'production'"
+  }
+}
+`)
+	writeFileT(t, filepath.Join(root, "right", "schema.hcl"), `
+named_collection "warehouse" {
+  override = true
+  param "host" { value = "warehouse.internal" }
+}
+database "analytics" {
+  table "events" {
+    override = true
+    column "id" { type = "UInt64" }
+    engine "log" {}
+  }
+  materialized_view "events_mv" {
+    override = true
+    to_table = "analytics.events"
+    query    = "SELECT id FROM analytics.events"
+    column "id" { type = "UInt64" }
+  }
+  view "environment" {
+    override = true
+    query    = "SELECT 'production' AS name"
+  }
+  dictionary "labels" {
+    override    = true
+    primary_key = ["id"]
+    attribute "id"    { type = "UInt64" }
+    attribute "label" { type = "String" }
+    source "null" {}
+    layout "flat" {}
+  }
+  raw "view" "legacy_environment" {
+    override = true
+    sql      = "CREATE VIEW analytics.legacy_environment AS SELECT 'production'"
+  }
+}
+`)
+	stacks, err := parseManifestAllEnvs(filepath.Join(root, "manifest.hcl"))
+	require.NoError(t, err)
+
+	var status bytes.Buffer
+	doc, _, err := buildLocateDocWithProgress(stacks, root, nil, "", nil, true, &status)
+	require.NoError(t, err)
+	assert.Contains(t, status.String(), "locate: loading 2 composition models in parallel (2 workers)")
+	assert.Contains(t, status.String(), "locate: loaded 2 composition models")
+	assert.Empty(t, doc.Variants)
+	require.Len(t, doc.Duplicates, 6)
+	for _, duplicate := range doc.Duplicates {
+		require.Len(t, duplicate.ResolvedVariants, 1, duplicate.Name)
+		assert.Len(t, duplicate.ResolvedVariants[0].Models, 2, duplicate.Name)
+		assert.Len(t, duplicate.ResolvedVariants[0].Definitions, 2, duplicate.Name)
+	}
+}
+
+func TestBuildLocateDocComparesAbstractDefinitionsBeforeTheyAreDropped(t *testing.T) {
+	root := t.TempDir()
+	writeFileT(t, filepath.Join(root, "manifest.hcl"), `
+role "data" {
+  env "left"  { layers = ["left"] }
+  env "right" { layers = ["right"] }
+}
+`)
+	definition := `database "analytics" {
+  table "event_base" {
+    abstract = true
+    column "id" { type = "UInt64" }
+  }
+}
+`
+	writeFileT(t, filepath.Join(root, "left", "base.hcl"), definition)
+	writeFileT(t, filepath.Join(root, "right", "base.hcl"), definition)
+	stacks, err := parseManifestAllEnvs(filepath.Join(root, "manifest.hcl"))
+	require.NoError(t, err)
+
+	doc, _, err := buildLocateDoc(stacks, root, nil, "", nil, true)
+	require.NoError(t, err)
 	require.Len(t, doc.Duplicates, 1)
-	dup := doc.Duplicates[0]
-	assert.Equal(t, "posthog", dup.Database)
-	assert.Equal(t, "person", dup.Name)
-	require.Len(t, dup.Declarations, 2)
-	assert.Equal(t, filepath.Join(root, "aux", "dup.hcl"), dup.Declarations[0].File)
-	assert.Equal(t, filepath.Join(root, "shared", "base.hcl"), dup.Declarations[1].File)
+	assert.Equal(t, "event_base", doc.Duplicates[0].Name)
+	require.Len(t, doc.Duplicates[0].ResolvedVariants, 1)
+	assert.Len(t, doc.Duplicates[0].ResolvedVariants[0].Definitions, 2)
+}
+
+func TestBuildLocateDocDoesNotClassifyAReplacedDefinitionFromOneModel(t *testing.T) {
+	root := t.TempDir()
+	writeFileT(t, filepath.Join(root, "base", "events.hcl"), `
+database "analytics" {
+  table "events" {
+    column "id" { type = "UInt64" }
+    engine "log" {}
+  }
+}
+`)
+	writeFileT(t, filepath.Join(root, "env", "events.hcl"), `
+database "analytics" {
+  table "events" {
+    override = true
+    column "id" { type = "String" }
+    engine "log" {}
+  }
+}
+`)
+
+	doc, _, err := buildLocateDoc(nil, "", []string{
+		filepath.Join(root, "base"), filepath.Join(root, "env"),
+	}, "", nil, true)
+	require.NoError(t, err)
+	assert.Empty(t, doc.Duplicates)
+	assert.Empty(t, doc.Variants)
+	assert.Empty(t, doc.Collisions)
 }
 
 func TestRenderLocateText(t *testing.T) {
@@ -411,7 +612,7 @@ func TestRenderLocateText(t *testing.T) {
 	dupDoc, _, err := buildLocateDoc(stacks, root, nil, "", nil, true)
 	require.NoError(t, err)
 	renderDuplicatesText(&dupBuf, dupDoc)
-	assert.Contains(t, dupBuf.String(), "duplicate table posthog.person")
+	assert.Contains(t, dupBuf.String(), "declaration collision table posthog.person")
 	assert.Contains(t, dupBuf.String(), "base.hcl:7")
 }
 
@@ -599,6 +800,96 @@ database "posthog" {
 		assert.Equal(t, expectedNode, model.Node)
 		assert.Equal(t, filepath.Join(dumps, expectedNode+".hcl"), model.File)
 	}
+}
+
+func TestLocateDuplicatesSemanticClassificationEndToEnd(t *testing.T) {
+	root := t.TempDir()
+	manifest := filepath.Join(root, "manifest.hcl")
+	writeFileT(t, filepath.Join(root, "dev", "events.hcl"), `
+database "posthog" {
+  table "events" {
+    column "id" { type = "UInt64" }
+    engine "log" {}
+  }
+}
+`)
+	writeFileT(t, filepath.Join(root, "local", "events.hcl"), `
+database "posthog" {
+  table "events" {
+    override = true
+    column "id" { type = "String" }
+    engine "log" {}
+  }
+}
+`)
+	writeFileT(t, manifest, `
+role "data" {
+  env "dev"   { layers = ["dev"] }
+  env "local" { layers = ["local"] }
+}
+`)
+
+	output, err := runLocateColumnsCLI(t, "-manifest", manifest, "-layer-root", root, "-duplicates", "-format", "json")
+	require.NoError(t, err, string(output))
+	var disjoint locateDoc
+	require.NoError(t, json.Unmarshal(output, &disjoint), string(output))
+	assert.Empty(t, disjoint.Duplicates)
+	require.Len(t, disjoint.Variants, 1)
+	assert.Equal(t, "events", disjoint.Variants[0].Name)
+	assert.Len(t, disjoint.Variants[0].ResolvedVariants, 2)
+
+	// An override in a mutually exclusive layer must not hide an identical
+	// full definition. Once both resolved objects are equal, the command
+	// classifies them as a duplicate even though they never co-compose.
+	writeFileT(t, filepath.Join(root, "local", "events.hcl"), `
+database "posthog" {
+  table "events" {
+    override = true
+    column "id" { type = "UInt64" }
+    engine "log" {}
+  }
+}
+`)
+	output, err = runLocateColumnsCLI(t, "-manifest", manifest, "-layer-root", root, "-duplicates", "-format", "json")
+	require.Error(t, err, string(output))
+	exitErr, ok := err.(*exec.ExitError)
+	require.True(t, ok)
+	assert.Equal(t, 1, exitErr.ExitCode())
+	var composed locateDoc
+	require.NoError(t, json.Unmarshal(output, &composed), string(output))
+	require.Len(t, composed.Duplicates, 1)
+	assert.Empty(t, composed.Variants)
+	assert.Empty(t, composed.Duplicates[0].CollisionIn)
+	require.Len(t, composed.Duplicates[0].ResolvedVariants, 1)
+	assert.Len(t, composed.Duplicates[0].ResolvedVariants[0].Models, 2)
+	assert.Len(t, composed.Duplicates[0].ResolvedVariants[0].Definitions, 2)
+
+	writeFileT(t, filepath.Join(root, "local", "events.hcl"), `
+database "posthog" {
+  table "events" {
+    column "id" { type = "String" }
+    engine "log" {}
+  }
+}
+`)
+	writeFileT(t, manifest, `
+role "data" {
+  env "dev" { layers = ["dev", "local"] }
+}
+`)
+	output, err = runLocateColumnsCLI(t, "-manifest", manifest, "-layer-root", root, "-duplicates", "-format", "json")
+	require.Error(t, err, string(output))
+	exitErr, ok = err.(*exec.ExitError)
+	require.True(t, ok)
+	assert.Equal(t, 1, exitErr.ExitCode())
+	var collision locateDoc
+	require.NoError(t, json.Unmarshal(output, &collision), string(output))
+	assert.Empty(t, collision.Duplicates)
+	assert.Empty(t, collision.Variants)
+	require.Len(t, collision.Collisions, 1)
+	assert.Equal(t, []locateCompositionRef{{
+		Source: "manifest", Role: "data", Env: "dev", Layers: []string{"dev", "local"},
+	}}, collision.Collisions[0].CollisionIn)
 }
 
 func runLocateColumnsCLI(t *testing.T, args ...string) ([]byte, error) {

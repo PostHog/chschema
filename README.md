@@ -833,8 +833,8 @@ hclexp locate -dump prod/eu \
 # Ad-hoc layer dirs or files, before a manifest exists (no placement info)
 hclexp locate -layer roles/shared,roles/ops/prod events
 
-# CI guard: every object defined at more than one site, even
-# across layers that never co-compose into one stack
+# Resolve every manifest composition and find repeated definitions that
+# produce the same object, including copies in mutually exclusive layers
 hclexp locate -manifest manifest.hcl -layer-root ./schema -duplicates
 ```
 
@@ -889,21 +889,31 @@ identity. A valid query with no matches succeeds and JSON includes
   `database.table`; column patterns match bare, `table.column`, or
   `database.table.column`.
 - `-format` — `text` (default) or `json` (a `{"patterns": [...],
-  "objects": [...]}` / `{"duplicates": [...]}` document with per-site
+  "objects": [...]}` or duplicate-classification document with `duplicates`
+  `variants`, and `collisions`, plus per-site
   file/line/layer/markers/placements, or a column-selector document containing
   `table_patterns`, `column_patterns`, and `columns`; every column has its
   matching `models`)
 - `-duplicates` — takes no name argument and requires `-manifest` or
-  `-layer` (mutually exclusive with `-dump` and column selectors); lists every object defined
-  at more than one site and exits non-zero when any is found. Patch sites,
-  `override = true` redeclarations, and declarations carrying `extend` are
-  refinements rather than definitions and do not count. Abstract declarations
-  do count: copying the same abstract schema is still duplication. Reported
-  groups retain every site, including refinements.
+  `-layer` (mutually exclusive with `-dump` and column selectors). It finds
+  names with two or more full-object declarations, resolves every manifest
+  `(role, env)` in parallel, and compares the resulting objects with the same
+  semantic diff used elsewhere. `duplicates` contains equal resolved shapes;
+  `variants` contains repeated names whose shapes differ. Each
+  `resolved_variants` group lists the models producing that shape and the
+  effective source definitions, so one shared declaration used by many models
+  is not mistaken for duplication. A same-stack undeclared replacement cannot
+  be resolved for comparison, so it is reported separately under `collisions`,
+  with the affected stacks in `collision_in`. `override = true` counts as a
+  full declaration and therefore cannot hide an identical copy in another
+  composition. Patch and `extend` sites remain refinements. The comma-separated
+  `-layer` list is one composition. Interactive terminal runs print parallel
+  loading progress to stderr; redirected stderr stays clean.
 
 Exit codes: `0` on success (including an empty column query), `1` when any
-positional object pattern matches nothing, `-duplicates` finds any, or an
-input cannot be read/parsed; `2` on usage errors.
+positional object pattern matches nothing, `-duplicates` finds a real
+duplicate or declaration collision, or an input cannot be read/parsed;
+genuinely different variants do not fail the guard. Usage errors exit `2`.
 
 ## Browse the schema in a web UI
 

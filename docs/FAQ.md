@@ -260,6 +260,12 @@ Without `override = true`, the cross-layer collision is an error. With it,
 the dev-layer definition wins. Raw objects collide by `(kind, name)`; the
 other database objects and named collections collide by name.
 
+`hclexp locate -duplicates` still includes overrides as full-object
+definitions when it audits a manifest. It resolves every composition and
+compares the resulting objects: a genuinely different override is reported as
+a variant, while an identical copy is a duplicate and exits 1. This keeps
+`override` from becoming a way to silence the once-only guard.
+
 ## What's the difference between `extend` and `patch_table`?
 
 They answer different questions. `extend` says *"these are **different
